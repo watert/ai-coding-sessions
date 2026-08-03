@@ -137,34 +137,41 @@ import {
 } from 'ai-coding-sessions/core';
 ```
 
-## Store CLI
+## CLI (Agent-friendly)
 
-Sync / reconcile / dump prompts. Analysis-oriented subcommands (tool errors, prompt perf, weekly export) live in **host** projects today; this package CLI is intentionally cache-focused.
+Default: **JSON on stdout** (logs on stderr). Subcommands for list / detail / prompts / stats / sync.
 
 ```bash
-# from package root
-bun src/store/cli.ts --days=7 --source=all --reconcile
-bun src/store/cli.ts --full --source=opencode
-bun src/store/cli.ts --refs-only --source=claude
-bun src/store/cli.ts --prompts=kimi:<sessionId>
-bun src/store/cli.ts --help
+# from package root (or: bun run cli …)
+bun src/store/cli.ts list --source=kimi --days=3 --limit=20
+bun src/store/cli.ts detail --source=opencode --id=ses_xxx
+bun src/store/cli.ts detail --source=grok --id=<uuid> --no-messages   # info only
+bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
+bun src/store/cli.ts stats --source=all --days=7
+bun src/store/cli.ts sync --days=7 --source=all --reconcile
+bun src/store/cli.ts refs --source=claude --days=7
+bun src/store/cli.ts help
 
 # monorepo
-bun packages/ai-coding-sessions/src/store/cli.ts --days=7 --source=all --reconcile
+bun packages/ai-coding-sessions/src/store/cli.ts list --source=all --days=3 --limit=10
 ```
 
-| Flag | Meaning |
-|------|---------|
-| `--days=N` | Sync window (default 7); ignored with `--full` / `--start` |
-| `--start=` / `--end=` | `YYYY-MM-DD` window |
-| `--source=` | `all` or one of the 7 sources |
-| `--full` | Full rebuild window + orphan mark |
-| `--reconcile` | After sync, compare cache vs live |
-| `--refs-only` | `listRefs` only (no convert/write) |
-| `--prompts=src:id` | Dump cached prompts JSON |
-| `--db=` / `--meta=` | Override store paths |
+| Command | Data | Notes |
+|---------|------|--------|
+| `list` | cache (default) or `--live` | compact fields by default; `--full-fields` for raw |
+| `detail` | **live** | requires `--source` + `--id`; omit messages with `--no-messages` |
+| `prompts` | cache | requires `--source` + `--id` |
+| `stats` | cache | bySource + token totals + tokensByDay |
+| `sync` | write cache | `--full` / `--reconcile` / date window |
+| `refs` | live refs | no convert/write |
 
-npm scripts: `bun run sync` · `bun run sync:reconcile`.
+Common flags: `--source=` · `--days=` · `--start=` · `--end=` · `--limit=` · `--offset=` · `--db=` · `--meta=` · `--raw` (single-line JSON).
+
+**Legacy** (still work): bare flags = `sync`; `--prompts=src:id`; `--refs-only`.
+
+Heavier analysis (`export-weekly-prompts`, `analyze-tool-errors`, full token-stats) stays in host projects for now.
+
+npm scripts: `bun run cli` · `bun run sync` · `bun run sync:reconcile`.
 
 ## Sources
 

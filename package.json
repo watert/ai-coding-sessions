@@ -16,6 +16,9 @@
   },
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "ai-coding-sessions": "./src/store/cli.ts"
+  },
   "files": [
     "src",
     "core.ts",
@@ -31,8 +34,9 @@
   "scripts": {
     "check": "bunx tsc --noEmit --project tsconfig.json",
     "test": "bun test src",
-    "sync": "bun src/store/cli.ts",
-    "sync:reconcile": "bun src/store/cli.ts --days=7 --source=all --reconcile"
+    "cli": "bun src/store/cli.ts",
+    "sync": "bun src/store/cli.ts sync",
+    "sync:reconcile": "bun src/store/cli.ts sync --days=7 --source=all --reconcile"
   },
   "dependencies": {
     "dayjs": "^1.11.13",
