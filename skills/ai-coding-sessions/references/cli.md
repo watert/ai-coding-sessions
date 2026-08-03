@@ -19,7 +19,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `tool-errors` | 单 session soft/hard 工具失败（`--status=hard` / `--tool=` / `--out=`） |
 | `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children`；含 `timing` |
 | `prompts` | 缓存 user prompts |
-| `stats` | 聚合 token / bySource / tokensByDay |
+| `stats` | 聚合 token（**P0** `usage_by_day` 裁剪 · root/sub `split` · `quality`） |
 | `sync` | 增量同步缓存（`--reconcile` / `--full`） |
 | `refs` | listRefs（无 convert/write） |
 | `help` | 帮助 |

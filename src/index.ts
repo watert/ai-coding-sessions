@@ -80,6 +80,11 @@ export {
   inferTraceFormat,
   extractStepTiming,
   summarizeSessionTimingFromMessages,
+  computeCliStats,
+  clipSessionToDateRange,
+  clipSessionsToDateRange,
+  isRootSession,
+  toDayKey,
 } from './store';
 
 export type {
@@ -106,4 +111,8 @@ export type {
   CollectToolErrorsOptions,
   TraceExportMeta,
   TraceExportFormat,
+  CliStatsResult,
+  StatsTokenBucket,
+  StatsQuality,
+  ComputeCliStatsOptions,
 } from './store';

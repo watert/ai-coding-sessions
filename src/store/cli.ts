@@ -37,7 +37,6 @@ import {
   queryCached,
   getCachedSession,
   getSessionPrompts,
-  queryUsageByDay,
 } from './query';
 import {
   buildTraceSteps,
@@ -51,6 +50,7 @@ import {
   summarizeSessionTimingFromMessages,
   type TraceExportFormat,
 } from './session-trace';
+import { computeCliStats } from './session-stats';
 import { countStats } from './upsert';
 import { loadMeta } from './meta';
 import { resolveStorePaths } from './paths';
@@ -236,7 +236,7 @@ Commands:
   trace        Trajectory skeleton (default no tool I/O)  [alias: timeline]
   tool-errors  Tool error/soft rows for one session
   prompts      Cached user prompts
-  stats        Aggregate counts / tokens (cache)
+  stats        Aggregate counts / tokens (cache; P0 window clip + quality)
   sync         Incremental sync → SQLite
   refs         listRefs only
   help
@@ -250,6 +250,7 @@ Agent trajectory (issue #1):
   tool-errors --source=kimi --id=<id> --status=hard
   detail --source=kimi --id=<id> --tools-only --max-output-chars=500
   detail --source=kimi --id=<id> --from=0 --to=5 --no-reasoning
+  stats --source=all --days=7                   # clipped totals + quality
 
 Options:
   --source=NAME       all|${ALL_SOURCES.join('|')}
@@ -788,6 +789,7 @@ async function cmdStats(args: CliArgs) {
 
   await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
   try {
+    // list overlap 过滤 session；token 再按 usage_by_day 窗口裁剪（issue #2）
     const result = queryCached({
       source: args.source,
       startDate,
@@ -796,46 +798,7 @@ async function cmdStats(args: CliArgs) {
       rootsOnly: args.rootsOnly,
     });
 
-    let tokens = 0;
-    let input = 0;
-    let output = 0;
-    let cacheRead = 0;
-    let userMessages = 0;
-    let toolCalls = 0;
-    let toolFailed = 0;
-    const bySourceDetail: Record<
-      string,
-      { sessions: number; tokens: number; user_messages: number }
-    > = {};
-
-    for (const s of result.sessions) {
-      const t = s.total_tokens || 0;
-      tokens += t;
-      input += s.total_input || 0;
-      output += s.total_output || 0;
-      cacheRead += s.total_cache_read || 0;
-      userMessages += s.total_user_messages || 0;
-      toolCalls += s.total_tool_calls || 0;
-      toolFailed += s.total_tool_calls_failed || 0;
-      const src = s.source || 'unknown';
-      if (!bySourceDetail[src]) {
-        bySourceDetail[src] = { sessions: 0, tokens: 0, user_messages: 0 };
-      }
-      bySourceDetail[src].sessions += 1;
-      bySourceDetail[src].tokens += t;
-      bySourceDetail[src].user_messages += s.total_user_messages || 0;
-    }
-
-    const usageDays = queryUsageByDay({
-      source: args.source === 'all' ? 'all' : args.source,
-      startDay: startDate,
-      endDay: endDate,
-    });
-    const tokensByDay: Record<string, number> = {};
-    for (const row of usageDays) {
-      tokensByDay[row.day] = (tokensByDay[row.day] || 0) + (row.tokens || 0);
-    }
-
+    const stats = computeCliStats(result.sessions, { startDate, endDate });
     const meta = loadMeta(paths.metaPath);
     const dbStats = countStats();
 
@@ -845,24 +808,23 @@ async function cmdStats(args: CliArgs) {
         source: args.source,
         startDate: startDate ?? null,
         endDate: endDate ?? null,
-        sessions: result.total,
-        bySource: result.bySource,
-        bySourceDetail,
-        totals: {
-          tokens,
-          input,
-          output,
-          cache_read: cacheRead,
-          user_messages: userMessages,
-          tool_calls: toolCalls,
-          tool_calls_failed: toolFailed,
-        },
-        tokensByDay,
+        /** list 过滤后的 session 数（与 stats.sessions 一致） */
+        sessions: stats.sessions,
+        clipped: stats.clipped,
+        window: stats.window,
+        split: stats.split,
+        quality: stats.quality,
+        bySource: stats.bySource,
+        bySourceDetail: stats.bySourceDetail,
+        totals: stats.totals,
+        tokensByDay: stats.tokensByDay,
         store: {
           paths,
           meta_last_sync_at: meta.last_sync_at ?? null,
           db_stats: dbStats,
         },
+        note:
+          'P0: totals tokens clipped via usage_by_day when present; see split/quality. by_model/cost → issue #3',
       },
       args.pretty,
     );

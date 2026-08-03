@@ -159,7 +159,7 @@ bun src/store/cli.ts detail --source=opencode --id=ses_xxx
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
 bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
-bun src/store/cli.ts stats --source=all --days=7
+bun src/store/cli.ts stats --source=all --days=7   # 裁剪合计 + quality（issue #2）
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 bun src/store/cli.ts help
 ```
@@ -172,7 +172,7 @@ bun src/store/cli.ts help
 | `tool-errors` | **live** | 单 session soft/hard 工具失败行 |
 | `detail` | **live** | 完整 messages；用体量 flag 适配 Agent 上下文 |
 | `prompts` | 缓存 | 仅 user prompts |
-| `stats` | 缓存 | bySource + token 合计 + tokensByDay |
+| `stats` | 缓存 | **P0** 窗口裁剪（`usage_by_day`）+ root/sub `split` + `quality` + totals / tokensByDay（[#2](https://github.com/watert/ai-coding-sessions/issues/2)） |
 | `sync` | 写缓存 | `--full` / `--reconcile` |
 | `refs` | live refs | 不 convert / 不写库 |
 

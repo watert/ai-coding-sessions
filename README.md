@@ -159,7 +159,7 @@ bun src/store/cli.ts detail --source=opencode --id=ses_xxx
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
 bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
-bun src/store/cli.ts stats --source=all --days=7
+bun src/store/cli.ts stats --source=all --days=7   # clipped totals + quality (issue #2)
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 bun src/store/cli.ts help
 ```
@@ -172,7 +172,7 @@ bun src/store/cli.ts help
 | `tool-errors` | **live** | soft/hard tool failure rows for one session |
 | `detail` | **live** | full messages; use size flags to fit Agent context |
 | `prompts` | cache | user prompts only |
-| `stats` | cache | bySource + token totals + tokensByDay |
+| `stats` | cache | **P0** window clip (`usage_by_day`) + root/sub `split` + `quality` + totals / tokensByDay ([#2](https://github.com/watert/ai-coding-sessions/issues/2)) |
 | `sync` | write cache | `--full` / `--reconcile` |
 | `refs` | live refs | no convert/write |
 
