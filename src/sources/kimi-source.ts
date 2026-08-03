@@ -25,6 +25,7 @@ import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from '.
 import type { BashSignals } from '../core';
 import { classifyBashCommands, extractBashCommands, EMPTY_BASH_SIGNALS } from './bash-signals';
 import { inferDeliverableSignals } from './deliverable-signals';
+import { classifySoftToolError } from './tool-error-soft';
 import { maxContextFromUnifiedMessages, sanitizeUserTextParts, buildLastTokenInfo } from './utils';
 import { buildActivitySpanFromUnifiedMessages } from './usage-by-day';
 import {
@@ -80,12 +81,18 @@ function convertKimiToolCallToPart(
     && 'isError' in result
     && (result as { isError?: unknown }).isError
   );
+  const soft = isError ? classifySoftToolError({ result }) : { soft: false as const };
+  const hardFail = isError && !soft.soft;
   const subMeta = buildKimiSubagentToolMetadata({
     rootSessionId: sessionId,
     toolName: toolCall.name,
     args: toolCall.args,
     result,
   });
+  const metadata = {
+    ...(subMeta || {}),
+    ...(soft.soft ? { errorSeverity: 'soft', errorKind: soft.kind } : {}),
+  };
   return {
     type: 'tool',
     id: crypto.randomUUID(),
@@ -95,12 +102,13 @@ function convertKimiToolCallToPart(
     callID: toolCall.toolCallId,
     time: { start: Date.now(), end: Date.now() },
     state: {
-      status: hasResult ? (isError ? 'failed' : 'completed') : 'calling',
+      // soft（Interrupted by user 等）→ completed
+      status: hasResult ? (hardFail ? 'failed' : 'completed') : 'calling',
       input: toolCall.args,
       output: result,
       title: toolCall.description,
-      ...(isError ? { error: result } : {}),
-      ...(subMeta ? { metadata: subMeta } : {}),
+      ...(hardFail ? { error: result } : {}),
+      ...(Object.keys(metadata).length ? { metadata } : {}),
     },
   };
 }

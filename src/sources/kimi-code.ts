@@ -9,6 +9,7 @@ import path from 'path';
 import _ from 'lodash';
 import { z } from 'zod';
 import { readJsonlCachedAsync } from '../lib/jsonl-cache';
+import { classifySoftToolError } from './tool-error-soft';
 
 const HOMEDIR = os.homedir();
 const KIMI_BASE = `${HOMEDIR}/.kimi-code`;
@@ -974,7 +975,11 @@ export async function listKimiCodeMessages(params: {
         } else if (evt.type === 'tool.result') {
           const tcId = evt.toolCallId || evt.parentUuid;
           const isError = !!(evt.result && typeof evt.result === 'object' && (evt.result as any).isError);
-          const status = isError ? 'failed' : 'completed';
+          const soft = isError
+            ? classifySoftToolError({ result: evt.result })
+            : { soft: false as const };
+          // soft（用户中断等）→ completed，不计入 hard fail
+          const status = isError && !soft.soft ? 'failed' : (evt.result !== undefined ? 'completed' : 'calling');
           const tc = pendingToolCalls.get(tcId);
           if (tc) {
             tc.result = evt.result;
@@ -992,7 +997,14 @@ export async function listKimiCodeMessages(params: {
             if (toolPart && toolPart.type === 'tool') {
               toolPart.state.status = status;
               toolPart.state.output = evt.result;
-              if (isError) toolPart.state.error = evt.result;
+              if (isError && !soft.soft) toolPart.state.error = evt.result;
+              if (soft.soft) {
+                toolPart.state.metadata = {
+                  ...(toolPart.state.metadata || {}),
+                  errorSeverity: 'soft',
+                  errorKind: soft.kind,
+                };
+              }
             }
           }
         } else if (evt.type === 'step.end') {

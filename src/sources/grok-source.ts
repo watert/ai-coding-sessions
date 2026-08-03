@@ -48,9 +48,15 @@ import {
 
 // ==================== Grok 数据源转换 ====================
 
-/** wire / chat_history tool status → OpenCode part.state.status */
-function mapGrokToolPartStatus(tc: { result?: unknown; status?: string }): string {
+/** wire / chat_history tool status → OpenCode part.state.status（soft fail 在 grok-code 已降为 completed） */
+function mapGrokToolPartStatus(tc: {
+  result?: unknown;
+  status?: string;
+  errorSeverity?: string;
+}): string {
   const s = (tc.status || '').toLowerCase();
+  // 双保险：若仍带 soft + failed，不计入 hard fail
+  if ((s === 'failed' || s === 'error') && tc.errorSeverity === 'soft') return 'completed';
   if (s === 'completed' || s === 'success' || s === 'done') return 'completed';
   if (s === 'failed') return 'failed';
   if (s === 'error') return 'error';
@@ -161,6 +167,10 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
   }
   }
   (msg.toolCalls || []).forEach((tc, idx) => {
+    const status = mapGrokToolPartStatus(tc);
+    const meta: Record<string, unknown> = {};
+    if (tc.errorKind) meta.errorKind = tc.errorKind;
+    if (tc.errorSeverity) meta.errorSeverity = tc.errorSeverity;
     parts.push({
       type: 'tool',
       id: msg.uuid + '-tool-' + idx,
@@ -169,10 +179,15 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
       tool: tc.name,
       callID: tc.toolCallId,
       state: {
-        status: mapGrokToolPartStatus(tc),
+        status,
         input: tc.args,
         output: tc.result,
         title: tc.name,
+        // hard fail：供 tool-error-stats 取 error 文本
+        ...((status === 'failed' || status === 'error') && tc.result != null
+          ? { error: tc.result }
+          : {}),
+        ...(Object.keys(meta).length ? { metadata: meta } : {}),
       },
     });
   });

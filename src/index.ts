@@ -15,6 +15,7 @@ export * from './sources/utils';
 export * from './sources/usage-by-day';
 export * from './sources/bash-signals';
 export * from './sources/deliverable-signals';
+export * from './sources/tool-error-soft';
 
 export * from './sources/claude-code';
 export * from './sources/codex-code';

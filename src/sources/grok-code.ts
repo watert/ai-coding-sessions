@@ -174,8 +174,11 @@ export type GrokMessageItem = {
     name: string;
     args: Record<string, unknown>;
     result?: unknown;
-    /** updates tool_call_update.status 或 chat_history tool_result → completed */
+    /** updates tool_call_update.status（failed 优先）或 chat_history tool_result → completed；soft fail 会降为 completed */
     status?: string;
+    /** 失败分类（含 soft，便于聚合） */
+    errorKind?: GrokToolErrorKind;
+    errorSeverity?: GrokToolErrorSeverity;
   }>;
   model?: string;
   parentID?: string;
@@ -1152,37 +1155,292 @@ function isGrokSessionUpdateMethod(method: unknown): boolean {
   return method === 'session/update' || method === '_x.ai/session/update';
 }
 
-/** 把 updates 里 content/rawOutput 压成前端好展示的 result */
-function normalizeGrokToolResult(u: any): unknown {
-  // content: [{type:'content', content:{type:'text', text}}]
-  if (Array.isArray(u.content)) {
-    const texts = u.content
-      .map((c: any) => c?.content?.text ?? c?.text ?? (typeof c === 'string' ? c : null))
-      .filter(Boolean);
-    if (texts.length) return texts.join('\n');
+/** Grok tool 失败分类（wire failed 后可 soft 降级） */
+export type GrokToolErrorKind =
+  | 'file_not_found'
+  | 'file_too_large'
+  | 'file_read_error'
+  | 'invalid_args'
+  | 'edit_no_match'
+  | 'edit_noop'
+  | 'cross_host_redirect'
+  | 'http_error'
+  | 'blocked'
+  | 'mcp_error'
+  | 'execution_failed'
+  | 'unknown';
+
+export type GrokToolErrorSeverity = 'hard' | 'soft';
+
+/** soft：可重试引导（截断/跨域跳转），不计入 ToolSucc 失败 */
+const GROK_SOFT_ERROR_KINDS = new Set<GrokToolErrorKind>([
+  'file_too_large',
+  'cross_host_redirect',
+]);
+
+function stringifyGrokToolVal(v: unknown): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    if (typeof o.message === 'string') return o.message;
+    if (typeof o.error === 'string') return o.error;
+    if (typeof o.Error === 'string') return o.Error;
+    if (typeof o.text === 'string') return o.text;
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
   }
+  return String(v);
+}
+
+function extractGrokContentText(content: unknown): string | undefined {
+  if (content == null) return undefined;
+  if (typeof content === 'string' && content) return content;
+  if (!Array.isArray(content)) return undefined;
+  const texts = content
+    .map((c: any) => c?.content?.text ?? c?.text ?? (typeof c === 'string' ? c : null))
+    .filter(Boolean);
+  return texts.length ? texts.join('\n') : undefined;
+}
+
+/** 从 rawOutput 结构取 kind + 文本 */
+function extractGrokRawOutputInfo(raw: unknown): { kind?: GrokToolErrorKind; text?: string } {
+  if (raw == null) return {};
+  if (typeof raw === 'string') return { text: raw };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { text: stringifyGrokToolVal(raw) };
+  }
+  const o = raw as Record<string, unknown>;
+
+  // { error: 'tool_execution_failed', message }
+  if (typeof o.error === 'string' || typeof o.message === 'string') {
+    const msg = [typeof o.message === 'string' ? o.message : '', typeof o.error === 'string' ? o.error : '']
+      .filter(Boolean)
+      .join(': ');
+    const lower = msg.toLowerCase();
+    let kind: GrokToolErrorKind = 'execution_failed';
+    if (/auto mode blocked|was not executed/i.test(msg)) kind = 'blocked';
+    else if (/http|redirect|request failed/i.test(lower)) kind = 'http_error';
+    return { kind, text: msg };
+  }
+
+  if (o.FileNotFound != null) {
+    return { kind: 'file_not_found', text: stringifyGrokToolVal(o.FileNotFound) };
+  }
+  if (o.FileTooLarge != null) {
+    return { kind: 'file_too_large', text: stringifyGrokToolVal(o.FileTooLarge) };
+  }
+  if (o.FileReadError != null) {
+    return { kind: 'file_read_error', text: stringifyGrokToolVal(o.FileReadError) };
+  }
+  if (o.CrossHostRedirect != null) {
+    const cr = o.CrossHostRedirect as Record<string, unknown>;
+    const host = cr.original_host ?? cr.originalHost ?? '';
+    const url = cr.redirect_url ?? cr.redirectUrl ?? '';
+    return {
+      kind: 'cross_host_redirect',
+      text: `Error: cross-host redirect from ${host} to ${url}. Make a new web_fetch call with the redirect URL if needed.`,
+    };
+  }
+  if (o.NoMatchesFound != null) {
+    return { kind: 'edit_no_match', text: stringifyGrokToolVal(o.NoMatchesFound) };
+  }
+  if (o.InvalidInput != null) {
+    const t = stringifyGrokToolVal(o.InvalidInput);
+    if (/same/i.test(t)) return { kind: 'edit_noop', text: t };
+    return { kind: 'invalid_args', text: t };
+  }
+  // MCP: { type:'MCP', tool_name, output: { Error } }
+  if (o.type === 'MCP' || o.tool_name != null || o.server_name != null) {
+    const out = o.output;
+    const toolName = typeof o.tool_name === 'string' ? o.tool_name : 'mcp';
+    let body = '';
+    if (out && typeof out === 'object') {
+      const oo = out as Record<string, unknown>;
+      body = stringifyGrokToolVal(oo.Error ?? oo.error ?? oo.message ?? out);
+    } else {
+      body = stringifyGrokToolVal(out);
+    }
+    return {
+      kind: 'mcp_error',
+      text: body ? `MCP ${toolName}: ${body}` : `MCP ${toolName} failed`,
+    };
+  }
+
+  // 成功类结构化输出
+  if (typeof o.output_for_prompt === 'string') return { text: o.output_for_prompt };
+  if (typeof (o.FileContent as any)?.content === 'string') {
+    return { text: (o.FileContent as any).content };
+  }
+  if (typeof (o.Content as any)?.content === 'string') {
+    return { text: (o.Content as any).content };
+  }
+  if (Array.isArray(o.output) && o.output.length) {
+    return {
+      text: o.output.map((x: any) => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n'),
+    };
+  }
+  return { text: stringifyGrokToolVal(raw) };
+}
+
+/** 从失败文本推断 kind（chat_history-only 或 raw 缺字段时） */
+export function classifyGrokToolErrorText(text: string): {
+  kind: GrokToolErrorKind;
+  severity: GrokToolErrorSeverity;
+} {
+  const t = text || '';
+  let kind: GrokToolErrorKind = 'unknown';
+  if (/exceeds the maximum allowed tokens|FileTooLarge|try a smaller `limit`/i.test(t)) {
+    kind = 'file_too_large';
+  } else if (/cross-host redirect/i.test(t)) {
+    kind = 'cross_host_redirect';
+  } else if (/does not exist|FileNotFound|No such file/i.test(t)) {
+    kind = 'file_not_found';
+  } else if (/Failed to parse arguments|missing field|invalid type|InvalidInput/i.test(t)) {
+    kind = 'invalid_args';
+  } else if (/string to replace was not found|NoMatchesFound/i.test(t)) {
+    kind = 'edit_no_match';
+  } else if (/Old string and new string are the same/i.test(t)) {
+    kind = 'edit_noop';
+  } else if (/Auto mode blocked|was not executed/i.test(t)) {
+    kind = 'blocked';
+  } else if (/Cannot read binary|not readable as UTF-8|FileReadError/i.test(t)) {
+    kind = 'file_read_error';
+  } else if (/HTTP request failed|too many redirects|error sending request/i.test(t)) {
+    kind = 'http_error';
+  } else if (/MCP |via `use_tool`|Managed MCP/i.test(t)) {
+    kind = 'mcp_error';
+  } else if (/Tool `.+` failed/i.test(t)) {
+    kind = 'execution_failed';
+  }
+  const severity: GrokToolErrorSeverity = GROK_SOFT_ERROR_KINDS.has(kind) ? 'soft' : 'hard';
+  return { kind, severity };
+}
+
+/**
+ * 对 wire failed 做分类：soft（截断/跨域跳转）不计入 hard fail。
+ * rawOutput 优先，其次 result/content 文本。
+ */
+export function classifyGrokToolFailure(input: {
+  result?: unknown;
+  rawOutput?: unknown;
+  content?: unknown;
+}): {
+  kind: GrokToolErrorKind;
+  severity: GrokToolErrorSeverity;
+  message: string;
+} {
+  const fromRaw = extractGrokRawOutputInfo(input.rawOutput);
+  const fromContent = extractGrokContentText(input.content);
+  const fromResult = typeof input.result === 'string'
+    ? input.result
+    : input.result != null
+      ? stringifyGrokToolVal(input.result)
+      : undefined;
+  const message = (fromRaw.text || fromContent || fromResult || '').trim();
+  if (fromRaw.kind) {
+    const severity: GrokToolErrorSeverity = GROK_SOFT_ERROR_KINDS.has(fromRaw.kind) ? 'soft' : 'hard';
+    return { kind: fromRaw.kind, severity, message };
+  }
+  const cls = classifyGrokToolErrorText(message);
+  return { ...cls, message };
+}
+
+/** 把 updates 里 content/rawOutput 压成前端好展示的 result（优先可读文本） */
+function normalizeGrokToolResult(u: any): unknown {
+  const contentText = extractGrokContentText(u.content);
+  if (contentText) return contentText;
+
   if (typeof u.content === 'string' && u.content) return u.content;
 
   const raw = u.rawOutput;
   if (raw == null) {
     return u.status === 'completed' ? { status: 'completed', title: u.title } : undefined;
   }
-  // Bash / ReadFile 等结构化输出
-  if (typeof raw === 'object') {
-    if (typeof raw.output_for_prompt === 'string') return raw.output_for_prompt;
-    if (typeof raw.FileContent?.content === 'string') return raw.FileContent.content;
-    if (typeof raw.Content?.content === 'string') return raw.Content.content;
-    if (Array.isArray(raw.output) && raw.output.length) {
-      return raw.output.map((x: any) => (typeof x === 'string' ? x : JSON.stringify(x))).join('\n');
-    }
-  }
+  const info = extractGrokRawOutputInfo(raw);
+  if (info.text) return info.text;
   return raw;
 }
 
 /** tool 结果 + wire status（in_progress 时仍可有 partial result 供展示） */
-type GrokToolResultEntry = { result?: unknown; status?: string };
+type GrokToolResultEntry = {
+  result?: unknown;
+  status?: string;
+  errorKind?: GrokToolErrorKind;
+  errorSeverity?: GrokToolErrorSeverity;
+};
 
-/** 从 updates.jsonl 收集 tool_call_update 的 result/status */
+/**
+ * tool status 终态优先级（越高越“最终”）。
+ * chat_history 的 tool_result 一律可标 completed，但 updates 的 failed 必须能盖掉它；
+ * 同时 completed 不可被 in_progress 回退。
+ */
+function grokToolStatusRank(status?: string): number {
+  const s = (status || '').toLowerCase();
+  if (s === 'failed' || s === 'error') return 40;
+  if (s === 'completed' || s === 'success' || s === 'done') return 30;
+  if (s === 'in_progress' || s === 'pending' || s === 'running' || s === 'calling') return 10;
+  return 0;
+}
+
+/** 合并 tool result/status：result 取有值侧；status 取 rank 更高者 */
+function mergeGrokToolResultEntry(
+  prev: GrokToolResultEntry | undefined,
+  next: GrokToolResultEntry,
+): GrokToolResultEntry {
+  if (!prev) return next;
+  const prevRank = grokToolStatusRank(prev.status);
+  const nextRank = grokToolStatusRank(next.status);
+  const status = nextRank >= prevRank
+    ? (next.status || prev.status)
+    : (prev.status || next.status);
+  // kind 跟随更高 rank 侧；同 rank 时 next 覆盖
+  const useNextMeta = nextRank >= prevRank;
+  return {
+    result: next.result !== undefined ? next.result : prev.result,
+    status,
+    errorKind: useNextMeta
+      ? (next.errorKind ?? prev.errorKind)
+      : (prev.errorKind ?? next.errorKind),
+    errorSeverity: useNextMeta
+      ? (next.errorSeverity ?? prev.errorSeverity)
+      : (prev.errorSeverity ?? next.errorSeverity),
+  };
+}
+
+/**
+ * wire failed → 分类；soft 降为 completed（不计入 ToolSucc 失败），
+ * hard 保留 failed，并规范化 result 文本。
+ */
+function finalizeGrokToolEntry(entry: GrokToolResultEntry): GrokToolResultEntry {
+  const st = (entry.status || '').toLowerCase();
+  if (st !== 'failed' && st !== 'error') return entry;
+  const cls = classifyGrokToolFailure({ result: entry.result });
+  const kind = entry.errorKind || cls.kind;
+  const severity: GrokToolErrorSeverity = entry.errorSeverity
+    || (GROK_SOFT_ERROR_KINDS.has(kind) ? 'soft' : 'hard');
+  const result = cls.message || entry.result;
+  if (severity === 'soft') {
+    return {
+      result,
+      status: 'completed',
+      errorKind: kind,
+      errorSeverity: 'soft',
+    };
+  }
+  return {
+    result,
+    status: 'failed',
+    errorKind: kind,
+    errorSeverity: 'hard',
+  };
+}
+
+/** 从 updates.jsonl 收集 tool_call_update 的 result/status（未 soft 降级；调用方 merge 后再 finalize） */
 function collectToolResultsFromUpdates(sessionDir: string): Map<string, GrokToolResultEntry> {
   const map = new Map<string, GrokToolResultEntry>();
   for (const row of readUpdatesJsonl(sessionDir)) {
@@ -1192,12 +1450,23 @@ function collectToolResultsFromUpdates(sessionDir: string): Map<string, GrokTool
     const id = u.toolCallId;
     if (!id) continue;
     const result = normalizeGrokToolResult(u);
-    const prev = map.get(id);
-    map.set(id, {
-      result: result !== undefined ? result : prev?.result,
-      // 后写覆盖：最终 completed 会盖掉 in_progress
-      status: typeof u.status === 'string' && u.status ? u.status : prev?.status,
-    });
+    const status = typeof u.status === 'string' && u.status ? u.status : undefined;
+    if (status === 'failed' || status === 'error') {
+      const cls = classifyGrokToolFailure({
+        result,
+        rawOutput: u.rawOutput,
+        content: u.content,
+      });
+      // 保留 wire failed；message 补全 MCP 等空 content
+      map.set(id, mergeGrokToolResultEntry(map.get(id), {
+        result: cls.message || result,
+        status,
+        errorKind: cls.kind,
+        errorSeverity: cls.severity,
+      }));
+    } else {
+      map.set(id, mergeGrokToolResultEntry(map.get(id), { result, status }));
+    }
   }
   return map;
 }
@@ -1213,7 +1482,7 @@ function parseToolArgs(raw: unknown): Record<string, unknown> {
   }
 }
 
-/** 按 toolCallId 回填已创建 assistant 的 toolCalls.result/status */
+/** 按 toolCallId 回填已创建 assistant 的 toolCalls.result/status（status 不降级） */
 function backfillToolResult(
   messages: GrokMessageItem[],
   callId: string,
@@ -1227,15 +1496,27 @@ function backfillToolResult(
     const tc = m.toolCalls.find((t) => t.toolCallId === callId);
     if (tc) {
       if (tc.result === undefined) tc.result = result;
-      tc.status = status;
+      if (grokToolStatusRank(status) >= grokToolStatusRank(tc.status)) {
+        tc.status = status;
+      }
       return;
     }
   }
 }
 
-function toolEntryToFields(entry?: GrokToolResultEntry): { result?: unknown; status?: string } {
+function toolEntryToFields(entry?: GrokToolResultEntry): {
+  result?: unknown;
+  status?: string;
+  errorKind?: GrokToolErrorKind;
+  errorSeverity?: GrokToolErrorSeverity;
+} {
   if (!entry) return {};
-  return { result: entry.result, status: entry.status };
+  return {
+    result: entry.result,
+    status: entry.status,
+    errorKind: entry.errorKind,
+    errorSeverity: entry.errorSeverity,
+  };
 }
 
 export async function listGrokCodeMessages(params: {
@@ -1315,32 +1596,27 @@ export async function listGrokCodeMessages(params: {
     return lastSeenModelId || sessionDefaultModel;
   };
 
-  // pass1: 预扫 tool_result（chat_history 里 result 在 assistant 之后 → 已完成）
+  // pass1: 预扫 tool_result（chat_history 有 content 即视为 completed，但 updates.failed 可盖掉）
   const toolResultsByCallId = new Map<string, GrokToolResultEntry>();
   for (const e of entries) {
     if (e.type === 'tool_result' && e.tool_call_id) {
-      toolResultsByCallId.set(e.tool_call_id, { result: e.content, status: 'completed' });
+      toolResultsByCallId.set(
+        e.tool_call_id,
+        mergeGrokToolResultEntry(toolResultsByCallId.get(e.tool_call_id), {
+          result: e.content,
+          status: 'completed',
+        }),
+      );
     }
   }
-  // backend_tool 等：result/status 在 updates.jsonl；chat_history 已 completed 的不降级
+  // updates 的 status 按 rank 合并：failed > completed > in_progress
   collectToolResultsFromUpdates(dir).forEach((entry, id) => {
-    const prev = toolResultsByCallId.get(id);
-    if (!prev) {
-      toolResultsByCallId.set(id, entry);
-      return;
-    }
-    if (prev.status === 'completed') {
-      // 保留 completed；result 空时用 updates 补
-      if (prev.result === undefined && entry.result !== undefined) {
-        toolResultsByCallId.set(id, { result: entry.result, status: 'completed' });
-      }
-      return;
-    }
-    toolResultsByCallId.set(id, {
-      result: entry.result !== undefined ? entry.result : prev.result,
-      status: entry.status || prev.status,
-    });
+    toolResultsByCallId.set(id, mergeGrokToolResultEntry(toolResultsByCallId.get(id), entry));
   });
+  // soft（FileTooLarge / CrossHostRedirect）降为 completed；hard 规范化 message
+  for (const [id, entry] of toolResultsByCallId) {
+    toolResultsByCallId.set(id, finalizeGrokToolEntry(entry));
+  }
 
   /**
    * chat_history 里同一 model step 常拆成:
@@ -1381,10 +1657,19 @@ export async function listGrokCodeMessages(params: {
     const e = entries[lineIndex];
     t += 1; // 保序递增
     if (e.type === 'tool_result') {
-      // 已预扫；若 assistant 已创建则回填（兼容乱序）
+      // 已预扫；若 assistant 已创建则回填（兼容乱序）。status 不覆盖 updates.failed
       if (e.tool_call_id) {
-        toolResultsByCallId.set(e.tool_call_id, { result: e.content, status: 'completed' });
-        backfillToolResult(messages, e.tool_call_id, e.content, 'completed');
+        const merged = mergeGrokToolResultEntry(toolResultsByCallId.get(e.tool_call_id), {
+          result: e.content,
+          status: 'completed',
+        });
+        toolResultsByCallId.set(e.tool_call_id, merged);
+        backfillToolResult(
+          messages,
+          e.tool_call_id,
+          e.content,
+          merged.status || 'completed',
+        );
       }
       continue;
     }

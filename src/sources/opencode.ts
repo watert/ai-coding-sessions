@@ -16,6 +16,7 @@ import { ensureModelsDevData, calculateSessionPricing, type SessionPricing } fro
 import { buildActivitySpanFromTimingStats } from './usage-by-day';
 import { classifyBashCommands, extractBashCommands } from './bash-signals';
 import { inferDeliverableSignals } from './deliverable-signals';
+import { buildOpenCodeSoftErrorSql } from './tool-error-soft';
 import { isTimestamp } from '../lib/date-utils';
 
 // ==================== Zod Schema 定义 ====================
@@ -803,8 +804,20 @@ export function getSessionList(
       SELECT
         tp.session_id,
         COUNT(*) AS total_tool_calls,
-        COUNT(CASE WHEN json_extract(tp.data, '$.state.status') = 'completed' THEN 1 END) AS total_tool_calls_success,
-        COUNT(CASE WHEN json_extract(tp.data, '$.state.status') IN ('failed', 'error') THEN 1 END) AS total_tool_calls_failed
+        -- soft（abort/rg-json-too-large）计入 success，不计入 failed
+        COUNT(CASE
+          WHEN json_extract(tp.data, '$.state.status') = 'completed' THEN 1
+          WHEN json_extract(tp.data, '$.state.status') IN ('failed', 'error')
+            AND (
+              ${buildOpenCodeSoftErrorSql("COALESCE(json_extract(tp.data, '$.state.error'), json_extract(tp.data, '$.state.output'), '')")}
+            ) THEN 1
+        END) AS total_tool_calls_success,
+        COUNT(CASE
+          WHEN json_extract(tp.data, '$.state.status') IN ('failed', 'error')
+            AND NOT (
+              ${buildOpenCodeSoftErrorSql("COALESCE(json_extract(tp.data, '$.state.error'), json_extract(tp.data, '$.state.output'), '')")}
+            ) THEN 1
+        END) AS total_tool_calls_failed
       FROM (
         SELECT session_id, data
         FROM part
