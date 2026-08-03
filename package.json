@@ -24,6 +24,7 @@
     "core.ts",
     "skills",
     "README.md",
+    "README.zh.md",
     "LICENSE",
     "!**/*.test.ts"
   ],

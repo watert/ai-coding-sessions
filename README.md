@@ -1,5 +1,7 @@
 # ai-coding-sessions
 
+**English** · [中文](./README.zh.md)
+
 **MIT** · Multi-source AI coding session list / detail / SQLite cache.
 
 Read-only aggregation of local CLI session data (Claude Code, OpenCode, Kimi, Grok Build, Codex, ZCode, WorkBuddy) into one OpenCode-shaped protocol. No cloud, no account, no telemetry.
