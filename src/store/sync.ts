@@ -27,6 +27,7 @@ import {
   upsertSession,
   markOrphans,
   countStats,
+  getCachedDirtyMark,
 } from './upsert';
 import { queryCached } from './query';
 
@@ -298,20 +299,140 @@ function sumTokens(sessions: UnifiedSessionInfo[]): number {
   return sessions.reduce((a, s) => a + (s.total_tokens || 0), 0);
 }
 
-/** ensureFresh：meta.last_sync_at 门槛（长 TTL） */
+/**
+ * ensureFresh：
+ * 1. minInterval 内直接跳过（防 5s 轮询 thrash）
+ * 2. 未超 maxAge 时用 listRefs 脏检测（新 session / dirty_mark 变化）
+ * 3. 超时或脏 → incremental sync
+ *
+ * 新鲜度按 **请求 source 子集** 的 per-source last_sync_at 取最旧，避免只 sync 了 claude
+ * 却把全局 last_sync_at 刷新、导致 grok 长期不进缓存。
+ */
 export async function ensureFresh(opts?: {
-  /** 默认 6h */
+  /** 默认 6h：绝对过期强制 sync */
   maxAgeMs?: number;
+  /** 默认 30s：最短间隔，不检测也不 sync */
+  minIntervalMs?: number;
+  /** 默认 true：TTL 内做 listRefs 脏检测 */
+  checkDirty?: boolean;
   sync?: SyncOptions;
-}): Promise<{ synced: boolean; ageMs: number | null; result?: SyncResult }> {
+}): Promise<{
+  synced: boolean;
+  ageMs: number | null;
+  reason?: 'min_interval' | 'clean' | 'dirty' | 'ttl' | 'never';
+  result?: SyncResult;
+}> {
   const maxAgeMs = opts?.maxAgeMs ?? 6 * 60 * 60 * 1000;
+  const minIntervalMs = opts?.minIntervalMs ?? 30_000;
+  const checkDirty = opts?.checkDirty !== false;
   const paths = await initStoreDb(opts?.sync);
   const meta = loadMeta(paths.metaPath);
-  const last = meta.last_sync_at;
+  const sources = normalizeSources(opts?.sync?.source);
+  const last = oldestSourceSyncAt(meta, sources);
   const ageMs = last != null ? Date.now() - last : null;
-  if (ageMs != null && ageMs < maxAgeMs) {
-    return { synced: false, ageMs };
+
+  if (ageMs != null && ageMs < minIntervalMs) {
+    return { synced: false, ageMs, reason: 'min_interval' };
   }
+
+  if (ageMs != null && ageMs < maxAgeMs) {
+    if (!checkDirty) {
+      return { synced: false, ageMs, reason: 'clean' };
+    }
+    const dirtySources = await findDirtySources(opts?.sync);
+    if (!dirtySources.length) {
+      return { synced: false, ageMs, reason: 'clean' };
+    }
+    // 只 sync 脏 source（source=all 时常见仅 grok 在写）
+    const result = await syncDirtySources(dirtySources, opts?.sync);
+    return { synced: true, ageMs, reason: 'dirty', result };
+  }
+
   const result = await syncSessions({ days: 7, ...(opts?.sync || {}) });
-  return { synced: true, ageMs, result };
+  return {
+    synced: true,
+    ageMs,
+    reason: ageMs == null ? 'never' : 'ttl',
+    result,
+  };
+}
+
+/** 请求涉及 source 中最旧的 last_sync_at；任一缺失视为从未 sync */
+function oldestSourceSyncAt(meta: StoreMeta, sources: SourceId[]): number | null {
+  let oldest: number | null = null;
+  for (const s of sources) {
+    const t = meta.sources[s]?.last_sync_at;
+    if (t == null) return null;
+    if (oldest == null || t < oldest) oldest = t;
+  }
+  return oldest;
+}
+
+/**
+ * 便宜脏检测：listRefs dirty_mark vs 缓存。
+ * - 缓存无此 id → 新 session
+ * - dirty_mark 不一致 → 源侧有更新（含 grok last_active 心跳）
+ * @returns 需要 sync 的 source 列表
+ */
+async function findDirtySources(sync?: SyncOptions): Promise<SourceId[]> {
+  const sources = normalizeSources(sync?.source);
+  const startDate = sync?.full ? undefined : resolveStartDate(sync || {});
+  const since = startDate ? dayjs(startDate).startOf('day').valueOf() : undefined;
+  const dirty = new Set<SourceId>();
+
+  for (const source of sources) {
+    let refs: Awaited<ReturnType<typeof listRefs>>;
+    try {
+      refs = await listRefs({ source, since });
+    } catch (e) {
+      console.warn(`[ensureFresh] listRefs ${source} failed, mark dirty:`, e);
+      dirty.add(source);
+      continue;
+    }
+    for (const r of refs) {
+      const cached = getCachedDirtyMark(r.source, r.session_id);
+      if (cached == null || cached !== r.dirty_mark) {
+        dirty.add(source);
+        break;
+      }
+    }
+  }
+  return [...dirty];
+}
+
+/** 逐个 source 跑 syncSessions（合并 totals） */
+async function syncDirtySources(
+  dirtySources: SourceId[],
+  sync?: SyncOptions,
+): Promise<SyncResult> {
+  if (dirtySources.length === 1) {
+    return syncSessions({ days: 7, ...(sync || {}), source: dirtySources[0] });
+  }
+  // 多 source：一次 all 会重扫干净源；逐源更准
+  const t0 = Date.now();
+  const bySource: SyncSourceResult[] = [];
+  let last: SyncResult | null = null;
+  for (const source of dirtySources) {
+    last = await syncSessions({ days: 7, ...(sync || {}), source });
+    bySource.push(...last.bySource);
+  }
+  const totals = bySource.reduce(
+    (a, s) => ({
+      live: a.live + s.live,
+      inserted: a.inserted + s.inserted,
+      updated: a.updated + s.updated,
+      skipped: a.skipped + s.skipped,
+      orphaned: a.orphaned + s.orphaned,
+    }),
+    { live: 0, inserted: 0, updated: 0, skipped: 0, orphaned: 0 },
+  );
+  return {
+    ok: bySource.every((s) => !s.error),
+    paths: last!.paths,
+    bySource,
+    totals,
+    stats: last!.stats,
+    meta: last!.meta,
+    duration_ms: Date.now() - t0,
+  };
 }

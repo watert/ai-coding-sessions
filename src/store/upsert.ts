@@ -48,11 +48,11 @@ export function upsertSession(
   const existing = getCachedFingerprint(source, session_id);
 
   if (!opts?.force && existing === fp) {
-    // 仍清除 orphan 标记
+    // 内容未变：仍刷新 dirty_mark/synced_at，避免 heartbeat 脏标记反复触发全量 sync
     const db = getStoreDb();
     db.prepare(
       `UPDATE sessions SET orphaned_at = NULL, dirty_mark = COALESCE(?, dirty_mark), synced_at = ?
-       WHERE source = ? AND session_id = ? AND orphaned_at IS NOT NULL`,
+       WHERE source = ? AND session_id = ?`,
     ).run(opts?.dirty_mark ?? null, Date.now(), source, session_id);
     return { source, session_id, action: 'skip', fingerprint: fp };
   }

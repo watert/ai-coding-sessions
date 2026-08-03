@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { initStoreDb, closeStoreDb, getStoreDb } from './db';
-import { upsertSession, markOrphans, countStats, getCachedFingerprint } from './upsert';
+import { upsertSession, markOrphans, countStats, getCachedFingerprint, getCachedDirtyMark } from './upsert';
 import { queryCached, getSessionPrompts, queryUsageByDay } from './query';
 import { loadMeta, saveMeta, emptyMeta } from './meta';
 import { contentFingerprint, extractPrompts, extractUsageByModel } from './fingerprint';
@@ -197,5 +197,19 @@ describe('meta json', () => {
     const loaded = loadMeta(metaPath);
     expect(loaded.last_sync_at).toBe(123);
     expect(loaded.sources.claude?.session_count).toBe(2);
+  });
+});
+
+describe('upsert dirty_mark on skip', () => {
+  test('skip 仍刷新 dirty_mark（避免心跳反复脏）', () => {
+    const s = makeSession({ id: 'dirty-skip-1', title: 'same' });
+    const r1 = upsertSession(s, { dirty_mark: '100' });
+    expect(r1.action).toBe('insert');
+    expect(getCachedDirtyMark('claude', 'dirty-skip-1')).toBe('100');
+
+    // 同内容不同 dirty_mark → skip，但 mark 应更新
+    const r2 = upsertSession(s, { dirty_mark: '200' });
+    expect(r2.action).toBe('skip');
+    expect(getCachedDirtyMark('claude', 'dirty-skip-1')).toBe('200');
   });
 });
