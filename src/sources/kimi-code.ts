@@ -3,22 +3,35 @@
  * 读取 ~/.kimi-code 下的 session_index.jsonl 和 sessions/{workdir}/{session}/agents/main/wire.jsonl
  */
 
-import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import _ from 'lodash';
 import { z } from 'zod';
-import { readJsonlCachedAsync } from '../lib/jsonl-cache';
+import { readJsonlCachedAsync, splitLines } from '../lib/jsonl-cache';
+import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
 import { classifySoftToolError } from './tool-error-soft';
 
 /**
- * Kimi 数据根：KIMI_DATA_DIR（逗号分隔取首个，对齐 ccusage）→ 否则 ~/.kimi-code
- * （ccusage 还会扫 ~/.kimi；本包 session_index 布局以 .kimi-code 为准）
+ * Kimi 数据根：KIMI_DATA_DIR → 优先存在的 ~/.kimi-code / ~/.kimi（对齐 ccusage）
  */
 export function resolveKimiBase(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.KIMI_DATA_DIR?.split(',')[0]?.trim();
-  if (raw) return path.resolve(raw);
-  return path.join(os.homedir(), '.kimi-code');
+  const home = resolveHomeDir(env);
+  const preferred = path.join(home, '.kimi-code');
+  return resolveDataRoot({
+    envValue: env.KIMI_DATA_DIR,
+    defaults: [preferred, path.join(home, '.kimi')],
+    fallback: preferred,
+    isOk: (p) => {
+      try {
+        return (
+          fs.existsSync(path.join(p, 'session_index.jsonl')) ||
+          fs.existsSync(path.join(p, 'sessions'))
+        );
+      } catch {
+        return false;
+      }
+    },
+  });
 }
 
 const KIMI_BASE = resolveKimiBase();
@@ -164,8 +177,7 @@ export async function listKimiCodeSessions(): Promise<KimiSessionItem[]> {
   }
 
   const indexContent = await fs.promises.readFile(SESSION_INDEX_PATH, 'utf-8');
-  const indexItems = indexContent
-    .split('\n')
+  const indexItems = splitLines(indexContent)
     .filter(line => line.trim() !== '')
     .map(line => {
       try {
@@ -1263,7 +1275,7 @@ async function findSessionDir(sessionId: string): Promise<string | null> {
     return null;
   }
   const content = await fs.promises.readFile(SESSION_INDEX_PATH, 'utf-8');
-  const lines = content.split('\n').filter(line => line.trim() !== '');
+  const lines = splitLines(content).filter(line => line.trim() !== '');
   for (const line of lines) {
     try {
       const item = JSON.parse(line);

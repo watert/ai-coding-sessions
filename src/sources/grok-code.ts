@@ -17,14 +17,36 @@
  * - 估算: params._meta.totalTokens 上下文窗口快照 + GROK_CONTEXT_TOKEN_SPLIT_PCT
  */
 
-import os from 'os';
 import { readJsonlCached, readJsonlCachedAsync } from '../lib/jsonl-cache';
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
 
-const HOMEDIR = os.homedir();
-const GROK_SESSIONS_ROOT = path.join(HOMEDIR, '.grok', 'sessions');
+/** Grok sessions 根：GROK_HOME → ~/.grok/sessions（env 可指 ~/.grok 或 sessions 目录） */
+export function resolveGrokSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const home = resolveHomeDir(env);
+  const normalize = (p: string) => {
+    const abs = path.resolve(p);
+    if (path.basename(abs) === 'sessions') return abs;
+    const nested = path.join(abs, 'sessions');
+    return nested;
+  };
+  return resolveDataRoot({
+    envValue: env.GROK_HOME || env.GROK_SESSIONS_DIR,
+    defaults: [path.join(home, '.grok', 'sessions')],
+    normalize,
+    isOk: (p) => {
+      try {
+        return fs.existsSync(p);
+      } catch {
+        return false;
+      }
+    },
+  });
+}
+
+const GROK_SESSIONS_ROOT = resolveGrokSessionsRoot();
 
 /**
  * 无分项用量时，按上下文总量拆成 cache / input / output 预估（百分比）。

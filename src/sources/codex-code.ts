@@ -4,18 +4,32 @@
  * JSONL:  ~/.codex/sessions/.../rollout-*.jsonl 与 archived_sessions/
  */
 
-import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { initSqliteDb, getSqliteDb, closeSqliteDb } from '../lib/sqlite';
+import { splitLines } from '../lib/jsonl-cache';
+import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
 
-/** Codex 根：CODEX_HOME（逗号分隔取首个，对齐 ccusage）→ ~/.codex */
+/** Codex 根：CODEX_HOME → ~/.codex（存在 sessions/ 优先） */
 export function resolveCodexBase(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.CODEX_HOME?.split(',')[0]?.trim();
-  if (raw) return path.resolve(raw);
-  return path.join(os.homedir(), '.codex');
+  const home = resolveHomeDir(env);
+  return resolveDataRoot({
+    envValue: env.CODEX_HOME,
+    defaults: [path.join(home, '.codex')],
+    isOk: (p) => {
+      try {
+        return (
+          fs.existsSync(path.join(p, 'sessions')) ||
+          fs.existsSync(path.join(p, 'archived_sessions')) ||
+          fs.existsSync(p)
+        );
+      } catch {
+        return false;
+      }
+    },
+  });
 }
 
 const CODEX_BASE = resolveCodexBase();
@@ -227,7 +241,7 @@ function scanRolloutSessions(): CodexSessionItem[] {
 
     for (const rolloutPath of files) {
       try {
-        const firstLine = fs.readFileSync(rolloutPath, 'utf-8').split('\n').find((l) => l.trim());
+        const firstLine = splitLines(fs.readFileSync(rolloutPath, 'utf-8')).find((l) => l.trim());
         if (!firstLine) continue;
         const o = JSON.parse(firstLine);
         if (o.type !== 'session_meta') continue;
@@ -321,8 +335,7 @@ export function readRolloutText(rolloutPath: string): string {
 }
 
 function parseRolloutLines(content: string): RolloutEvent[] {
-  return content
-    .split('\n')
+  return splitLines(content)
     .filter((l) => l.trim())
     .map((l) => {
       try {

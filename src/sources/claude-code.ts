@@ -3,28 +3,48 @@
 * `~/.claude/projects/[project_path]/[sessionId].jsonl` 可以拿到 session detail with messages
 * `~/.claude/projects/[project_path]/[sessionId]/subagents/*.jsonl` 可以拿到 subagent detail with messages
  *
- * 路径：一律 path.join；可选 CLAUDE_CONFIG_DIR（逗号分隔，取首个；对齐 ccusage）。
+ * 路径：一律 path.join；CLAUDE_CONFIG_DIR / XDG+~/.claude 探测（对齐 ccusage）。
  */
-import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import z from 'zod';
 import _ from 'lodash';
+import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
 import {
   parseClaudeJsonl,
   reconstructClaudeMainChain,
   type ClaudeChainMeta,
 } from './claude-main-chain';
 
-/** 解析 Claude 配置根目录（支持 CLAUDE_CONFIG_DIR / …/projects 指到父级） */
-export function resolveClaudeBase(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.CLAUDE_CONFIG_DIR?.split(',')[0]?.trim();
-  if (raw) {
-    const p = path.resolve(raw);
-    if (path.basename(p) === 'projects') return path.dirname(p);
-    return p;
+function normalizeClaudeConfigPath(p: string): string {
+  const abs = path.resolve(p);
+  if (path.basename(abs) === 'projects') return path.dirname(abs);
+  return abs;
+}
+
+function claudeBaseOk(p: string): boolean {
+  try {
+    return fs.existsSync(path.join(p, 'projects')) || fs.existsSync(path.join(p, 'history.jsonl'));
+  } catch {
+    return false;
   }
-  return path.join(os.homedir(), '.claude');
+}
+
+/** 解析 Claude 配置根：env → XDG_CONFIG_HOME/claude → ~/.claude */
+export function resolveClaudeBase(env: NodeJS.ProcessEnv = process.env): string {
+  const home = resolveHomeDir(env);
+  const xdg =
+    env.XDG_CONFIG_HOME?.trim()
+      ? path.resolve(env.XDG_CONFIG_HOME.trim())
+      : path.join(home, '.config');
+  const homeClaude = path.join(home, '.claude');
+  return resolveDataRoot({
+    envValue: env.CLAUDE_CONFIG_DIR,
+    defaults: [path.join(xdg, 'claude'), homeClaude],
+    fallback: homeClaude,
+    normalize: normalizeClaudeConfigPath,
+    isOk: claudeBaseOk,
+  });
 }
 
 const CLAUDE_BASE = resolveClaudeBase();

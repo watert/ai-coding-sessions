@@ -24,6 +24,7 @@ local CLI data (SQLite / JSONL / wire / logs)
 |------|--------|
 | License | MIT |
 | Runtime | **Bun ≥ 1.2** preferred (`bun:sqlite`); Node via optional `better-sqlite3` |
+| Paths / Windows | `path.join` + `pathToFileURL` readonly SQLite; env roots (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …); CRLF-safe jsonl. **Still Bun-first** — not full Win CI ([#6](https://github.com/watert/ai-coding-sessions/issues/6)) |
 | Network | None required for list/detail/sync |
 | Host coupling | **None** — pure package, no private monorepo imports |
 | npm | Source-first; install from git or path (see below) |

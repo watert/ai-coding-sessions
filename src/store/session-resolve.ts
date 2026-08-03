@@ -4,6 +4,7 @@
  */
 
 import path from 'node:path';
+import { resolveHomeDir } from '../lib/home-paths';
 import type { UnifiedSessionInfo } from '../sources/types';
 
 export type ResolveMatchKind = 'id' | 'latest' | 'title' | 'path';
@@ -43,9 +44,8 @@ export function normalizeCwd(input: string, baseCwd: string = process.cwd()): st
   let s = String(input || '').trim();
   if (!s) return '';
   if (s === '.' || s === './') s = baseCwd;
-  if (s.startsWith('~/')) {
-    const home = process.env.HOME || process.env.USERPROFILE || '';
-    s = home ? path.join(home, s.slice(2)) : s;
+  if (s.startsWith('~/') || s.startsWith('~\\')) {
+    s = path.join(resolveHomeDir(), s.slice(2));
   }
   try {
     s = path.resolve(baseCwd, s);

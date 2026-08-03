@@ -4,13 +4,39 @@
  * 可选 jsonl: ~/.zcode/cli/rollout/model-io-sess_*.jsonl
  */
 
-import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import { initSqliteDb, getSqliteDb, closeSqliteDb } from '../lib/sqlite';
+import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
 
-const HOMEDIR = os.homedir();
-export const ZCODE_DB_PATH = path.join(HOMEDIR, '.zcode', 'cli', 'db', 'db.sqlite');
+/** ZCode DB：ZCODE_HOME → ~/.zcode/cli/db/db.sqlite */
+export function resolveZcodeDbPath(env: NodeJS.ProcessEnv = process.env): string {
+  const home = resolveHomeDir(env);
+  const defaultDb = path.join(home, '.zcode', 'cli', 'db', 'db.sqlite');
+  return resolveDataRoot({
+    envValue: env.ZCODE_HOME || env.ZCODE_DB_PATH,
+    defaults: [defaultDb],
+    normalize: (p) => {
+      const abs = path.resolve(p);
+      if (abs.endsWith('.sqlite') || abs.endsWith('.db')) return abs;
+      // 指到 .zcode 或 cli 根时拼默认相对路径
+      if (path.basename(abs) === 'zcode' || abs.endsWith(`${path.sep}.zcode`)) {
+        return path.join(abs, 'cli', 'db', 'db.sqlite');
+      }
+      if (fs.existsSync(path.join(abs, 'db.sqlite'))) return path.join(abs, 'db.sqlite');
+      return path.join(abs, 'cli', 'db', 'db.sqlite');
+    },
+    isOk: (p) => {
+      try {
+        return fs.existsSync(p);
+      } catch {
+        return false;
+      }
+    },
+  });
+}
+
+export const ZCODE_DB_PATH = resolveZcodeDbPath();
 const SQLITE_INSTANCE = 'zcode';
 
 // ==================== 类型 ====================

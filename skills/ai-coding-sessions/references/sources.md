@@ -18,16 +18,22 @@
 
 | 变量 | source | 说明 |
 |------|--------|------|
-| `CLAUDE_CONFIG_DIR` | claude | 逗号分隔取首个；可指向 config 根或 `…/projects`（自动取父级） |
-| `KIMI_DATA_DIR` | kimi | 逗号分隔取首个；默认 `~/.kimi-code` |
-| `CODEX_HOME` | codex | 逗号分隔取首个；默认 `~/.codex` |
+| `CLAUDE_CONFIG_DIR` | claude | 逗号分隔；可指向 config 根或 `…/projects`；否则 `XDG_CONFIG_HOME/claude` → `~/.claude`（优先存在） |
+| `KIMI_DATA_DIR` | kimi | 逗号分隔；否则优先存在的 `~/.kimi-code` / `~/.kimi` |
+| `CODEX_HOME` | codex | 逗号分隔；默认 `~/.codex` |
+| `GROK_HOME` / `GROK_SESSIONS_DIR` | grok | 可指 `~/.grok` 或 `…/sessions` |
+| `ZCODE_HOME` / `ZCODE_DB_PATH` | zcode | 可指 db 文件或 `.zcode` 根 |
+| `WORKBUDDY_HOME` | workbuddy | 默认 `~/.workbuddy` |
+
+实现：`src/lib/home-paths.ts`（`resolveHomeDir` / `resolveDataRoot`）。
 
 ### Windows 路径注意
 
 - SQLite 只读：`toReadonlyUri` 用 `pathToFileURL` → `file:///C:/…?mode=ro`（勿手拼 `file:C:\…`）
 - Claude project 目录名：`/` 与 `\` 均编码为 `-`
-- JSONL 按行切分兼容 CRLF（`jsonl-cache` / Claude parse）
+- JSONL 按行切分兼容 CRLF（`splitLines`：cache / Claude / kimi index / codex rollout / workbuddy）
 - 缓存 meta 原子写：Windows 下 rename 覆盖目标会先 unlink
+- **仍需 Bun 运行时**；本 issue 不解决 Node-only / better-sqlite3 预编译
 
 ## 新 source 步骤
 

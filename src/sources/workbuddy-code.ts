@@ -5,13 +5,33 @@
  * 真·per-call credit/token 在 jsonl providerData.rawUsage
  */
 
-import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import { initSqliteDb, getSqliteDb, closeSqliteDb } from '../lib/sqlite';
+import { splitLines } from '../lib/jsonl-cache';
+import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
 
-const HOMEDIR = os.homedir();
-export const WORKBUDDY_ROOT = path.join(HOMEDIR, '.workbuddy');
+/** WorkBuddy 根：WORKBUDDY_HOME → ~/.workbuddy */
+export function resolveWorkbuddyRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const home = resolveHomeDir(env);
+  return resolveDataRoot({
+    envValue: env.WORKBUDDY_HOME,
+    defaults: [path.join(home, '.workbuddy')],
+    isOk: (p) => {
+      try {
+        return (
+          fs.existsSync(path.join(p, 'workbuddy.db')) ||
+          fs.existsSync(path.join(p, 'projects')) ||
+          fs.existsSync(p)
+        );
+      } catch {
+        return false;
+      }
+    },
+  });
+}
+
+export const WORKBUDDY_ROOT = resolveWorkbuddyRoot();
 export const WORKBUDDY_DB_PATH = path.join(WORKBUDDY_ROOT, 'workbuddy.db');
 export const WORKBUDDY_PROJECTS_DIR = path.join(WORKBUDDY_ROOT, 'projects');
 const SQLITE_INSTANCE = 'workbuddy';
@@ -289,7 +309,7 @@ export function readWorkbuddyJsonl(sessionId: string, jsonlPath?: string): Workb
   if (!p || !fs.existsSync(p)) return [];
   const text = fs.readFileSync(p, 'utf8');
   const events: WorkbuddyJsonlEvent[] = [];
-  for (const line of text.split('\n')) {
+  for (const line of splitLines(text)) {
     const t = line.trim();
     if (!t) continue;
     try {
