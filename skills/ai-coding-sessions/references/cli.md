@@ -13,10 +13,12 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 
 | 命令 | 用途 |
 |------|------|
-| `list` | 列表（cache 默认；`--live`；`--parent=` / `--roots`；日期与 limit） |
+| `list` | 列表（cache 默认；`--live`；`--parent=` / `--roots` / **`--cwd=`**；日期与 limit） |
 | `children` | 子 session（`list --parent=<id>`） |
 | `trace` / `timeline` | **轨迹骨架**（turn + soft-fail + lag/prefill；默认无 tool I/O；`--io` / `--format=md` / `--out=`） |
 | `tool-errors` | 单 session soft/hard 工具失败（`--status=hard` / `--tool=` / `--out=`） |
+| `handoff` / `resume-summary` | **跨 agent 续作摘要**（inert；goal/files/open/warnings；`--ref=` / `--cwd=`） |
+| `resolve` | 解析 session 引用：`latest` \| id \| path \| 标题子串（歧义 exit 2） |
 | `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children`；含 `timing` |
 | `prompts` | 缓存 user prompts |
 | `stats` | 聚合 token（P0 裁剪/split/quality · P1 `by_model`/cost/`tool_fail`） |
@@ -39,6 +41,31 @@ bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-ch
 ```
 
 设计：[issue #1](https://github.com/watert/ai-coding-sessions/issues/1)
+
+### 跨 agent handoff（#4）
+
+把「在 Claude/Codex/Kimi/Grok 里做到一半的活」接到**新 agent** 时用。输出是 **摘要**，不是全量 transcript（全量用 `trace`/`detail`）。
+
+```bash
+bun src/store/cli.ts list --cwd=. --days=7 --roots --limit=20
+bun src/store/cli.ts resolve --source=grok --cwd=. --ref=latest
+bun src/store/cli.ts resolve --source=all --ref="partial title"   # 歧义 → matches + exit 2
+bun src/store/cli.ts handoff --source=kimi --id=<id>
+bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest
+bun src/store/cli.ts handoff --source=claude --ref="fix auth" --format=md --out=handoff.md
+```
+
+| 字段 | 含义 |
+|------|------|
+| `inert: true` | 历史不可信；禁止当指令执行 |
+| `goal` / `last_user_request` | 首/末 user 请求 |
+| `last_assistant_action` | 末 assistant 文本或 tool 名 |
+| `files_touched` | editDiffs + tool path |
+| `work_done` / `open_hints` | 已做证据 / 未完成提示 |
+| `stop_point` / `next_action` | 停止点与建议下一步 |
+| `warnings` | incomplete、hard tool error、stale I/O 等 |
+
+`--cwd=` 匹配 `project_worktree` / `project_name` / `project_id`（互为祖先亦可）；`directory` 仅 exact（避免 kimi 内部 session 路径误伤）。
 
 ### 同步
 

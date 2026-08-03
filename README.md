@@ -149,7 +149,11 @@ Trajectory design notes: [issue #1](https://github.com/watert/ai-coding-sessions
 # from package root (or: bun run cli …)
 bun src/store/cli.ts list --source=kimi --days=3 --limit=20
 bun src/store/cli.ts list --source=kimi --roots --days=7
+bun src/store/cli.ts list --cwd=. --days=7 --roots --limit=20
 bun src/store/cli.ts children --source=kimi --id=<parentSessionId>
+bun src/store/cli.ts resolve --source=grok --cwd=. --ref=latest
+bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest       # cross-agent resume summary
+bun src/store/cli.ts handoff --source=kimi --id=<id> --format=md --out=handoff.md
 bun src/store/cli.ts trace --source=kimi --id=<id>                    # skeleton (~KB)
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
 bun src/store/cli.ts trace --source=kimi --id=<id> --jsonl --max-steps=30
@@ -166,8 +170,10 @@ bun src/store/cli.ts help
 
 | Command | Data | Notes |
 |---------|------|--------|
-| `list` | cache (default) or `--live` | `--parent=` / `--roots`; compact by default |
+| `list` | cache (default) or `--live` | `--parent=` / `--roots` / **`--cwd=`**; compact by default |
 | `children` | cache | `list --parent=<id>` |
+| `resolve` | cache | `latest` \| id \| path \| title; ambiguous → exit 2 ([#4](https://github.com/watert/ai-coding-sessions/issues/4)) |
+| `handoff` | **live** | cross-agent resume summary (inert); alias `resume-summary` (#4) |
 | `trace` | **live** | timeline skeleton (no tool I/O by default); alias `timeline` |
 | `tool-errors` | **live** | soft/hard tool failure rows for one session |
 | `detail` | **live** | full messages; use size flags to fit Agent context |

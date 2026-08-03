@@ -2,7 +2,7 @@
 name: ai-coding-sessions
 description: 分析、查询、导出 AI Coding Sessions（多 source：opencode / claude / kimi / grok / codex / zcode / workbuddy）。用户需要会话列表/详情、轨迹 trace、成本 AUTO、导出 prompts、subagent 聚合、tool 失败、prefill/lag/tps、thinkingEffort、grok 真实 usage，或排查 session 数据时使用。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.5.1
+  version: 1.6.0
 ---
 
 # AI Coding Sessions
@@ -11,11 +11,12 @@ metadata:
 
 - 包 README：`../../README.md`
 - 轨迹设计：[issue #1](https://github.com/watert/ai-coding-sessions/issues/1)
+- 跨 agent handoff：[issue #4](https://github.com/watert/ai-coding-sessions/issues/4)
 - 参考：[Source](./references/sources.md) · [CLI](./references/cli.md) · [排查](./references/troubleshooting.md)
 
 ## 触发场景
 
-- 列表 / 详情 / **轨迹 trace** / prompts / stats
+- 列表 / 详情 / **轨迹 trace** / **handoff 续作摘要** / prompts / stats
 - 成本、token、TPS、latency、cache、subagent
 - 缓存 sync / reconcile / 脏检
 - 新 source 适配或字段不对
@@ -65,10 +66,12 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 
 | 命令 | 用途 |
 |------|------|
-| `list` | 缓存列表（`--live` · `--parent=` · `--roots`） |
+| `list` | 缓存列表（`--live` · `--parent=` · `--roots` · **`--cwd=`**） |
 | `children` | 子 session |
 | `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O；`--format=md --out=`） |
 | `tool-errors` | 单 session soft/hard 工具失败 |
+| `handoff` / `resume-summary` | **跨 agent 续作摘要**（inert；`--ref=` / `--cwd=`） |
+| `resolve` | 解析 `latest` / id / path / 标题（歧义 exit 2） |
 | `detail` | 详情 live + 体量控制 + `timing` |
 | `prompts` | 缓存 user prompts |
 | `stats` | token / bySource 聚合 |
@@ -88,7 +91,16 @@ bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-ch
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 ```
 
-标志速查：`--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
+**跨 agent handoff**（#4）：
+
+```bash
+bun src/store/cli.ts list --cwd=. --days=7 --roots --limit=20
+bun src/store/cli.ts resolve --source=grok --cwd=. --ref=latest
+bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest
+bun src/store/cli.ts handoff --source=kimi --id=<id> --format=md --out=handoff.md
+```
+
+标志速查：`--cwd=` · `--ref=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
 完整说明 → [references/cli.md](./references/cli.md)
 
 ## 库 API 摘要
@@ -99,6 +111,8 @@ import {
   syncSessions, queryCached, getSessionPrompts,
   buildTraceSteps, shapeDetailMessages, collectToolErrors,
   formatTraceMarkdown, configurePricing,
+  buildHandoff, formatHandoffMarkdown,
+  resolveSessionRef, filterSessionsByCwd, matchesCwd,
 } from 'ai-coding-sessions';
 ```
 

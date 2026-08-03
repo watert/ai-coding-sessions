@@ -12,4 +12,6 @@ export * from './list-refs';
 export * from './query';
 export * from './session-trace';
 export * from './session-stats';
+export * from './session-resolve';
+export * from './session-handoff';
 export * from './sync';

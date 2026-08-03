@@ -12,6 +12,7 @@ import {
   getSessionActivityBounds,
   isTimestamp,
 } from '../lib/date-utils';
+import { matchesCwd } from './session-resolve';
 import dayjs from 'dayjs';
 
 export interface QueryCachedOptions {
@@ -27,6 +28,11 @@ export interface QueryCachedOptions {
   parentId?: string;
   /** 仅顶层 session（parent_id 空） */
   rootsOnly?: boolean;
+  /**
+   * 按项目/工作目录过滤（project_worktree / project_name / project_id；
+   * directory 仅 exact）。见 matchesCwd
+   */
+  cwd?: string;
   limit?: number;
   offset?: number;
 }
@@ -55,6 +61,7 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     models,
     parentId,
     rootsOnly = false,
+    cwd,
     limit,
     offset,
   } = options || {};
@@ -136,6 +143,8 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     } else if (rootsOnly) {
       if (pid != null && pid !== '') continue;
     }
+
+    if (cwd && !matchesCwd(s, cwd)) continue;
 
     sessions.push(s);
     const src = s.source as keyof typeof bySource;

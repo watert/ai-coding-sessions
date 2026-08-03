@@ -85,6 +85,15 @@ export {
   clipSessionsToDateRange,
   isRootSession,
   toDayKey,
+  // P0 handoff / resolve
+  buildHandoff,
+  formatHandoffMarkdown,
+  resolveSessionRef,
+  filterSessionsByCwd,
+  matchesCwd,
+  normalizeCwd,
+  sessionIdFromPath,
+  sessionPathCandidates,
 } from './store';
 
 export type {
@@ -118,4 +127,9 @@ export type {
   ToolFailSnapshot,
   ToolFailTopSession,
   ComputeCliStatsOptions,
+  SessionHandoff,
+  HandoffWarning,
+  BuildHandoffOptions,
+  ResolveResult,
+  ResolveMatchKind,
 } from './store';

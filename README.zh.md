@@ -149,7 +149,11 @@ import {
 # 包根（或: bun run cli …）
 bun src/store/cli.ts list --source=kimi --days=3 --limit=20
 bun src/store/cli.ts list --source=kimi --roots --days=7
+bun src/store/cli.ts list --cwd=. --days=7 --roots --limit=20
 bun src/store/cli.ts children --source=kimi --id=<parentSessionId>
+bun src/store/cli.ts resolve --source=grok --cwd=. --ref=latest
+bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest       # 跨 agent 续作摘要
+bun src/store/cli.ts handoff --source=kimi --id=<id> --format=md --out=handoff.md
 bun src/store/cli.ts trace --source=kimi --id=<id>                    # 骨架（~KB）
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
 bun src/store/cli.ts trace --source=kimi --id=<id> --jsonl --max-steps=30
@@ -166,8 +170,10 @@ bun src/store/cli.ts help
 
 | 命令 | 数据 | 说明 |
 |---------|------|--------|
-| `list` | 默认缓存，或 `--live` | `--parent=` / `--roots`；默认紧凑字段 |
+| `list` | 默认缓存，或 `--live` | `--parent=` / `--roots` / **`--cwd=`**；默认紧凑字段 |
 | `children` | 缓存 | 等价 `list --parent=<id>` |
+| `resolve` | 缓存 | `latest` \| id \| path \| 标题；歧义 exit 2（[#4](https://github.com/watert/ai-coding-sessions/issues/4)） |
+| `handoff` | **live** | 跨 agent 续作摘要（inert）；别名 `resume-summary`（#4） |
 | `trace` | **live** | 时间线骨架（默认无 tool I/O）；别名 `timeline` |
 | `tool-errors` | **live** | 单 session soft/hard 工具失败行 |
 | `detail` | **live** | 完整 messages；用体量 flag 适配 Agent 上下文 |

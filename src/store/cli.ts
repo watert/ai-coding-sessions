@@ -11,6 +11,10 @@
  *   bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
  *   bun src/store/cli.ts trace --source=kimi --id=<id> --format=md --out=trace.md
  *   bun src/store/cli.ts tool-errors --source=kimi --id=<id> --status=hard
+ *   bun src/store/cli.ts handoff --source=kimi --id=<id>
+ *   bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest
+ *   bun src/store/cli.ts resolve --source=all --cwd=. --ref="partial title"
+ *   bun src/store/cli.ts list --cwd=. --days=7 --limit=20
  *   bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
  *   bun src/store/cli.ts stats --source=all --days=7
  *   bun src/store/cli.ts sync --days=7 --source=all --reconcile
@@ -20,6 +24,7 @@
  * env: AI_CODING_SESSIONS_DB / AI_CODING_SESSIONS_META
  *
  * Trajectory / Agent trace: https://github.com/watert/ai-coding-sessions/issues/1
+ * Handoff / cwd / resolve: https://github.com/watert/ai-coding-sessions/issues/4
  */
 
 import { writeFileSync } from 'node:fs';
@@ -50,6 +55,12 @@ import {
   summarizeSessionTimingFromMessages,
   type TraceExportFormat,
 } from './session-trace';
+import { buildHandoff, formatHandoffMarkdown } from './session-handoff';
+import {
+  filterSessionsByCwd,
+  resolveSessionRef,
+  type ResolveResult,
+} from './session-resolve';
 import { computeCliStats } from './session-stats';
 import { countStats } from './upsert';
 import { loadMeta } from './meta';
@@ -62,6 +73,9 @@ const COMMANDS = [
   'trace',
   'timeline', // alias → trace
   'tool-errors',
+  'handoff',
+  'resume-summary', // alias → handoff
+  'resolve',
   'children',
   'prompts',
   'stats',
@@ -116,6 +130,13 @@ interface CliArgs {
   /** export path (trace/tool-errors); format inferred from ext or --format */
   out?: string;
   format?: TraceExportFormat;
+  /** list/handoff/resolve: project cwd filter */
+  cwd?: string;
+  /**
+   * handoff/resolve: latest | id | path | title substring
+   * (--id= still wins when set)
+   */
+  ref?: string;
 }
 
 function parseSource(s: string): SourceId | 'all' {
@@ -146,7 +167,9 @@ function parseArgs(argv: string[]): CliArgs {
 
   let i = 0;
   if (argv[0] && !argv[0].startsWith('-') && isCommand(argv[0])) {
-    out.cmd = argv[0] === 'timeline' ? 'trace' : argv[0];
+    if (argv[0] === 'timeline') out.cmd = 'trace';
+    else if (argv[0] === 'resume-summary') out.cmd = 'handoff';
+    else out.cmd = argv[0];
     i = 1;
   }
 
@@ -185,7 +208,9 @@ function parseArgs(argv: string[]): CliArgs {
       out.id = a.includes('session_id=')
         ? a.slice('--session_id='.length)
         : a.slice('--session='.length);
-    } else if (a.startsWith('--parent=')) out.parentId = a.slice('--parent='.length);
+    } else if (a.startsWith('--ref=')) out.ref = a.slice('--ref='.length);
+    else if (a.startsWith('--cwd=')) out.cwd = a.slice('--cwd='.length);
+    else if (a.startsWith('--parent=')) out.parentId = a.slice('--parent='.length);
     else if (a.startsWith('--limit=')) out.limit = Number(a.slice('--limit='.length));
     else if (a.startsWith('--offset=')) out.offset = Number(a.slice('--offset='.length));
     else if (a.startsWith('--max-output-chars=')) {
@@ -230,11 +255,13 @@ Usage:
   bun src/store/cli.ts [sync options]     # bare flags = sync (legacy)
 
 Commands:
-  list         List sessions (cache default; --live; --parent=; --roots)
+  list         List sessions (cache default; --live; --parent=; --roots; --cwd=)
   children     List child sessions of --id (cache; alias of list --parent=)
   detail       Session detail live (size flags for Agent context)
   trace        Trajectory skeleton (default no tool I/O)  [alias: timeline]
   tool-errors  Tool error/soft rows for one session
+  handoff      Cross-agent resume summary (inert)  [alias: resume-summary]
+  resolve      Resolve --ref= / --id= under filters (cwd/source/window)
   prompts      Cached user prompts
   stats        Aggregate counts / tokens (cache; P0 window clip + quality)
   sync         Incremental sync → SQLite
@@ -252,17 +279,27 @@ Agent trajectory (issue #1):
   detail --source=kimi --id=<id> --from=0 --to=5 --no-reasoning
   stats --source=all --days=7                   # clipped totals + quality
 
+Cross-agent handoff (issue #4):
+  list --cwd=. --days=7 --roots --limit=20
+  resolve --source=grok --cwd=. --ref=latest
+  resolve --source=all --ref="partial title"
+  handoff --source=kimi --id=<id>
+  handoff --source=grok --cwd=. --ref=latest
+  handoff --source=claude --ref="fix auth" --format=md --out=handoff.md
+
 Options:
   --source=NAME       all|${ALL_SOURCES.join('|')}
   --days=N --start= --end=
-  --id=SESSION        detail/trace/tool-errors/prompts/children
+  --id=SESSION        detail/trace/tool-errors/prompts/children/handoff
+  --ref=REF           handoff/resolve: latest|id|path|title substring
+  --cwd=PATH          list/handoff/resolve: filter by project path
   --parent=SESSION    list children of parent
   --roots             list top-level only (no parent_id)
   --limit=N --offset=N
   --live              list: live convert
   --full-fields       list/detail info: full objects
   --no-messages       detail: skip messages
-  --with-children     detail/trace: attach children from cache
+  --with-children     detail/trace/handoff: attach children from cache
   --tools-only        detail: tool(+step) parts only
   --no-reasoning      detail: drop reasoning/thinking parts
   --max-output-chars=N  truncate tool I/O & long text
@@ -272,7 +309,7 @@ Options:
   --tool=NAME --status=STATUS  filter tools (error|soft|hard|completed)
   --text-preview=N --max-steps=N
   --jsonl             trace: one JSON object per line
-  --format=json|jsonl|md   export format (trace; default json)
+  --format=json|jsonl|md   export format (trace/handoff; default json)
   --out=PATH          write export to file (format from ext if unset)
   --full --reconcile  sync
   --db=PATH --meta=PATH
@@ -398,6 +435,7 @@ async function cmdList(args: CliArgs) {
   const limit = args.limit;
   const offset = args.offset;
   const parentId = args.parentId;
+  const cwd = args.cwd;
 
   if (args.live) {
     await initAiCodingStats();
@@ -413,6 +451,7 @@ async function cmdList(args: CliArgs) {
       } else if (args.rootsOnly) {
         sessions = sessions.filter((s) => s.parent_id == null || s.parent_id === '');
       }
+      if (cwd) sessions = filterSessionsByCwd(sessions, cwd);
       const total = sessions.length;
       if (offset) sessions = sessions.slice(offset);
       if (limit != null) sessions = sessions.slice(0, limit);
@@ -423,6 +462,7 @@ async function cmdList(args: CliArgs) {
           returned: sessions.length,
           parent_id: parentId ?? null,
           roots_only: args.rootsOnly || null,
+          cwd: cwd ?? null,
           bySource: result.bySource,
           startDate: startDate ?? null,
           endDate: endDate ?? null,
@@ -444,6 +484,7 @@ async function cmdList(args: CliArgs) {
       endDate,
       parentId,
       rootsOnly: args.rootsOnly,
+      cwd,
       limit,
       offset,
     });
@@ -454,6 +495,7 @@ async function cmdList(args: CliArgs) {
         returned: result.sessions.length,
         parent_id: parentId ?? null,
         roots_only: args.rootsOnly || null,
+        cwd: cwd ?? null,
         bySource: result.bySource,
         lastUpdatedAt: result.lastUpdatedAt ?? null,
         startDate: startDate ?? null,
@@ -466,6 +508,159 @@ async function cmdList(args: CliArgs) {
     );
   } finally {
     closeStoreDb();
+  }
+}
+
+/** 加载候选 sessions（cache；供 resolve/handoff） */
+async function loadCandidateSessions(args: CliArgs): Promise<{
+  sessions: UnifiedSessionInfo[];
+  startDate?: string;
+  endDate?: string;
+  mode: 'cache';
+}> {
+  const { startDate, endDate } = resolveWindow(args);
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  try {
+    const result = queryCached({
+      source: args.source,
+      startDate,
+      endDate,
+      parentId: args.parentId,
+      rootsOnly: args.rootsOnly,
+      cwd: args.cwd,
+      // resolve 需要全量候选后再 limit；handoff 同理
+    });
+    return { sessions: result.sessions, startDate, endDate, mode: 'cache' };
+  } finally {
+    closeStoreDb();
+  }
+}
+
+function printResolveFailure(result: Extract<ResolveResult, { ok: false }>, pretty: boolean) {
+  printJson(
+    {
+      ok: false,
+      error: result.error,
+      reference: result.reference,
+      message: result.message,
+      matches: result.error === 'ambiguous' ? result.matches : undefined,
+    },
+    pretty,
+  );
+  process.exitCode = result.error === 'ambiguous' ? 2 : 1;
+}
+
+async function cmdResolve(args: CliArgs) {
+  const { sessions, startDate, endDate } = await loadCandidateSessions(args);
+  const ref = args.id || args.ref || 'latest';
+  const result = resolveSessionRef(sessions, ref, { preferRoots: !args.id && !args.parentId });
+
+  if (!result.ok) {
+    printResolveFailure(result, args.pretty);
+    return;
+  }
+
+  printJson(
+    {
+      ok: true,
+      match: result.match,
+      reference: ref,
+      cwd: args.cwd ?? null,
+      source_filter: args.source,
+      startDate: startDate ?? null,
+      endDate: endDate ?? null,
+      candidates: sessions.length,
+      session: args.compact ? compactSession(result.session) : result.session,
+    },
+    args.pretty,
+  );
+}
+
+async function cmdHandoff(args: CliArgs) {
+  // 1) resolve id+source
+  let source: SourceId;
+  let id: string;
+  let matchKind: string | null = null;
+
+  if (args.id && args.source !== 'all') {
+    source = args.source;
+    id = args.id;
+    matchKind = 'id';
+  } else {
+    const { sessions } = await loadCandidateSessions(args);
+    const ref = args.id || args.ref || 'latest';
+    const resolved = resolveSessionRef(sessions, ref, {
+      preferRoots: !args.id && !args.parentId,
+    });
+    if (!resolved.ok) {
+      printResolveFailure(resolved, args.pretty);
+      return;
+    }
+    if (!isSourceId(String(resolved.session.source))) {
+      printJson(
+        {
+          ok: false,
+          error: 'invalid_source',
+          message: `resolved session has invalid source: ${resolved.session.source}`,
+        },
+        args.pretty,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    source = resolved.session.source as SourceId;
+    id = resolved.session.id;
+    matchKind = resolved.match;
+  }
+
+  await initAiCodingStats();
+  try {
+    const detail = await getSessionDetail({ sessionId: id, source });
+    if (!detail) {
+      printJson({ ok: false, error: 'not_found', source, id }, args.pretty);
+      process.exitCode = 1;
+      return;
+    }
+
+    const handoff = buildHandoff(detail, {
+      textPreview: args.textPreview ?? 200,
+    });
+    if (!handoff) {
+      printJson({ ok: false, error: 'handoff_failed', source, id }, args.pretty);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (args.withChildren) {
+      await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+      try {
+        (handoff as any).children = loadChildrenFromCache(source, id, true);
+      } finally {
+        closeStoreDb();
+      }
+    }
+
+    const format = resolveExportFormat(args, 'json');
+    const payload = {
+      ok: true,
+      match: matchKind,
+      ...handoff,
+    };
+
+    if (format === 'md') {
+      const md = formatHandoffMarkdown(handoff);
+      emitExport(md, args, 'md', { source, id });
+      return;
+    }
+
+    if (args.out) {
+      const body = args.pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload);
+      emitExport(body.endsWith('\n') ? body : `${body}\n`, args, 'json', { source, id });
+      return;
+    }
+    printJson(payload, args.pretty);
+  } finally {
+    closeAiCodingStats();
   }
 }
 
@@ -945,6 +1140,13 @@ async function main() {
       break;
     case 'tool-errors':
       await cmdToolErrors(args);
+      break;
+    case 'handoff':
+    case 'resume-summary':
+      await cmdHandoff(args);
+      break;
+    case 'resolve':
+      await cmdResolve(args);
       break;
     case 'prompts':
       await cmdPrompts(args);
