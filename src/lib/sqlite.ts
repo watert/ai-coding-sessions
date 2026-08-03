@@ -3,6 +3,8 @@
  * 支持 Bun:sqlite 和 better-sqlite3 双驱动自动适配
  */
 
+import pathMod from 'node:path';
+
 type SqliteDatabase = any;
 
 interface SqliteInstance {
@@ -11,6 +13,15 @@ interface SqliteInstance {
 }
 
 const instances = new Map<string, SqliteInstance>();
+
+/**
+ * WAL 库在 bun:sqlite 下 `new Database(path, { readonly: true })` 会 SQLITE_CANTOPEN
+ * （prepare 阶段）；URI `file:…?mode=ro` 可正常只读打开。
+ */
+function toReadonlyUri(dbPath: string): string {
+  const abs = pathMod.isAbsolute(dbPath) ? dbPath : pathMod.resolve(dbPath);
+  return `file:${abs}?mode=ro`;
+}
 
 /**
  * 初始化 SQLite 数据库连接
@@ -26,24 +37,35 @@ export async function initSqliteDb(
   const instance = instances.get(instanceId) || { db: null, dbPath: null };
   if (instance.db) return;
 
-  const path = getDbPath();
-  instance.dbPath = path;
+  const dbPath = getDbPath();
+  instance.dbPath = dbPath;
 
   // 优先使用 bun:sqlite
   if (globalThis.Bun) {
-    const { Database } = await import("bun:sqlite");
-    // Bun sqlite 参数兼容：明确指定读写模式
-    instance.db = readonly
-      ? new Database(path, { readonly: true })
-      : new Database(path, { readwrite: true, create: true });
-    console.error(`[sqlite:${instanceId}] 运行时: Bun | 驱动: bun:sqlite | 路径: ${path}`);
+    const { Database } = await import('bun:sqlite');
+    if (!readonly) {
+      instance.db = new Database(dbPath, { readwrite: true, create: true });
+    } else {
+      try {
+        const db = new Database(toReadonlyUri(dbPath), { readonly: true });
+        // 探测：旧 { readonly:true } 路径 ctor 成功但 prepare 会 CANTOPEN
+        db.prepare('SELECT 1').get();
+        instance.db = db;
+      } catch {
+        console.warn(
+          `[sqlite:${instanceId}] readonly 打开失败，回退 readwrite(create:false): ${dbPath}`,
+        );
+        instance.db = new Database(dbPath, { readwrite: true, create: false });
+      }
+    }
+    console.error(`[sqlite:${instanceId}] 运行时: Bun | 驱动: bun:sqlite | 路径: ${dbPath}`);
   } else {
     try {
-      const Database = (await import("better-sqlite3")).default;
-      instance.db = new Database(path, { readonly });
-      console.error(`[sqlite:${instanceId}] 运行时: Node | 驱动: better-sqlite3 | 路径: ${path}`);
+      const Database = (await import('better-sqlite3')).default;
+      instance.db = new Database(dbPath, { readonly });
+      console.error(`[sqlite:${instanceId}] 运行时: Node | 驱动: better-sqlite3 | 路径: ${dbPath}`);
     } catch (e) {
-      throw new Error("Node 环境下请安装 better-sqlite3: npm install better-sqlite3");
+      throw new Error('Node 环境下请安装 better-sqlite3: npm install better-sqlite3');
     }
   }
 
