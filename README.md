@@ -8,7 +8,7 @@
 |------|------|
 | `ai-coding-sessions/core` | 同构层：消息协议、getOverallStats、静态单价表、列表预览格式化 |
 | `ai-coding-sessions` | Node：7 source list/detail、store、lib、pricing hooks |
-| `configurePricing()` | 注入 models.dev / 汇率实现（server-hono bridge） |
+| `configurePricing()` | 宿主注入 models.dev / 汇率实现 |
 
 ## Store（M3）
 
@@ -44,7 +44,7 @@ API：`syncSessions` / `queryCached` / `getSessionPrompts` / `listRefs` / `ensur
 ## 进度
 
 - **M1** core 自 monorepo common 迁入
-- **M2** lib + 7 sources + listSessions；server-hono 以 shim 接入；**无缓存**
+- **M2** lib + 7 sources + listSessions；宿主 shim 接入；**无缓存**
 - **M3** store schema + sync + meta JSON + CLI
-- **M4** server-hono `listSessionsCached` + `fillSessionPricing` + `?fresh=1`/`?live=1`
-- M5 token-stats 切缓存；文档/公开仓
+- **M4** 宿主 `listSessionsCached` + `fillSessionPricing` + `?fresh=1`/`?live=1`
+- **M5** token-stats 切缓存 + usage_by_day 按日裁剪；文档；公开仓 `watert/ai-coding-sessions`

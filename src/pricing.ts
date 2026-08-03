@@ -1,7 +1,7 @@
 /**
  * Session 计价钩子（M2）
- * 包内 convert 调用这些 API；真正 models.dev / 汇率实现由 server-hono configurePricing 注入。
- * M3 后 convert 将改为只产 usage_by_model，本钩子可收缩。
+ * 包内 convert 调用这些 API；真正 models.dev / 汇率实现由宿主 `configurePricing` 注入。
+ * 缓存链路不固化 session.pricing；API 层可基于 usage_by_model 现算。
  */
 
 export interface SessionPricing {
@@ -63,7 +63,7 @@ export interface PricingHooks {
 
 const hooks: PricingHooks = {};
 
-/** server-hono 启动时注入真实计价实现 */
+/** 宿主启动时注入真实计价实现（models.dev / 汇率等） */
 export function configurePricing(partial: PricingHooks): void {
   Object.assign(hooks, partial);
 }
@@ -90,7 +90,7 @@ export function calculateMessageCost(input: MessagePricingInput): MessageCostRes
   return { totalCost: 0, cny: 0 };
 }
 
-/** 默认：只抽 token 结构（不依赖 server-hono）；有 hook 时优先 hook */
+/** 默认：只抽 token 结构（不依赖宿主 hook）；有 hook 时优先 hook */
 export function extractMessagePricingInput(msg: any): MessagePricingInput | null {
   if (hooks.extractMessagePricingInput) return hooks.extractMessagePricingInput(msg);
   const info = msg?.info || msg || {};

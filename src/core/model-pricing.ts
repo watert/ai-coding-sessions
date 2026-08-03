@@ -1,6 +1,6 @@
 /** AI 模型单价表与 token 成本换算(USD 基准) */
 
-/** 兜底汇率（服务端优先使用 currency-api 动态汇率，见 server-hono/src/services/exchange-rate.ts） */
+/** 兜底汇率（宿主可注入动态汇率；静态展示估算用） */
 export const USD_TO_CNY_RATE = 7.2;
 
 export interface ModelPriceTier {
