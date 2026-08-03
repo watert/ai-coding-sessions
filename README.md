@@ -139,37 +139,55 @@ import {
 
 ## CLI (Agent-friendly)
 
-Default: **JSON on stdout** (logs on stderr). Subcommands for list / detail / prompts / stats / sync.
+Default: **JSON on stdout** (logs on stderr). Designed for AI Agents to **list → trace skeleton → dig detail**.
+
+Trajectory design notes: [issue #1](https://github.com/watert/ai-coding-sessions/issues/1).
 
 ```bash
 # from package root (or: bun run cli …)
 bun src/store/cli.ts list --source=kimi --days=3 --limit=20
+bun src/store/cli.ts list --source=kimi --roots --days=7
+bun src/store/cli.ts children --source=kimi --id=<parentSessionId>
+bun src/store/cli.ts trace --source=kimi --id=<id>                    # skeleton (~KB)
+bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
+bun src/store/cli.ts trace --source=kimi --id=<id> --jsonl --max-steps=30
 bun src/store/cli.ts detail --source=opencode --id=ses_xxx
-bun src/store/cli.ts detail --source=grok --id=<uuid> --no-messages   # info only
+bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
+bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
 bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
 bun src/store/cli.ts stats --source=all --days=7
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
-bun src/store/cli.ts refs --source=claude --days=7
 bun src/store/cli.ts help
-
-# monorepo
-bun packages/ai-coding-sessions/src/store/cli.ts list --source=all --days=3 --limit=10
 ```
 
 | Command | Data | Notes |
 |---------|------|--------|
-| `list` | cache (default) or `--live` | compact fields by default; `--full-fields` for raw |
-| `detail` | **live** | requires `--source` + `--id`; omit messages with `--no-messages` |
-| `prompts` | cache | requires `--source` + `--id` |
+| `list` | cache (default) or `--live` | `--parent=` / `--roots`; compact by default |
+| `children` | cache | `list --parent=<id>` |
+| `trace` | **live** | timeline skeleton (no tool I/O by default); alias `timeline` |
+| `detail` | **live** | full messages; use size flags to fit Agent context |
+| `prompts` | cache | user prompts only |
 | `stats` | cache | bySource + token totals + tokensByDay |
-| `sync` | write cache | `--full` / `--reconcile` / date window |
+| `sync` | write cache | `--full` / `--reconcile` |
 | `refs` | live refs | no convert/write |
 
-Common flags: `--source=` · `--days=` · `--start=` · `--end=` · `--limit=` · `--offset=` · `--db=` · `--meta=` · `--raw` (single-line JSON).
+**Trace / detail flags:** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--with-children` · `--max-steps=`
 
-**Legacy** (still work): bare flags = `sync`; `--prompts=src:id`; `--refs-only`.
+**Recommended Agent workflow**
 
-Heavier analysis (`export-weekly-prompts`, `analyze-tool-errors`, full token-stats) stays in host projects for now.
+```text
+list --roots → pick id
+children --id=…          # subagents if any
+trace --id=…             # cheap full path
+trace --id=… --io --from=N --to=M   # dig a slice
+detail --tools-only --max-output-chars=500 --from=N --to=M
+```
+
+Common flags: `--source=` · `--days=` · `--start=` · `--end=` · `--limit=` · `--offset=` · `--db=` · `--meta=` · `--raw`.
+
+**Legacy:** bare flags = `sync`; `--prompts=src:id`; `--refs-only`.
+
+Heavier host analysis (`export-weekly-prompts`, `analyze-tool-errors`, full token-stats) stays out of this package for now.
 
 npm scripts: `bun run cli` · `bun run sync` · `bun run sync:reconcile`.
 

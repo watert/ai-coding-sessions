@@ -70,6 +70,9 @@ export {
   extractUsageByModel,
   extractPrompts,
   stripPricingForPayload,
+  buildTraceSteps,
+  shapeDetailMessages,
+  summarizeTraceTools,
 } from './store';
 
 export type {
@@ -86,4 +89,8 @@ export type {
   SyncResult,
   SyncSourceResult,
   QueryCachedOptions,
+  TraceBuildOptions,
+  TraceStep,
+  TraceToolRow,
+  DetailShapeOptions,
 } from './store';

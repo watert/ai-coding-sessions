@@ -23,6 +23,10 @@ export interface QueryCachedOptions {
   includeOrphan?: boolean;
   projectId?: string;
   models?: string[];
+  /** 仅子 session：payload.parent_id 匹配（无 SQL 列，JS 过滤） */
+  parentId?: string;
+  /** 仅顶层 session（parent_id 空） */
+  rootsOnly?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -49,6 +53,8 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     includeOrphan = false,
     projectId,
     models,
+    parentId,
+    rootsOnly = false,
     limit,
     offset,
   } = options || {};
@@ -122,6 +128,13 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     if (startDate || endDate) {
       const { firstMs, lastMs } = getSessionActivityBounds(s);
       if (!filterActivityOverlap(firstMs, lastMs, dateRange)) continue;
+    }
+
+    const pid = s.parent_id ?? null;
+    if (parentId != null && parentId !== '') {
+      if (pid !== parentId) continue;
+    } else if (rootsOnly) {
+      if (pid != null && pid !== '') continue;
     }
 
     sessions.push(s);

@@ -10,4 +10,5 @@ export * from './fingerprint';
 export * from './upsert';
 export * from './list-refs';
 export * from './query';
+export * from './session-trace';
 export * from './sync';
