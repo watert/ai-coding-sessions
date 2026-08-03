@@ -70,5 +70,15 @@ export function saveMeta(meta: StoreMeta, metaPath?: string): void {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = `${p}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(meta, null, 2) + '\n', 'utf-8');
-  fs.renameSync(tmp, p);
+  // Windows: rename 到已存在文件可能失败；先 unlink 再 rename
+  try {
+    fs.renameSync(tmp, p);
+  } catch {
+    try {
+      fs.unlinkSync(p);
+    } catch {
+      /* ignore */
+    }
+    fs.renameSync(tmp, p);
+  }
 }

@@ -11,9 +11,18 @@ import { z } from 'zod';
 import { readJsonlCachedAsync } from '../lib/jsonl-cache';
 import { classifySoftToolError } from './tool-error-soft';
 
-const HOMEDIR = os.homedir();
-const KIMI_BASE = `${HOMEDIR}/.kimi-code`;
-const SESSION_INDEX_PATH = `${KIMI_BASE}/session_index.jsonl`;
+/**
+ * Kimi 数据根：KIMI_DATA_DIR（逗号分隔取首个，对齐 ccusage）→ 否则 ~/.kimi-code
+ * （ccusage 还会扫 ~/.kimi；本包 session_index 布局以 .kimi-code 为准）
+ */
+export function resolveKimiBase(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.KIMI_DATA_DIR?.split(',')[0]?.trim();
+  if (raw) return path.resolve(raw);
+  return path.join(os.homedir(), '.kimi-code');
+}
+
+const KIMI_BASE = resolveKimiBase();
+const SESSION_INDEX_PATH = path.join(KIMI_BASE, 'session_index.jsonl');
 
 // ==================== Zod Schema ====================
 

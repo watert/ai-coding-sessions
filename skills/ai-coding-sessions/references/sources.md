@@ -12,7 +12,22 @@
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts` |
 
-路径均基于 `os.homedir()`；缺目录时跳过并 warn，其它 source 仍可用。
+路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
+
+### 环境变量覆盖（对齐 [ccusage](https://github.com/ccusage/ccusage) 习惯）
+
+| 变量 | source | 说明 |
+|------|--------|------|
+| `CLAUDE_CONFIG_DIR` | claude | 逗号分隔取首个；可指向 config 根或 `…/projects`（自动取父级） |
+| `KIMI_DATA_DIR` | kimi | 逗号分隔取首个；默认 `~/.kimi-code` |
+| `CODEX_HOME` | codex | 逗号分隔取首个；默认 `~/.codex` |
+
+### Windows 路径注意
+
+- SQLite 只读：`toReadonlyUri` 用 `pathToFileURL` → `file:///C:/…?mode=ro`（勿手拼 `file:C:\…`）
+- Claude project 目录名：`/` 与 `\` 均编码为 `-`
+- JSONL 按行切分兼容 CRLF（`jsonl-cache` / Claude parse）
+- 缓存 meta 原子写：Windows 下 rename 覆盖目标会先 unlink
 
 ## 新 source 步骤
 

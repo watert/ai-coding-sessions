@@ -4,6 +4,7 @@
  */
 
 import pathMod from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 type SqliteDatabase = any;
 
@@ -17,10 +18,15 @@ const instances = new Map<string, SqliteInstance>();
 /**
  * WAL 库在 bun:sqlite 下 `new Database(path, { readonly: true })` 会 SQLITE_CANTOPEN
  * （prepare 阶段）；URI `file:…?mode=ro` 可正常只读打开。
+ *
+ * Windows 必须用标准 file URL（`file:///C:/...`），不能直接拼 `file:C:\...`。
+ * 用 pathToFileURL 统一 POSIX/Win 路径。
  */
-function toReadonlyUri(dbPath: string): string {
+export function toReadonlyUri(dbPath: string): string {
   const abs = pathMod.isAbsolute(dbPath) ? dbPath : pathMod.resolve(dbPath);
-  return `file:${abs}?mode=ro`;
+  const url = pathToFileURL(abs);
+  url.searchParams.set('mode', 'ro');
+  return url.href;
 }
 
 /**

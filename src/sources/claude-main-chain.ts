@@ -448,10 +448,10 @@ export function reconstructClaudeMainChain(records: any[]): ClaudeChainResult {
   };
 }
 
-/** 解析 jsonl 文本 → records */
+/** 解析 jsonl 文本 → records（兼容 CRLF） */
 export function parseClaudeJsonl(content: string): any[] {
   const records: any[] = [];
-  for (const line of content.split('\n')) {
+  for (const line of content.split(/\r\n|\n|\r/)) {
     if (!line.trim()) continue;
     try {
       const v = JSON.parse(line);

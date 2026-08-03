@@ -2,9 +2,12 @@
 * `~/.claude/history.jsonl` 可以拿到 session list with project & sessionId & timestamp, 作为基础数据
 * `~/.claude/projects/[project_path]/[sessionId].jsonl` 可以拿到 session detail with messages
 * `~/.claude/projects/[project_path]/[sessionId]/subagents/*.jsonl` 可以拿到 subagent detail with messages
+ *
+ * 路径：一律 path.join；可选 CLAUDE_CONFIG_DIR（逗号分隔，取首个；对齐 ccusage）。
  */
 import os from 'os';
 import fs from 'fs';
+import path from 'path';
 import z from 'zod';
 import _ from 'lodash';
 import {
@@ -13,9 +16,19 @@ import {
   type ClaudeChainMeta,
 } from './claude-main-chain';
 
-const HOMEDIR = os.homedir();
-const CLAUDE_BASE = `${HOMEDIR}/.claude`;
-const HISTORY_PATH = `${CLAUDE_BASE}/history.jsonl`;
+/** 解析 Claude 配置根目录（支持 CLAUDE_CONFIG_DIR / …/projects 指到父级） */
+export function resolveClaudeBase(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.CLAUDE_CONFIG_DIR?.split(',')[0]?.trim();
+  if (raw) {
+    const p = path.resolve(raw);
+    if (path.basename(p) === 'projects') return path.dirname(p);
+    return p;
+  }
+  return path.join(os.homedir(), '.claude');
+}
+
+const CLAUDE_BASE = resolveClaudeBase();
+const HISTORY_PATH = path.join(CLAUDE_BASE, 'history.jsonl');
 
 export type ClaudeSessionItem = {
   display: string;
@@ -28,7 +41,7 @@ export type ClaudeSessionItem = {
 }
 export async function listClaudeCodeSessions() {
   const history = await fs.promises.readFile(HISTORY_PATH, 'utf-8');
-  const sessions = history.split('\n').filter(line => line.trim() !== '').map(line => {
+  const sessions = history.split(/\r\n|\n|\r/).filter(line => line.trim() !== '').map(line => {
     const item: ClaudeSessionItem = JSON.parse(line);
     item.date = new Date(item.timestamp);
     item.projectPath = getProjectPath(item.project);
@@ -37,14 +50,18 @@ export async function listClaudeCodeSessions() {
   return sessions;
 }
 
-function getProjectPath(project: string) {
-  const dir = project.replace(/\//g, '-');
-  return `${CLAUDE_BASE}/projects/${dir}`;
+/** project cwd → Claude projects 下目录名（/ 与 \\ 均换成 -） */
+export function encodeClaudeProjectDir(project: string): string {
+  return project.replace(/[/\\]/g, '-');
+}
+
+export function getProjectPath(project: string, base: string = CLAUDE_BASE) {
+  return path.join(base, 'projects', encodeClaudeProjectDir(project));
 }
 
 export async function listClaudeCodeSubagents(project: string, sessionId: string) {
   const projectPath = getProjectPath(project);
-  const subagents = await fs.promises.readdir(`${projectPath}/${sessionId}/subagents`);
+  const subagents = await fs.promises.readdir(path.join(projectPath, sessionId, 'subagents'));
   return subagents;
 }
 
@@ -143,8 +160,8 @@ export async function listClaudeCodeMessagesWithMeta(params: {
 }): Promise<{ messages: any[]; meta: ClaudeChainMeta }> {
   const { project, sessionId } = params;
   const projectPath = getProjectPath(project);
-  const subagentPath = `${projectPath}/${sessionId}`;
-  const content = await fs.promises.readFile(`${subagentPath}.jsonl`, 'utf-8');
+  const sessFilePath = path.join(projectPath, `${sessionId}.jsonl`);
+  const content = await fs.promises.readFile(sessFilePath, 'utf-8');
   const records = parseClaudeJsonl(content);
   return reconstructClaudeMainChain(records);
 }
@@ -164,7 +181,7 @@ if (require.main === module) { // call from cli script
     }
     const {project, sessionId} = sess;
     const projectPath = getProjectPath(project);
-    const sessFilePath = `${projectPath}/${sessionId}.jsonl`;
+    const sessFilePath = path.join(projectPath, `${sessionId}.jsonl`);
 
     console.log({HISTORY_PATH, sess, sessFilePath});
     const msgs = await listClaudeCodeMessages({project, sessionId});

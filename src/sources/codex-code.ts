@@ -11,8 +11,14 @@ import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { initSqliteDb, getSqliteDb, closeSqliteDb } from '../lib/sqlite';
 
-const HOMEDIR = os.homedir();
-const CODEX_BASE = path.join(HOMEDIR, '.codex');
+/** Codex 根：CODEX_HOME（逗号分隔取首个，对齐 ccusage）→ ~/.codex */
+export function resolveCodexBase(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.CODEX_HOME?.split(',')[0]?.trim();
+  if (raw) return path.resolve(raw);
+  return path.join(os.homedir(), '.codex');
+}
+
+const CODEX_BASE = resolveCodexBase();
 const SQLITE_INSTANCE = 'codex-state';
 
 // ==================== 类型 ====================

@@ -7,6 +7,7 @@ import dayjs from 'dayjs';
 import {
   listClaudeCodeSessions,
   listClaudeCodeMessages,
+  getProjectPath,
   type ClaudeSessionItem,
   type MsgItem,
 } from './claude-code';
@@ -549,13 +550,6 @@ export async function getClaudeSessionDetail(sessionId: string, project: string)
     editDiffs,
     pricing,
   };
-}
-
-function getProjectPath(project: string): string {
-  const { homedir } = require('os');
-  const CLAUDE_BASE = `${homedir()}/.claude`;
-  const dir = project.replace(/\//g, '-');
-  return `${CLAUDE_BASE}/projects/${dir}`;
 }
 
 /**

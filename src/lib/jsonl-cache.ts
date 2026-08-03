@@ -21,10 +21,15 @@ function hitCache(filePath: string, st: fs.Stats): any[] | null {
   return hit.rows;
 }
 
+/** 按行切分（兼容 CRLF / 裸 CR，避免 Windows 落盘残留 \\r） */
+export function splitLines(raw: string): string[] {
+  return raw.split(/\r\n|\n|\r/);
+}
+
 /** 解析 jsonl 文本并写入缓存 (含 LRU 淘汰) */
 function parseAndStore(filePath: string, raw: string, st: fs.Stats): any[] {
   const rows: any[] = [];
-  for (const line of raw.split('\n')) {
+  for (const line of splitLines(raw)) {
     if (!line.trim()) continue;
     try { rows.push(JSON.parse(line)); } catch { /* 忽略坏行 */ }
   }
