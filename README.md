@@ -237,12 +237,16 @@ bun run sync:reconcile
 src/
   core/       isomorphic protocol, static pricing, list preview
   sources/    7 adapters + listSessions / getSessionDetail
-  store/      schema, sync, queryCached, CLI
+  store/      schema, sync, queryCached, session-trace, CLI
   lib/        sqlite, jsonl-cache, date-utils, timing-stats
   pricing.ts  configurePricing hooks
   index.ts    Node entry
+skills/
+  ai-coding-sessions/   Agent skill (SKILL.md + references)
 core.ts       re-export → src/core (legacy path)
 ```
+
+Agent skill: `skills/ai-coding-sessions/SKILL.md`（主仓 `.agents/skills/ai-coding-sessions` 软链指回此处）。
 
 Exports:
 

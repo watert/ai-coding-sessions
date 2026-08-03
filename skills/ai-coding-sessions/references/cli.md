@@ -1,0 +1,77 @@
+# AI Coding Sessions · CLI
+
+## 包内 CLI（默认 / 开源）
+
+```bash
+# 包根
+bun src/store/cli.ts <command> [options]
+bun run cli -- <command> [options]
+
+# monorepo 工作区
+bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
+```
+
+| 命令 | 用途 |
+|------|------|
+| `list` | 列表（cache 默认；`--live`；`--parent=` / `--roots`；日期与 limit） |
+| `children` | 子 session（`list --parent=<id>`） |
+| `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O；`--io` / `--reasoning` / `--jsonl`） |
+| `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children` |
+| `prompts` | 缓存 user prompts |
+| `stats` | 聚合 token / bySource / tokensByDay |
+| `sync` | 增量同步缓存（`--reconcile` / `--full`） |
+| `refs` | listRefs（无 convert/write） |
+| `help` | 帮助 |
+
+默认 stdout **JSON**（`--raw` 单行；`trace --jsonl` 逐步一行）。日志走 **stderr**。
+
+### Agent 轨迹
+
+```bash
+bun src/store/cli.ts list --source=all --days=3 --roots --limit=20
+bun src/store/cli.ts children --source=kimi --id=<parent>
+bun src/store/cli.ts trace --source=kimi --id=<id>
+bun src/store/cli.ts trace --source=kimi --id=<id> --io --from=0 --to=12
+bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
+```
+
+设计：[issue #1](https://github.com/watert/ai-coding-sessions/issues/1)
+
+### 同步
+
+```bash
+bun src/store/cli.ts sync --days=7 --source=all --reconcile
+bun src/store/cli.ts sync --full --source=opencode
+bun src/store/cli.ts --prompts=kimi:<id>    # legacy
+```
+
+Env：`AI_CODING_SESSIONS_DB` · `AI_CODING_SESSIONS_META`
+
+### 导出相关信号（列表/详情字段，非 LLM）
+
+1. **editDiffs / editFileStats**：改动文件扩展名分类 → `hasNonCodeDeliverable`
+2. **bashSignals**：bash 类 command 分 14 类（tests/build/git/pkg/…）→ `hasOpsSignal`
+3. **deliverableSignals**：issue/comment/doc/analysis/decision 等 → `hasStrongSignal`
+
+---
+
+## 宿主 monorepo CLI（可选，不在本包）
+
+若宿主提供 `bun opencode`（如 server-hono）：
+
+```bash
+bun opencode get-session-list --endDate=-3d
+bun opencode get-session-prompts --session_id=ses_xxxxx [--json]
+bun opencode get-user-messages --startDate=… --endDate=… --source=all [--json]
+bun opencode export-weekly-prompts --weeks=8 --source=kimi
+bun opencode export-monthly-prompts --months=3
+bun opencode update-session-title --session_id=ses_xxxxx --title="…"
+bun opencode fix-session-update-time [--exec]
+bun opencode analyze-tool-errors --days=14 --source=all --top=20
+bun opencode analyze-tool-calls --days=30 --source=all [--json]
+bun opencode analyze-prompt-perf --days=7 --source=kimi [--sortBy=cost|duration|tokens|selfRatio] [--minDuration=5m] [--json]
+```
+
+- source：`all|opencode|claude|kimi|grok|codex|zcode|workbuddy`
+- 日期：`YYYY-MM-DD` 或 `-Nd`
+- token 聚合：宿主 `ai-coding-stats-cli.ts token-stats`（→ token-stats skill）

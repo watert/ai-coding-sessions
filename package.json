@@ -22,6 +22,9 @@
   "files": [
     "src",
     "core.ts",
+    "skills",
+    "README.md",
+    "LICENSE",
     "!**/*.test.ts"
   ],
   "typesVersions": {

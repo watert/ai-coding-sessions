@@ -1,0 +1,119 @@
+---
+name: ai-coding-sessions
+description: 分析、查询、导出 AI Coding Sessions（多 source：opencode / claude / kimi / grok / codex / zcode / workbuddy）。用户需要会话列表/详情、轨迹 trace、成本 AUTO、导出 prompts、subagent 聚合、tool 失败、prefill/lag/tps、thinkingEffort、grok 真实 usage，或排查 session 数据时使用。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
+metadata:
+  version: 1.5.0
+---
+
+# AI Coding Sessions
+
+多数据源 AI 编程会话：**统一协议 + 库 API + SQLite 缓存 + Agent CLI**。只读聚合本地 CLI 落盘数据（无云、无账号）。
+
+- 包 README：`../../README.md`
+- 轨迹设计：[issue #1](https://github.com/watert/ai-coding-sessions/issues/1)
+- 参考：[Source](./references/sources.md) · [CLI](./references/cli.md) · [排查](./references/troubleshooting.md)
+
+## 触发场景
+
+- 列表 / 详情 / **轨迹 trace** / prompts / stats
+- 成本、token、TPS、latency、cache、subagent
+- 缓存 sync / reconcile / 脏检
+- 新 source 适配或字段不对
+
+## 数据流
+
+```
+本地源 (SQLite / JSONL / wire / grok logs)
+  → sources/*   list · convert · detail(live)
+  → store/*     sync → sessions + prompts + usage_by_day
+  → core/*      同构 stats + 静态单价表
+  → CLI / 宿主 (REST · Web · 计价注入)
+```
+
+## 包布局
+
+```
+src/core/       同构协议、静态单价、列表预览
+src/sources/    7 source + listSessions / getSessionDetail
+src/store/      schema · sync · queryCached · session-trace · CLI
+src/pricing.ts  configurePricing 钩子
+skills/ai-coding-sessions/   本 skill
+```
+
+## Source
+
+`opencode | claude | kimi | grok | codex | zcode | workbuddy`  
+本地路径与适配见 [references/sources.md](./references/sources.md)。  
+新 source：`*-code` + `*-source` → `sources/index.ts` 注册。
+
+## 数据模型要点
+
+- 列表：`id`, `title`, `source`, `parent_id`, `spawn_group_id`, `total_*`, `avg_tps`, `avg_latency_ms`, `session_status`, `usage_by_model`, `usage_by_day`, `editDiffs`, `usage_source`, `usage_is_incomplete`, `cost_is_partial` …
+- `parent_id`：fork/subagent 父会话；`spawn_group_id`：同轮并发 subagent 组
+- 状态：`in-progress` | `done` | `error` | `aborted` | `unknown`
+- 详情 live：`info` + `messages` + `editDiffs` + 可选 `pricing`
+- 缓存：**不存** `session.pricing`（存 `usage_by_model`，宿主可重计价）；detail/messages 不进 SQLite
+
+## CLI（Agent 优先 JSON stdout）
+
+```bash
+# 包根或 monorepo 路径
+bun src/store/cli.ts <cmd> …
+# monorepo:
+bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
+```
+
+| 命令 | 用途 |
+|------|------|
+| `list` | 缓存列表（`--live` · `--parent=` · `--roots`） |
+| `children` | 子 session |
+| `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O） |
+| `detail` | 详情 live + 体量控制 |
+| `prompts` | 缓存 user prompts |
+| `stats` | token / bySource 聚合 |
+| `sync` | 增量同步（`--reconcile` · `--full`） |
+| `refs` | listRefs |
+
+**轨迹推荐**（#1）：
+
+```bash
+bun src/store/cli.ts list --source=kimi --days=3 --roots --limit=20
+bun src/store/cli.ts children --source=kimi --id=<parent>
+bun src/store/cli.ts trace --source=kimi --id=<id>
+bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash --max-steps=30
+bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
+bun src/store/cli.ts sync --days=7 --source=all --reconcile
+```
+
+标志速查：`--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--with-children` · `--raw`  
+完整说明 → [references/cli.md](./references/cli.md)
+
+## 库 API 摘要
+
+```ts
+import {
+  initAiCodingStats, listSessions, getSessionDetail,
+  syncSessions, queryCached, getSessionPrompts,
+  buildTraceSteps, shapeDetailMessages, configurePricing,
+} from 'ai-coding-sessions';
+```
+
+缓存默认：`~/data/ai-coding-sessions.sqlite` + `.meta.json`（`AI_CODING_SESSIONS_DB` / `_META`）。
+
+## 成本
+
+- 未 `configurePricing` 时动态 AUTO 常为 0；`core` 有静态表可自接
+- 宿主可注入 models.dev + 汇率；缓存不固化 pricing
+
+## 宿主集成（可选 monorepo）
+
+本 skill **以包为准**。若在 fetch-av-cover 等宿主中：
+
+| 能力 | 位置 |
+|------|------|
+| REST `/api/ai-coding/*` | 宿主 router + `listSessionsCached` / `fillSessionPricing` |
+| Web Sessions / TokenStats | 宿主前端 + **token-stats** skill |
+| 周报导出 / tool-errors / prompt-perf | 宿主 `opencode` CLI（见 [cli.md 宿主节](./references/cli.md)） |
+| 改 title | 宿主 `update-session-title`（OpenCode 元数据） |
+
+跨 session 看板 → **token-stats**；单价表 → **ai-model-pricing**。
