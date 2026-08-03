@@ -296,7 +296,8 @@ function calculateLineDiff(oldText: string, newText: string): { additions: numbe
   return { additions, deletions };
 }
 
-function calculateEditDiffsFromKimiMessages(messages: UnifiedMessage[]): {
+/** 供测试 / 宿主复用：从 kimi tool parts 统计 editDiffs */
+export function calculateEditDiffsFromKimiMessages(messages: UnifiedMessage[]): {
   additions: number;
   deletions: number;
   filesChanged: number;

@@ -284,8 +284,12 @@ function buildTurnIndex(messages: any[]): {
       }
       stepInTurn = maxStep + 1;
     } else {
-      if (turn < 0) turn = 0;
-      stepInTurn += 1;
+      if (turn < 0) {
+        turn = 0;
+        stepInTurn = 0; // 无 user 时首条 assistant 也是 step 0
+      } else {
+        stepInTurn += 1;
+      }
     }
 
     if (id && role === 'user') idToTurn.set(id, turn);

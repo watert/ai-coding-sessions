@@ -178,7 +178,8 @@ function convertCodexMessage(
   return { info: messageInfo, parts };
 }
 
-function calculateEditDiffsFromCodexMessages(messages: UnifiedMessage[]): {
+/** 供测试 / 宿主复用：从 codex tool parts 统计 editDiffs */
+export function calculateEditDiffsFromCodexMessages(messages: UnifiedMessage[]): {
   additions: number;
   deletions: number;
   filesChanged: number;

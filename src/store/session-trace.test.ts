@@ -222,3 +222,60 @@ describe('shapeDetailMessages', () => {
     expect(tools.every((p: any) => p.state?.metadata?.errorSeverity === 'soft')).toBe(true);
   });
 });
+
+describe('buildTraceSteps edge cases (P0 tests)', () => {
+  test('无 user 消息时 turn=0', () => {
+    const steps = buildTraceSteps([
+      {
+        info: { id: 'a', role: 'assistant', time: { created: 1, completed: 2 } },
+        parts: [{ type: 'text', text: 'orphan assistant' }],
+      },
+    ]);
+    expect(steps).toHaveLength(1);
+    expect(steps[0].turn).toBe(0);
+    expect(steps[0].step_in_turn).toBe(0);
+  });
+
+  test('parentID 断链仍保序归属当前 turn', () => {
+    const steps = buildTraceSteps([
+      {
+        info: { id: 'u1', role: 'user', time: { created: 1, completed: 1 } },
+        parts: [{ type: 'text', text: 'hi' }],
+      },
+      {
+        info: { id: 'a1', role: 'assistant', parentID: 'missing-parent', time: { created: 2, completed: 3 } },
+        parts: [{ type: 'text', text: 'ok' }],
+      },
+    ]);
+    expect(steps[0].turn).toBe(0);
+    expect(steps[1].turn).toBe(0);
+    expect(steps[1].parent_id).toBe('missing-parent');
+  });
+
+  test('--status=hard 排除 soft，仅 hard fail', () => {
+    const steps = buildTraceSteps(sampleMessages, { status: 'hard' });
+    const tools = steps.flatMap((s) => s.tools);
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.every((t) => !t.soft)).toBe(true);
+    expect(tools.every((t) => /error|fail/i.test(t.status))).toBe(true);
+    expect(tools.some((t) => t.name === 'Bash')).toBe(true);
+    expect(tools.some((t) => t.name === 'AskUser')).toBe(false);
+  });
+
+  test('summarizeTraceTurns t_start/t_end 跨步', () => {
+    const steps = buildTraceSteps(sampleMessages);
+    const turns = summarizeTraceTurns(steps);
+    expect(turns[0].t_start).toBe(1000);
+    // turn0: user@1000, a1 done 2100, a2 done 2500
+    expect(turns[0].t_end).toBe(2500);
+    expect(turns[0].duration_ms).toBe(1500);
+    expect(turns[1].t_start).toBe(3000);
+    expect(turns[1].t_end).toBe(3200);
+  });
+
+  test('空 messages 安全', () => {
+    expect(buildTraceSteps(null)).toEqual([]);
+    expect(buildTraceSteps(undefined)).toEqual([]);
+    expect(summarizeTraceTurns([])).toEqual([]);
+  });
+});
