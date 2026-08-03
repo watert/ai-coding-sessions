@@ -3,6 +3,8 @@ import {
   buildTraceSteps,
   shapeDetailMessages,
   summarizeTraceTools,
+  summarizeTraceTurns,
+  classifyToolPartSoft,
 } from './session-trace';
 
 const sampleMessages = [
@@ -44,6 +46,16 @@ const sampleMessages = [
         callID: 'c2',
         state: { status: 'error', input: { command: 'false' }, error: 'exit 1' },
       },
+      {
+        type: 'tool',
+        tool: 'AskUser',
+        callID: 'cSoft',
+        state: {
+          status: 'completed',
+          output: 'Interrupted by user',
+          metadata: { errorSeverity: 'soft', errorKind: 'aborted_user' },
+        },
+      },
     ],
   },
   {
@@ -52,6 +64,7 @@ const sampleMessages = [
       role: 'assistant',
       time: { created: 2200, completed: 2500 },
       tokens: { input: 1, output: 2, total: 3 },
+      parentID: 'u1',
     },
     parts: [
       { type: 'step-start' },
@@ -64,19 +77,72 @@ const sampleMessages = [
       { type: 'step-finish' },
     ],
   },
+  {
+    info: {
+      id: 'u2',
+      role: 'user',
+      time: { created: 3000, completed: 3000 },
+    },
+    parts: [{ type: 'text', text: 'second turn please' }],
+  },
+  {
+    info: {
+      id: 'a3',
+      role: 'assistant',
+      time: { created: 3100, completed: 3200 },
+      parentID: 'u2',
+    },
+    parts: [{ type: 'text', text: 'done' }],
+  },
 ];
 
 describe('buildTraceSteps', () => {
   test('default skeleton has tools without io', () => {
     const steps = buildTraceSteps(sampleMessages);
-    expect(steps).toHaveLength(3);
+    expect(steps).toHaveLength(5);
     expect(steps[0].role).toBe('user');
     expect(steps[0].text_preview).toContain('fix the bug');
-    expect(steps[1].tools.map((t) => t.name)).toEqual(['Read', 'Bash']);
+    expect(steps[1].tools.map((t) => t.name)).toEqual(['Read', 'Bash', 'AskUser']);
     expect(steps[1].tools[0].input_preview).toBeUndefined();
     expect(steps[1].duration_ms).toBe(1000);
     expect(steps[1].tps).toBe(12.5);
     expect(steps[1].tokens?.cache_read).toBe(5);
+  });
+
+  test('turn grouping by user boundary / parentID', () => {
+    const steps = buildTraceSteps(sampleMessages);
+    expect(steps[0].turn).toBe(0);
+    expect(steps[0].step_in_turn).toBe(0);
+    expect(steps[0].parent_id).toBeNull();
+    expect(steps[1].turn).toBe(0);
+    expect(steps[1].parent_id).toBe('u1');
+    expect(steps[2].turn).toBe(0);
+    expect(steps[3].turn).toBe(1);
+    expect(steps[4].turn).toBe(1);
+    expect(steps[4].parent_id).toBe('u2');
+
+    const turns = summarizeTraceTurns(steps);
+    expect(turns).toHaveLength(2);
+    expect(turns[0].user_id).toBe('u1');
+    expect(turns[0].tool_count).toBe(4); // Read+Bash+AskUser+Edit
+    expect(turns[0].soft_tool_count).toBe(1);
+    expect(turns[1].user_id).toBe('u2');
+    expect(turns[1].tool_count).toBe(0);
+  });
+
+  test('soft-fail classification on tool rows', () => {
+    const steps = buildTraceSteps(sampleMessages);
+    const soft = steps[1].tools.find((t) => t.name === 'AskUser');
+    expect(soft?.soft).toBe(true);
+    expect(soft?.soft_kind).toBe('aborted_user');
+    expect(soft?.status).toBe('completed');
+
+    const hard = steps[1].tools.find((t) => t.name === 'Bash');
+    expect(hard?.soft).toBeFalsy();
+
+    const onlySoft = buildTraceSteps(sampleMessages, { status: 'soft' });
+    expect(onlySoft.some((s) => s.tools.some((t) => t.soft))).toBe(true);
+    expect(onlySoft.every((s) => s.role === 'user' || s.tools.every((t) => t.soft))).toBe(true);
   });
 
   test('includeIo + reasoning + filters', () => {
@@ -103,7 +169,28 @@ describe('buildTraceSteps', () => {
 
   test('summarizeTraceTools', () => {
     const steps = buildTraceSteps(sampleMessages);
-    expect(summarizeTraceTools(steps)).toEqual({ Read: 1, Bash: 1, Edit: 1 });
+    expect(summarizeTraceTools(steps)).toEqual({
+      Read: 1,
+      Bash: 1,
+      AskUser: 1,
+      Edit: 1,
+    });
+  });
+});
+
+describe('classifyToolPartSoft', () => {
+  test('metadata soft', () => {
+    expect(classifyToolPartSoft({
+      type: 'tool',
+      state: { status: 'completed', metadata: { errorSeverity: 'soft', errorKind: 'file_too_large' } },
+    })).toEqual({ soft: true, kind: 'file_too_large' });
+  });
+
+  test('error text soft', () => {
+    expect(classifyToolPartSoft({
+      type: 'tool',
+      state: { status: 'error', error: 'Tool execution aborted' },
+    }).soft).toBe(true);
   });
 });
 
@@ -126,5 +213,12 @@ describe('shapeDetailMessages', () => {
   test('noReasoning drops reasoning parts', () => {
     const shaped = shapeDetailMessages(sampleMessages, { noReasoning: true });
     expect(shaped[1].parts.some((p: any) => p.type === 'reasoning')).toBe(false);
+  });
+
+  test('soft status filter keeps soft tools', () => {
+    const shaped = shapeDetailMessages(sampleMessages, { status: 'soft' });
+    const tools = shaped.flatMap((m) => m.parts.filter((p: any) => p.type === 'tool'));
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.every((p: any) => p.state?.metadata?.errorSeverity === 'soft')).toBe(true);
   });
 });

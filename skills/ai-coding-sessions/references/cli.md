@@ -15,7 +15,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 |------|------|
 | `list` | 列表（cache 默认；`--live`；`--parent=` / `--roots`；日期与 limit） |
 | `children` | 子 session（`list --parent=<id>`） |
-| `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O；`--io` / `--reasoning` / `--jsonl`） |
+| `trace` / `timeline` | **轨迹骨架**（turn 分组 + soft-fail；默认无 tool I/O；`--io` / `--reasoning` / `--jsonl`；`--status=soft`） |
 | `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children` |
 | `prompts` | 缓存 user prompts |
 | `stats` | 聚合 token / bySource / tokensByDay |

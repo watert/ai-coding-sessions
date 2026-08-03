@@ -2,7 +2,7 @@
 name: ai-coding-sessions
 description: 分析、查询、导出 AI Coding Sessions（多 source：opencode / claude / kimi / grok / codex / zcode / workbuddy）。用户需要会话列表/详情、轨迹 trace、成本 AUTO、导出 prompts、subagent 聚合、tool 失败、prefill/lag/tps、thinkingEffort、grok 真实 usage，或排查 session 数据时使用。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.5.0
+  version: 1.5.1
 ---
 
 # AI Coding Sessions

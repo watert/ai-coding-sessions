@@ -167,6 +167,10 @@ export type GrokMessageItem = {
   sessionId: string;
   role: 'user' | 'assistant';
   timestamp: number;
+  /** 墙钟结束时间（assistant step 完成；无则与 timestamp 相同） */
+  completedAt?: number;
+  /** 时间戳来源：wall=updates 墙钟；synthetic=线性/序号合成 */
+  timeSource?: 'wall' | 'synthetic';
   text: string;
   thinking?: string;
   toolCalls: Array<{
@@ -179,6 +183,9 @@ export type GrokMessageItem = {
     /** 失败分类（含 soft，便于聚合） */
     errorKind?: GrokToolErrorKind;
     errorSeverity?: GrokToolErrorSeverity;
+    /** tool 墙钟 start/end（updates agentTimestampMs） */
+    startMs?: number;
+    endMs?: number;
   }>;
   model?: string;
   parentID?: string;
@@ -201,6 +208,15 @@ export type GrokMessageItem = {
     reasoning: number;
     costUsdTicks?: number;
   };
+};
+
+/** updates.jsonl 推导的墙钟事件（避免 chat_history +1ms 假序） */
+export type GrokWallClockEvents = {
+  userStarts: number[];
+  turnEnds: number[];
+  /** 每个 model step 的首个 tool_call / agent_message 时间 */
+  assistantStarts: number[];
+  toolTimes: Map<string, { start: number; end?: number }>;
 };
 
 /** compaction_requests 元数据（用于 meta + 详情缝合点消息） */
@@ -658,49 +674,231 @@ export function readGrokUserTurnStartMs(sessionDir: string): number[] {
     .map(([, ts]) => ts);
 }
 
+function eventWallMs(row: any): number {
+  const meta = row?.params?._meta || {};
+  // agentTimestampMs 优先（已是 ms）；其次 wire timestamp 秒/毫秒兼容
+  return grokWireTsToMs(meta.agentTimestampMs)
+    || grokWireTsToMs(row?.timestamp)
+    || 0;
+}
+
 /**
- * chat_history 无真实墙钟；合成 timestamp 从 last_active 起 +1ms，跨天 session 的
- * userParts 日 badge 会全落在结束日。用 turnStartMs 回填 user turn；同 turn 内 +offset 保序。
- * 无锚点时按 created→lastActive 线性插值。
+ * 从 updates.jsonl 扫墙钟：user 起点、assistant step 起点、turn 结束、tool 起止。
+ * assistant step 边界：同批并发 tool_call 算一步；全部完成后的下一次 tool_call / 纯文本 agent_message 为新步。
+ */
+export function readGrokWallClockEvents(sessionDir: string): GrokWallClockEvents {
+  const userStarts: number[] = [];
+  const turnEnds: number[] = [];
+  const assistantStarts: number[] = [];
+  const toolTimes = new Map<string, { start: number; end?: number }>();
+
+  const rows = readUpdatesJsonl(sessionDir)
+    .map((row) => ({ row, t: eventWallMs(row) }))
+    .filter((x) => x.t > 1e11)
+    .sort((a, b) => a.t - b.t);
+
+  /** 当前 step 尚未完成的 tool ids */
+  const openTools = new Set<string>();
+  let openAssistant = false;
+  /** 当前 step 是否已出现过 tool（用于区分「thought→tools 同 step」vs「tools 完成后新 step」） */
+  let stepHadTools = false;
+
+  const openAssistantStep = (t: number) => {
+    if (!openAssistant) {
+      assistantStarts.push(t);
+      openAssistant = true;
+    }
+  };
+
+  for (const { row, t } of rows) {
+    const update = row?.params?.update;
+    if (!update?.sessionUpdate) continue;
+    const su = update.sessionUpdate as string;
+
+    if (su === 'user_message_chunk') {
+      // 同一 user 多 chunk：只记首包
+      const last = userStarts[userStarts.length - 1];
+      if (last == null || t - last > 50) {
+        userStarts.push(t);
+      }
+      openTools.clear();
+      openAssistant = false;
+      stepHadTools = false;
+      continue;
+    }
+
+    if (su === 'tool_call') {
+      const id = update.toolCallId as string | undefined;
+      // 上一批 tool 已全部结束 → 新 model step（thought 后首批 tools 不新开）
+      if (openTools.size === 0 && stepHadTools) {
+        openAssistant = false;
+        stepHadTools = false;
+      }
+      openAssistantStep(t);
+      stepHadTools = true;
+      if (id) {
+        openTools.add(id);
+        const prev = toolTimes.get(id);
+        if (!prev || t < prev.start) {
+          toolTimes.set(id, { start: t, end: prev?.end });
+        }
+      }
+      continue;
+    }
+
+    if (su === 'tool_call_update') {
+      const id = update.toolCallId as string | undefined;
+      const status = String(update.status || '').toLowerCase();
+      if (id) {
+        const prev = toolTimes.get(id) || { start: t };
+        if (!prev.start || prev.start <= 0) prev.start = t;
+        if (status === 'completed' || status === 'failed' || status === 'error') {
+          prev.end = prev.end != null ? Math.max(prev.end, t) : t;
+          openTools.delete(id);
+        }
+        toolTimes.set(id, prev);
+        openAssistantStep(prev.start);
+        stepHadTools = true;
+      }
+      continue;
+    }
+
+    if (su === 'agent_message_chunk' || su === 'agent_thought_chunk') {
+      // 纯文本 / reasoning：step 未开则开；tools 全部结束后的收尾文本保持同 step
+      if (!openAssistant) openAssistantStep(t);
+      continue;
+    }
+
+    if (su === 'turn_completed') {
+      turnEnds.push(t);
+      openTools.clear();
+      openAssistant = false;
+      stepHadTools = false;
+    }
+  }
+
+  return { userStarts, turnEnds, assistantStarts, toolTimes };
+}
+
+/**
+ * chat_history 无真实墙钟；合成 timestamp 从 last_active 起 +1ms 会导致 duration≈0。
+ * 优先 updates 墙钟（user / assistant step / tool / turn_completed）；
+ * 次回 turnStartMs 锚点 + 步内插值；最后 created→lastActive 线性插值。
  */
 export function attachGrokWallClockTimestamps(
   messages: GrokMessageItem[],
-  opts: { turnStartMs?: number[]; createdMs?: number; lastActiveMs?: number },
+  opts: {
+    turnStartMs?: number[];
+    createdMs?: number;
+    lastActiveMs?: number;
+    wall?: GrokWallClockEvents;
+  },
 ): void {
   if (!messages.length) return;
-  const anchors = (opts.turnStartMs || []).filter(
-    (t) => typeof t === 'number' && Number.isFinite(t) && t > 1e11,
-  );
 
-  if (anchors.length > 0) {
-    let turnIdx = -1;
-    let offset = 0;
+  const wall = opts.wall;
+  // 回填 tool 墙钟
+  if (wall?.toolTimes?.size) {
     for (const m of messages) {
+      for (const tc of m.toolCalls || []) {
+        const tt = wall.toolTimes.get(tc.toolCallId);
+        if (!tt) continue;
+        tc.startMs = tt.start;
+        if (tt.end != null) tc.endMs = tt.end;
+      }
+    }
+  }
+
+  const userAnchors = (
+    (wall?.userStarts?.length ? wall.userStarts : null)
+    || (opts.turnStartMs || []).filter((t) => typeof t === 'number' && Number.isFinite(t) && t > 1e11)
+  ) as number[];
+
+  const assistantStarts = (wall?.assistantStarts || []).filter((t) => t > 1e11);
+  const turnEnds = (wall?.turnEnds || []).filter((t) => t > 1e11);
+
+  if (userAnchors.length > 0 || assistantStarts.length > 0) {
+    let turnIdx = -1;
+    let aIdx = 0;
+    let syntheticOffset = 0;
+
+    for (let mi = 0; mi < messages.length; mi++) {
+      const m = messages[mi];
       const isUserQuery = m.role === 'user' && m.text.includes('<user_query>');
       if (isUserQuery) {
         turnIdx++;
-        offset = 0;
-        if (turnIdx < anchors.length) m.timestamp = anchors[turnIdx];
+        syntheticOffset = 0;
+        if (turnIdx < userAnchors.length) {
+          m.timestamp = userAnchors[turnIdx];
+          m.completedAt = m.timestamp;
+          m.timeSource = 'wall';
+        }
         continue;
       }
-      if (turnIdx >= 0 && turnIdx < anchors.length) {
-        offset += 1;
-        m.timestamp = anchors[turnIdx] + offset;
+
+      if (m.role === 'assistant') {
+        if (aIdx < assistantStarts.length) {
+          m.timestamp = assistantStarts[aIdx];
+          m.timeSource = 'wall';
+          const toolEnds = (m.toolCalls || [])
+            .map((tc) => tc.endMs)
+            .filter((x): x is number => typeof x === 'number' && x > 0);
+          let done: number | undefined = toolEnds.length ? Math.max(...toolEnds) : undefined;
+          if (done == null && aIdx + 1 < assistantStarts.length) {
+            done = Math.max(m.timestamp, assistantStarts[aIdx + 1] - 1);
+          }
+          if (done == null && turnIdx >= 0 && turnIdx < turnEnds.length) {
+            done = turnEnds[turnIdx];
+          }
+          if (done == null && turnEnds.length) {
+            const nextEnd = turnEnds.find((e) => e >= m.timestamp);
+            if (nextEnd != null) done = nextEnd;
+          }
+          m.completedAt = done != null && done >= m.timestamp ? done : m.timestamp;
+          aIdx++;
+          continue;
+        }
+
+        // 回落：user 锚点 + 保序 offset（仍优于全局 +1 from last_active）
+        if (turnIdx >= 0 && turnIdx < userAnchors.length) {
+          syntheticOffset += 1;
+          m.timestamp = userAnchors[turnIdx] + syntheticOffset;
+          m.completedAt = m.timestamp;
+          m.timeSource = 'synthetic';
+          continue;
+        }
+      }
+
+      // 其它 user（continuation 等）：保序贴在前一条后
+      if (mi > 0) {
+        const prev = messages[mi - 1];
+        if (prev?.timestamp) {
+          m.timestamp = Math.max(m.timestamp || 0, prev.timestamp + 1);
+          m.completedAt = m.timestamp;
+          m.timeSource = m.timeSource || 'synthetic';
+        }
       }
     }
     return;
   }
 
+  // 无任何锚点：created→lastActive 线性插值
   const start = opts.createdMs;
   const end = opts.lastActiveMs;
   if (!start || !end || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
   const n = messages.length;
   if (n === 1) {
     messages[0].timestamp = start;
+    messages[0].completedAt = end;
+    messages[0].timeSource = 'synthetic';
     return;
   }
   for (let i = 0; i < n; i++) {
     messages[i].timestamp = Math.round(start + ((end - start) * i) / (n - 1));
+    messages[i].completedAt = i + 1 < n
+      ? Math.round(start + ((end - start) * (i + 1)) / (n - 1))
+      : end;
+    messages[i].timeSource = 'synthetic';
   }
 }
 
@@ -2007,10 +2205,12 @@ export async function listGrokCodeMessages(params: {
   const turnStartMs = tokenEstimate.turns.map((t) => t.turnStartMs).filter(
     (t): t is number => typeof t === 'number' && t > 1e11,
   );
+  const wall = readGrokWallClockEvents(dir);
   attachGrokWallClockTimestamps(messages, {
     turnStartMs: turnStartMs.length > 0 ? turnStartMs : readGrokUserTurnStartMs(dir),
     createdMs,
     lastActiveMs: baseTime,
+    wall,
   });
 
   // 有真实 usage 时挂到各 step，detail 累加与 list session total 对齐

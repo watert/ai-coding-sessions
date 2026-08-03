@@ -40,6 +40,7 @@ import {
   buildTraceSteps,
   shapeDetailMessages,
   summarizeTraceTools,
+  summarizeTraceTurns,
 } from './session-trace';
 import { countStats } from './upsert';
 import { loadMeta } from './meta';
@@ -236,7 +237,7 @@ Options:
   --from=N --to=N     message index range
   --io                trace: include tool input/output previews
   --reasoning         trace: include reasoning_preview
-  --tool=NAME --status=STATUS  filter tools (trace/detail)
+  --tool=NAME --status=STATUS  filter tools (trace/detail; status: error|soft|hard|completed)
   --text-preview=N --max-steps=N
   --jsonl             trace: one JSON object per line
   --full --reconcile  sync
@@ -522,6 +523,7 @@ async function cmdTrace(args: CliArgs) {
       message_count: detail.messages?.length ?? 0,
       step_count: steps.length,
       tool_summary: summarizeTraceTools(steps),
+      turns: summarizeTraceTurns(steps),
       editDiffs: detail.editDiffs,
       options: {
         io: args.includeIo,

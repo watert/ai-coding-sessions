@@ -73,6 +73,7 @@ export {
   buildTraceSteps,
   shapeDetailMessages,
   summarizeTraceTools,
+  summarizeTraceTurns,
 } from './store';
 
 export type {
@@ -91,6 +92,7 @@ export type {
   QueryCachedOptions,
   TraceBuildOptions,
   TraceStep,
+  TraceTurn,
   TraceToolRow,
   DetailShapeOptions,
 } from './store';

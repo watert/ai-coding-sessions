@@ -9,6 +9,7 @@
  */
 
 import dayjs from 'dayjs';
+import { diffLines } from 'diff';
 import {
   listGrokCodeSessions,
   listGrokCodeMessages,
@@ -49,6 +50,103 @@ import {
   type TimingSummary,
 } from '../lib/timing-stats';
 
+/** Grok 写文件类工具（与 deliverable-signals 对齐） */
+const GROK_EDIT_TOOLS = new Set([
+  'search_replace',
+  'str_replace',
+  'write',
+  'write_file',
+  'edit_file',
+  'edit',
+  'apply_patch',
+]);
+
+function countLines(text: string): number {
+  if (!text) return 0;
+  const lines = text.split('\n');
+  return text.endsWith('\n') ? lines.length - 1 : lines.length;
+}
+
+function calculateLineDiff(oldText: string, newText: string): { additions: number; deletions: number } {
+  const changes = diffLines(oldText, newText);
+  let additions = 0;
+  let deletions = 0;
+  for (const change of changes) {
+    if (change.added) additions += change.count || 0;
+    if (change.removed) deletions += change.count || 0;
+  }
+  return { additions, deletions };
+}
+
+/**
+ * 从 write / search_replace 等 tool input 统计 editDiffs。
+ * Grok 无 filediff metadata，靠 args 行 diff。
+ */
+export function calculateEditDiffsFromGrokMessages(messages: UnifiedMessage[]): {
+  additions: number;
+  deletions: number;
+  filesChanged: number;
+  files: string[];
+} {
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+  const filesChanged = new Set<string>();
+
+  for (const message of messages) {
+    for (const part of message.parts || []) {
+      if (part.type !== 'tool' && !(part as any).tool) continue;
+      const name = String((part as any).tool || '').toLowerCase();
+      if (!GROK_EDIT_TOOLS.has(name)) continue;
+
+      const state = typeof (part as any).state === 'object' && (part as any).state != null
+        ? (part as any).state
+        : {};
+      const input = (state.input || (part as any).input || {}) as Record<string, unknown>;
+      const filePath = String(
+        input.file_path || input.filePath || input.path || input.target_file || state.title || '',
+      );
+
+      let additions = 0;
+      let deletions = 0;
+
+      if (name === 'write' || name === 'write_file') {
+        const content = input.content != null ? String(input.content) : '';
+        additions = countLines(content);
+      } else if (
+        name === 'search_replace'
+        || name === 'str_replace'
+        || name === 'edit'
+        || name === 'edit_file'
+      ) {
+        const oldStr = String(input.old_string ?? input.oldString ?? input.old_str ?? '');
+        const newStr = String(input.new_string ?? input.newString ?? input.new_str ?? '');
+        if (oldStr || newStr) {
+          const d = calculateLineDiff(oldStr, newStr);
+          additions = d.additions;
+          deletions = d.deletions;
+        }
+      } else if (name === 'apply_patch') {
+        const patch = String(input.patch || input.diff || input.input || '');
+        for (const line of patch.split('\n')) {
+          if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
+          else if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
+        }
+      }
+
+      totalAdditions += additions;
+      totalDeletions += deletions;
+      if (filePath) filesChanged.add(filePath);
+    }
+  }
+
+  return {
+    additions: totalAdditions,
+    deletions: totalDeletions,
+    filesChanged: filesChanged.size,
+    files: [...filesChanged],
+  };
+}
+
 // ==================== Grok 数据源转换 ====================
 
 /** wire / chat_history tool status → OpenCode part.state.status（soft fail 在 grok-code 已降为 completed） */
@@ -71,6 +169,7 @@ function mapGrokToolPartStatus(tc: {
 
 function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMessage {
   const ts = msg.timestamp || Date.now();
+  const done = msg.completedAt != null && msg.completedAt >= ts ? msg.completedAt : undefined;
   const hasTools = (msg.toolCalls || []).length > 0;
   const isCompaction = !!(
     msg.compaction
@@ -78,15 +177,21 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
     || (msg.role === 'user' && isGrokContinuationSummary(msg.text))
   );
   // Grok wire 无 finishReason：有 tool_calls 的 step 等价 tool-calls（turn 可能仍继续）
-  // 否则 stop。时间戳是合成序号，completed 恒有会误判 done，必须靠 finish。
+  // 否则 stop。有墙钟 completedAt 时写入 time.completed（trace duration）；
+  // 无 completedAt 的 tool-calls 仍不写 completed，避免误判 session done。
   // compact 合成消息视为已结束（stop）。
   const finish = msg.role === 'assistant'
     ? (isCompaction ? 'stop' : hasTools ? 'tool-calls' : 'stop')
     : undefined;
+  const time: { created: number; completed?: number } = { created: ts };
+  if (done != null) {
+    time.completed = done;
+  } else if (finish !== 'tool-calls') {
+    time.completed = ts;
+  }
   const info: any = {
     role: msg.role,
-    // tool-calls 未真正结束：不写 completed，避免 fallback 误判
-    time: finish === 'tool-calls' ? { created: ts } : { created: ts, completed: ts },
+    time,
     id: msg.uuid,
     sessionID: sessionId,
     parentID: msg.parentID,
@@ -94,6 +199,7 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
     providerID: 'xai',
     ...(finish ? { finish } : {}),
     ...(isCompaction ? { compaction: true } : {}),
+    ...(msg.timeSource ? { timeSource: msg.timeSource } : {}),
     // 有 message.realUsage 用真实分项（含 0 占位：进行中 turn 不计费）；否则 context 快照估算
     tokens: (() => {
       const ctx = msg.contextTokens ?? 0;
@@ -181,6 +287,12 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
     const meta: Record<string, unknown> = {};
     if (tc.errorKind) meta.errorKind = tc.errorKind;
     if (tc.errorSeverity) meta.errorSeverity = tc.errorSeverity;
+    const toolTime = tc.startMs != null
+      ? {
+        start: tc.startMs,
+        end: tc.endMs != null && tc.endMs >= tc.startMs ? tc.endMs : tc.startMs,
+      }
+      : undefined;
     parts.push({
       type: 'tool',
       id: msg.uuid + '-tool-' + idx,
@@ -188,6 +300,7 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
       messageID: msg.uuid,
       tool: tc.name,
       callID: tc.toolCallId,
+      ...(toolTime ? { time: toolTime } : {}),
       state: {
         status,
         input: tc.args,
@@ -574,6 +687,7 @@ function grokSessionInfoWithMessages(
   });
 
   const compactStats = deriveGrokCompactionStats(messages, session.sessionDir);
+  const editDiffs = calculateEditDiffsFromGrokMessages(unifiedMessages);
 
   return {
     ...convertGrokSessionFromSummary(session),
@@ -604,6 +718,10 @@ function grokSessionInfoWithMessages(
     cost_missing_calls: undefined,
     avg_tps,
     assistant_tps_list,
+    editDiffs,
+    summary_additions: editDiffs.additions,
+    summary_deletions: editDiffs.deletions,
+    summary_files: editDiffs.filesChanged,
     ...compactStats,
   };
 }
@@ -761,8 +879,7 @@ export async function convertGrokSession(session: GrokSessionItem): Promise<Unif
     session.updatedAt,
     session.createdAt,
   );
-  // Grok message 时间戳是合成序号（非真实时间），last_active / first_active / span 用 session 时间
-  // summary.last_active_at / updated_at 都会被心跳刷新，用 updates.jsonl 里最后 turn 的真实时间戳
+  // last_active：summary 心跳会漂，优先 updates 最后 turn 墙钟；message 级墙钟见 attachGrokWallClockTimestamps
   const createdMs = session.createdAt || 0;
   let lastActivityMs = session.createdAt; // fallback：创建时间
   if (usage?.usageSource === 'real' && usage.real?.turns?.length) {
@@ -856,10 +973,9 @@ export async function getGrokSessionDetail(sessionId: string): Promise<UnifiedSe
   const messages = await listGrokCodeMessages({ sessionId, sessionDir: session.sessionDir });
   const usage = await getGrokSessionStats(session, messages);
   const unifiedMessages = messages.map(m => convertGrokMessage(m, sessionId));
-  const editDiffs = { additions: 0, deletions: 0, filesChanged: 0, files: [] as string[] };
+  const editDiffs = calculateEditDiffsFromGrokMessages(unifiedMessages);
   const session_status = checkSessionStatus(unifiedMessages);
-  // Grok message 时间戳是合成序号，last_active / first_active / span 用 session 时间
-  // summary.last_active_at / updated_at 都会被心跳刷新，用 updates.jsonl 里最后 turn 的真实时间戳
+  // last_active：summary 心跳会漂，优先 updates 最后 turn 墙钟
   const createdMs = session.createdAt || 0;
   let lastActivityMs = session.createdAt;
   if (usage?.usageSource === 'real' && usage.real?.turns?.length) {

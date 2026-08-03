@@ -10,7 +10,11 @@ import {
   listGrokCodeMessages,
   classifyGrokToolErrorText,
   classifyGrokToolFailure,
+  attachGrokWallClockTimestamps,
+  readGrokWallClockEvents,
+  type GrokMessageItem,
 } from './grok-code';
+import { calculateEditDiffsFromGrokMessages } from './grok-source';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-tools-'));
 
@@ -266,5 +270,126 @@ describe('classifyGrokToolFailure rawOutput', () => {
     expect(r.kind).toBe('file_too_large');
     expect(r.severity).toBe('soft');
     expect(r.message).toContain('too big');
+  });
+});
+
+function wallRow(
+  sessionUpdate: string,
+  agentTimestampMs: number,
+  extra: Record<string, unknown> = {},
+  metaExtra: Record<string, unknown> = {},
+) {
+  return {
+    timestamp: Math.floor(agentTimestampMs / 1000),
+    method: 'session/update',
+    params: {
+      update: { sessionUpdate, ...extra },
+      _meta: { agentTimestampMs, ...metaExtra },
+    },
+  };
+}
+
+describe('attachGrokWallClockTimestamps (P1)', () => {
+  it('uses updates wall clock instead of +1ms synthetic', async () => {
+    const call1 = 'call-wall-1';
+    const call2 = 'call-wall-2';
+    const t0 = 1_700_000_000_000;
+    const dir = writeSession('wall-clock-1', [
+      { type: 'user', content: '<user_query>hi</user_query>' },
+      {
+        type: 'assistant',
+        content: 'step1',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: call1, name: 'read_file', arguments: '{}' }],
+      },
+      { type: 'tool_result', tool_call_id: call1, content: 'a' },
+      {
+        type: 'assistant',
+        content: 'step2',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: call2, name: 'bash', arguments: '{}' }],
+      },
+      { type: 'tool_result', tool_call_id: call2, content: 'ok' },
+      { type: 'assistant', content: 'done', model_id: 'grok-4.5', tool_calls: [] },
+    ], [
+      wallRow('user_message_chunk', t0, { content: { type: 'text', text: 'hi' } }),
+      wallRow('agent_thought_chunk', t0 + 100, { content: { type: 'text', text: 'think' } }, { turnStartMs: t0 }),
+      wallRow('tool_call', t0 + 500, { toolCallId: call1, title: 'read' }, { turnStartMs: t0 }),
+      wallRow('tool_call_update', t0 + 800, { toolCallId: call1, status: 'completed' }, { turnStartMs: t0 }),
+      wallRow('tool_call', t0 + 2000, { toolCallId: call2, title: 'bash' }, { turnStartMs: t0 }),
+      wallRow('tool_call_update', t0 + 2500, { toolCallId: call2, status: 'completed' }, { turnStartMs: t0 }),
+      wallRow('agent_message_chunk', t0 + 3000, { content: { type: 'text', text: 'done' } }, { turnStartMs: t0 }),
+      wallRow('turn_completed', t0 + 3100, { prompt_id: 'p1', stop_reason: 'end' }),
+    ]);
+
+    const wall = readGrokWallClockEvents(dir);
+    expect(wall.userStarts[0]).toBe(t0);
+    expect(wall.assistantStarts.length).toBeGreaterThanOrEqual(2);
+    expect(wall.toolTimes.get(call1)?.start).toBe(t0 + 500);
+    expect(wall.toolTimes.get(call1)?.end).toBe(t0 + 800);
+
+    const msgs = await listGrokCodeMessages({ sessionId: 'wall-clock-1', sessionDir: dir });
+    const assistants = msgs.filter((m) => m.role === 'assistant');
+    expect(assistants.length).toBeGreaterThanOrEqual(2);
+    // 不再是 user+1 / user+2
+    expect(assistants[0].timestamp).toBeGreaterThanOrEqual(t0 + 100);
+    expect(assistants[0].timeSource).toBe('wall');
+    if (assistants[1]) {
+      expect(assistants[1].timestamp - assistants[0].timestamp).toBeGreaterThan(10);
+    }
+    const tc = assistants.flatMap((m) => m.toolCalls).find((t) => t.toolCallId === call1);
+    expect(tc?.startMs).toBe(t0 + 500);
+    expect(tc?.endMs).toBe(t0 + 800);
+  });
+
+  it('fallback linear interpolate without wall events', () => {
+    const msgs: GrokMessageItem[] = [
+      { uuid: 'u', sessionId: 's', role: 'user', timestamp: 1, text: '<user_query>x</user_query>', toolCalls: [] },
+      { uuid: 'a', sessionId: 's', role: 'assistant', timestamp: 2, text: 'y', toolCalls: [] },
+    ];
+    attachGrokWallClockTimestamps(msgs, { createdMs: 1000, lastActiveMs: 3000 });
+    expect(msgs[0].timestamp).toBe(1000);
+    expect(msgs[1].timestamp).toBe(3000);
+    expect(msgs[0].timeSource).toBe('synthetic');
+  });
+});
+
+describe('calculateEditDiffsFromGrokMessages (P1)', () => {
+  it('search_replace / write line stats', () => {
+    const messages = [
+      {
+        info: { id: 'a', role: 'assistant' },
+        parts: [
+          {
+            type: 'tool',
+            tool: 'search_replace',
+            state: {
+              status: 'completed',
+              input: {
+                file_path: '/tmp/a.ts',
+                old_string: 'line1\nline2\n',
+                new_string: 'line1\nline2b\nline3\n',
+              },
+            },
+          },
+          {
+            type: 'tool',
+            tool: 'write',
+            state: {
+              status: 'completed',
+              input: { file_path: '/tmp/b.ts', content: 'a\nb\nc\n' },
+            },
+          },
+        ],
+      },
+    ] as any;
+    const d = calculateEditDiffsFromGrokMessages(messages);
+    expect(d.filesChanged).toBe(2);
+    expect(d.files).toContain('/tmp/a.ts');
+    expect(d.files).toContain('/tmp/b.ts');
+    expect(d.additions).toBeGreaterThan(0);
+    expect(d.deletions).toBeGreaterThanOrEqual(0);
+    // write: 3 lines
+    expect(d.additions).toBeGreaterThanOrEqual(3);
   });
 });
