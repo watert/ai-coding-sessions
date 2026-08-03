@@ -18,9 +18,21 @@ export interface HandoffWarning {
   message: string;
 }
 
+/** goal / last_user_request / work_done user 行默认 cap */
+export const HANDOFF_DEFAULT_USER_PREVIEW = 500;
+/** last_assistant_action 默认 cap（收口结论常 1–2k） */
+export const HANDOFF_DEFAULT_ASSISTANT_PREVIEW = 3000;
+
 export interface BuildHandoffOptions {
-  /** user/assistant preview length */
+  /**
+   * 全局覆盖：同时作用于 user 与 assistant preview。
+   * CLI `--text-preview=N` 走此字段；不传则分层默认（user 500 / assistant 3000）。
+   */
   textPreview?: number;
+  /** goal / last_user_request / work_done user turns（默认 500） */
+  userPreview?: number;
+  /** last_assistant_action（默认 3000） */
+  assistantPreview?: number;
   /** max files listed */
   maxFiles?: number;
   /** max work_done bullets */
@@ -195,7 +207,13 @@ export function buildHandoff(
 ): SessionHandoff | null {
   if (!detail?.info) return null;
 
-  const textPreview = opts.textPreview ?? 200;
+  // 分层默认：user/goal 500、assistant 3000；`--text-preview` / textPreview 可全局覆盖两者
+  const userPreview =
+    opts.userPreview ?? opts.textPreview ?? HANDOFF_DEFAULT_USER_PREVIEW;
+  const assistantPreview =
+    opts.assistantPreview ?? opts.textPreview ?? HANDOFF_DEFAULT_ASSISTANT_PREVIEW;
+  // step 内 text_preview 取较大值，避免下游 oneLine 再截时原料已不够
+  const stepTextPreview = Math.max(userPreview, assistantPreview);
   const maxFiles = opts.maxFiles ?? 30;
   const maxWorkItems = opts.maxWorkItems ?? 12;
   const maxUserTurns = opts.maxUserTurns ?? 3;
@@ -219,7 +237,7 @@ export function buildHandoff(
     includeTools: true,
     includeIo: true,
     includeReasoning: false,
-    textPreview,
+    textPreview: stepTextPreview,
     maxOutputChars: 240,
   });
   const turns = summarizeTraceTurns(steps);
@@ -264,12 +282,12 @@ export function buildHandoff(
   const lastAssistant = [...steps].reverse().find((s) => s.role === 'assistant');
 
   const last_user_request = lastUser?.text_preview
-    ? oneLine(lastUser.text_preview, textPreview)
+    ? oneLine(lastUser.text_preview, userPreview)
     : null;
   const goal = firstUser?.text_preview
-    ? oneLine(firstUser.text_preview, textPreview)
+    ? oneLine(firstUser.text_preview, userPreview)
     : last_user_request;
-  const last_assistant_action = assistantAction(lastAssistant, textPreview);
+  const last_assistant_action = assistantAction(lastAssistant, assistantPreview);
 
   // files: editDiffs first, then tool paths
   const files_touched: string[] = [];
@@ -303,7 +321,7 @@ export function buildHandoff(
 
   const recentUsers = userSteps.slice(-maxUserTurns);
   for (const u of recentUsers) {
-    const line = oneLine(`turn${u.turn}: ${u.text_preview}`, textPreview);
+    const line = oneLine(`turn${u.turn}: ${u.text_preview}`, userPreview);
     if (line) work_done.push(line);
   }
   if (work_done.length > maxWorkItems) {

@@ -2,7 +2,7 @@
 name: ai-coding-sessions
 description: 分析、查询、导出 AI Coding Sessions（多 source：opencode / claude / kimi / grok / codex / zcode / workbuddy）。用户需要会话列表/详情、轨迹 trace、成本 AUTO、导出 prompts、subagent 聚合、tool 失败、prefill/lag/tps、thinkingEffort、grok 真实 usage，或排查 session 数据时使用。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.7.0
+  version: 1.7.1
 ---
 
 # AI Coding Sessions
@@ -94,14 +94,19 @@ bun src/store/cli.ts sync --days=7 --source=all --reconcile
 
 **跨 agent handoff**（#4）：
 
+续作**摘要**（inert），不是 transcript。默认 cap：`goal`/`last_user_request` **500**、`last_assistant_action` **3000**。  
+`--text-preview=N` 同时覆盖两者。要 tool I/O / 全文 → `detail`。
+
 ```bash
 bun src/store/cli.ts list --cwd=. --days=7 --roots --limit=20
 bun src/store/cli.ts resolve --source=grok --cwd=. --ref=latest
 bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest
 bun src/store/cli.ts handoff --source=kimi --id=<id> --format=md --out=handoff.md
+bun src/store/cli.ts handoff --source=kimi --id=<id> --text-preview=8000   # 超长时
+bun src/store/cli.ts detail --source=kimi --id=<id> --no-reasoning --max-output-chars=8000
 ```
 
-标志速查：`--cwd=` · `--ref=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
+标志速查：`--cwd=` · `--ref=` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
 完整说明 → [references/cli.md](./references/cli.md)
 
 ## 库 API 摘要

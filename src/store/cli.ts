@@ -280,12 +280,15 @@ Agent trajectory (issue #1):
   stats --source=all --days=7                   # clipped totals + quality
 
 Cross-agent handoff (issue #4):
+  # resume brief (not full transcript) — defaults: user/goal 500, last_assistant 3000
   list --cwd=. --days=7 --roots --limit=20
   resolve --source=grok --cwd=. --ref=latest
   resolve --source=all --ref="partial title"
   handoff --source=kimi --id=<id>
   handoff --source=grok --cwd=. --ref=latest
   handoff --source=claude --ref="fix auth" --format=md --out=handoff.md
+  handoff --source=kimi --id=<id> --text-preview=8000   # override both caps
+  # need tool I/O / full messages → detail (not handoff)
 
 Options:
   --source=NAME       all|${ALL_SOURCES.join('|')}
@@ -307,7 +310,9 @@ Options:
   --io                trace/tool-errors: include tool I/O previews
   --reasoning         trace: include reasoning_preview
   --tool=NAME --status=STATUS  filter tools (error|soft|hard|completed)
-  --text-preview=N --max-steps=N
+  --text-preview=N    handoff: override user+assistant caps (default 500/3000);
+                      trace: text_preview length
+  --max-steps=N
   --jsonl             trace: one JSON object per line
   --format=json|jsonl|md   export format (trace/handoff; default json)
   --out=PATH          write export to file (format from ext if unset)
@@ -623,7 +628,8 @@ async function cmdHandoff(args: CliArgs) {
     }
 
     const handoff = buildHandoff(detail, {
-      textPreview: args.textPreview ?? 200,
+      // 未传 --text-preview 时：user/goal 500、assistant 3000（见 buildHandoff）
+      ...(args.textPreview != null ? { textPreview: args.textPreview } : {}),
     });
     if (!handoff) {
       printJson({ ok: false, error: 'handoff_failed', source, id }, args.pretty);

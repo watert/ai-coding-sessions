@@ -209,4 +209,61 @@ describe('buildHandoff', () => {
   test('null without info', () => {
     expect(buildHandoff({ messages: [] })).toBeNull();
   });
+
+  test('default caps: assistant 3000, user/goal 500', () => {
+    const longAssistant = '结论：'.padEnd(2500, '甲') + '【结尾标记】';
+    const longUser = '请评估'.padEnd(600, '乙') + '【用户尾】';
+    const h = buildHandoff({
+      info: sess({
+        id: 's-long',
+        source: 'kimi' as any,
+        title: 'long conclusion',
+        session_status: 'done',
+      }),
+      messages: [
+        {
+          info: { id: 'u1', role: 'user', time: { created: 1 } },
+          parts: [{ type: 'text', text: longUser }],
+        },
+        {
+          info: { id: 'a1', role: 'assistant', parentID: 'u1', time: { created: 2, completed: 3 } },
+          parts: [{ type: 'text', text: longAssistant }],
+        },
+      ],
+    });
+    expect(h!.last_assistant_action).toContain('【结尾标记】');
+    expect(h!.last_assistant_action!.endsWith('…')).toBe(false);
+    // user/goal 默认 500，长 prompt 应截断
+    expect(h!.goal!.length).toBeLessThanOrEqual(501);
+    expect(h!.goal!.endsWith('…')).toBe(true);
+    expect(h!.last_user_request!.endsWith('…')).toBe(true);
+    expect(h!.goal).not.toContain('【用户尾】');
+  });
+
+  test('textPreview overrides both user and assistant caps', () => {
+    const longUser = '请评估'.padEnd(600, '乙') + '【用户尾】';
+    const h = buildHandoff(
+      {
+        info: sess({
+          id: 's-ov',
+          source: 'kimi' as any,
+          title: 'override',
+          session_status: 'done',
+        }),
+        messages: [
+          {
+            info: { id: 'u1', role: 'user', time: { created: 1 } },
+            parts: [{ type: 'text', text: longUser }],
+          },
+          {
+            info: { id: 'a1', role: 'assistant', parentID: 'u1', time: { created: 2, completed: 3 } },
+            parts: [{ type: 'text', text: '短结论' }],
+          },
+        ],
+      },
+      { textPreview: 800 },
+    );
+    expect(h!.goal).toContain('【用户尾】');
+    expect(h!.goal!.endsWith('…')).toBe(false);
+  });
 });

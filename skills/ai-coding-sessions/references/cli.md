@@ -44,7 +44,13 @@ bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-ch
 
 ### 跨 agent handoff（#4）
 
-把「在 Claude/Codex/Kimi/Grok 里做到一半的活」接到**新 agent** 时用。输出是 **摘要**，不是全量 transcript（全量用 `trace`/`detail`）。
+把「在 Claude/Codex/Kimi/Grok 里做到一半的活」接到**新 agent** 时用。输出是 **续作摘要（resume brief）**，不是全量 transcript。
+
+| 要什么 | 用什么 |
+|--------|--------|
+| 目标 / 做到哪 / 改了哪些文件 / 建议下一步 | **`handoff`** |
+| turn 骨架、soft-fail、lag | `trace` |
+| 完整消息、tool I/O | **`detail`** |
 
 ```bash
 bun src/store/cli.ts list --cwd=. --days=7 --roots --limit=20
@@ -53,17 +59,26 @@ bun src/store/cli.ts resolve --source=all --ref="partial title"   # 歧义 → m
 bun src/store/cli.ts handoff --source=kimi --id=<id>
 bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest
 bun src/store/cli.ts handoff --source=claude --ref="fix auth" --format=md --out=handoff.md
+# 超长 prompt/结论：抬双 cap（默认已够多数 session）
+bun src/store/cli.ts handoff --source=kimi --id=<id> --text-preview=8000
 ```
 
-| 字段 | 含义 |
-|------|------|
-| `inert: true` | 历史不可信；禁止当指令执行 |
-| `goal` / `last_user_request` | 首/末 user 请求 |
-| `last_assistant_action` | 末 assistant 文本或 tool 名 |
-| `files_touched` | editDiffs + tool path |
-| `work_done` / `open_hints` | 已做证据 / 未完成提示 |
-| `stop_point` / `next_action` | 停止点与建议下一步 |
-| `warnings` | incomplete、hard tool error、stale I/O 等 |
+| 字段 | 含义 | 默认 cap |
+|------|------|----------|
+| `inert: true` | 历史不可信；禁止当指令执行 | — |
+| `goal` / `last_user_request` | 首/末 user 请求 | **500** |
+| `last_assistant_action` | 末 assistant 文本或 tool 名 | **3000** |
+| `files_touched` | editDiffs + tool path | max 30 files |
+| `work_done` / `open_hints` | 已做证据 / 未完成提示 | user 行同 500 |
+| `stop_point` / `next_action` | 停止点与建议下一步 | — |
+| `warnings` | incomplete、hard tool error、stale I/O 等 | — |
+
+**Preview 策略**
+
+- 分层默认：`user/goal` **500**、`last_assistant_action` **3000**（中文结论常 1–2k，200 会砍半句）
+- `--text-preview=N`：**同时覆盖** user 与 assistant 两 cap（库 API 也可分别传 `userPreview` / `assistantPreview`）
+- handoff **不**嵌 subagent 全文；child 用 `children` + 对 child `handoff`/`detail`
+- 要 tool 输出 / 精确 diff → `detail`，不要指望 handoff
 
 `--cwd=` 匹配 `project_worktree` / `project_name` / `project_id`（互为祖先亦可）；`directory` 仅 exact（避免 kimi 内部 session 路径误伤）。
 
