@@ -90,9 +90,26 @@ export function calculateMessageCost(input: MessagePricingInput): MessageCostRes
   return { totalCost: 0, cny: 0 };
 }
 
+/** 默认：只抽 token 结构（不依赖 server-hono）；有 hook 时优先 hook */
 export function extractMessagePricingInput(msg: any): MessagePricingInput | null {
   if (hooks.extractMessagePricingInput) return hooks.extractMessagePricingInput(msg);
-  return null;
+  const info = msg?.info || msg || {};
+  const tokens = info.tokens || {};
+  const providerID = info.model?.providerID || info.providerID;
+  const modelID = info.model?.modelID || info.modelID;
+  if (!modelID) return null;
+  return {
+    providerID,
+    modelID,
+    tokens: {
+      input: tokens.input || 0,
+      output: tokens.output || 0,
+      cacheRead: tokens.cache?.read || tokens.cacheRead || 0,
+      cacheWrite: tokens.cache?.write || tokens.cacheWrite || 0,
+      total: tokens.total,
+    },
+    contextTokens: info.tokens?.context?.total,
+  };
 }
 
 export function getUsdToCnyRate(): number {
