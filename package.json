@@ -30,7 +30,9 @@
   },
   "scripts": {
     "check": "bunx tsc --noEmit --project tsconfig.json",
-    "test": "bun test src"
+    "test": "bun test src",
+    "sync": "bun src/store/cli.ts",
+    "sync:reconcile": "bun src/store/cli.ts --days=7 --source=all --reconcile"
   },
   "dependencies": {
     "dayjs": "^1.11.13",

@@ -1,5 +1,5 @@
 /**
- * Node 主入口：sources list/detail + lib + pricing hooks
+ * Node 主入口：sources list/detail + store 缓存 + pricing hooks
  * 同构层请用 `ai-coding-sessions/core`
  */
 
@@ -40,3 +40,49 @@ export {
   OpenCodeMessageSchema,
   OpenCodeSessionExportSchema,
 } from './sources/index';
+
+// M3 store：sync / queryCached / meta / listRefs
+export {
+  SCHEMA_VERSION,
+  ALL_SOURCES,
+  isSourceId,
+  resolveStorePaths,
+  initStoreDb,
+  closeStoreDb,
+  getStoreDb,
+  getStorePaths,
+  loadMeta,
+  saveMeta,
+  emptyMeta,
+  listRefs,
+  syncSessions,
+  reconcileSessions,
+  ensureFresh,
+  queryCached,
+  getCachedSession,
+  getSessionPrompts,
+  queryUsageByDay,
+  upsertSession,
+  markOrphans,
+  countStats,
+  contentFingerprint,
+  extractUsageByModel,
+  extractPrompts,
+  stripPricingForPayload,
+} from './store';
+
+export type {
+  SourceId,
+  UsageByModelEntry,
+  SessionPromptRow,
+  CachedSessionRow,
+  StorePaths,
+  StoreMeta,
+  SourceSyncMeta,
+  SessionRef,
+  ListRefsOptions,
+  SyncOptions,
+  SyncResult,
+  SyncSourceResult,
+  QueryCachedOptions,
+} from './store';
