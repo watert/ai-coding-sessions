@@ -19,6 +19,9 @@ import {
   collectGrokModelsUsed,
   buildGrokTrendsFromTurns,
   ticksToUsd,
+  deriveGrokCompactionStats,
+  isGrokCompactionText,
+  isGrokContinuationSummary,
   type GrokSessionItem,
   type GrokMessageItem,
   type GrokSessionUsageSummary,
@@ -69,10 +72,16 @@ function mapGrokToolPartStatus(tc: {
 function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMessage {
   const ts = msg.timestamp || Date.now();
   const hasTools = (msg.toolCalls || []).length > 0;
+  const isCompaction = !!(
+    msg.compaction
+    || isGrokCompactionText(msg.text)
+    || (msg.role === 'user' && isGrokContinuationSummary(msg.text))
+  );
   // Grok wire 无 finishReason：有 tool_calls 的 step 等价 tool-calls（turn 可能仍继续）
   // 否则 stop。时间戳是合成序号，completed 恒有会误判 done，必须靠 finish。
+  // compact 合成消息视为已结束（stop）。
   const finish = msg.role === 'assistant'
-    ? (hasTools ? 'tool-calls' : 'stop')
+    ? (isCompaction ? 'stop' : hasTools ? 'tool-calls' : 'stop')
     : undefined;
   const info: any = {
     role: msg.role,
@@ -84,6 +93,7 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
     modelID: msg.model,
     providerID: 'xai',
     ...(finish ? { finish } : {}),
+    ...(isCompaction ? { compaction: true } : {}),
     // 有 message.realUsage 用真实分项（含 0 占位：进行中 turn 不计费）；否则 context 快照估算
     tokens: (() => {
       const ctx = msg.contextTokens ?? 0;
@@ -204,7 +214,10 @@ function buildGrokListExtras(
   textParts: Array<{ role: string; text: string; tool: string; duration: number; startTime: number; endTime: number }>;
 } {
   const realUserMsgs = messages.filter(
-    (m) => m.role === 'user' && m.text.includes('<user_query>'),
+    (m) => m.role === 'user'
+      && m.text.includes('<user_query>')
+      && !m.compaction
+      && !isGrokContinuationSummary(m.text),
   );
   let userParts = realUserMsgs.map((m) => ({
     role: 'user' as const,
@@ -233,6 +246,7 @@ function buildGrokListExtras(
 
   const textParts: Array<{ role: string; text: string; tool: string; duration: number; startTime: number; endTime: number }> = [];
   for (const m of messages) {
+    if (m.compaction || isGrokCompactionText(m.text)) continue;
     if (m.role === 'assistant' && (m.text || m.thinking)) {
       textParts.push({
         role: 'assistant',
@@ -559,6 +573,8 @@ function grokSessionInfoWithMessages(
     modelUsageKeys: usage?.modelUsage ? Object.keys(usage.modelUsage) : undefined,
   });
 
+  const compactStats = deriveGrokCompactionStats(messages, session.sessionDir);
+
   return {
     ...convertGrokSessionFromSummary(session),
     models_used,
@@ -588,6 +604,7 @@ function grokSessionInfoWithMessages(
     cost_missing_calls: undefined,
     avg_tps,
     assistant_tps_list,
+    ...compactStats,
   };
 }
 

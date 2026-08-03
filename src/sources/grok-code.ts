@@ -183,6 +183,8 @@ export type GrokMessageItem = {
   model?: string;
   parentID?: string;
   parts?: GrokMessagePart[];
+  /** context compact 合成消息（对齐 Kimi [Context Compacted]） */
+  compaction?: boolean;
   /**
    * 来自 updates.jsonl 的该 assistant 步骤对应时刻的 totalTokens（上下文窗口快照）。
    * 不是真实计费 token，仅反映该步骤发生时模型上下文的大小，用于 UI 展示与 session 总用量估算。
@@ -199,6 +201,25 @@ export type GrokMessageItem = {
     reasoning: number;
     costUsdTicks?: number;
   };
+};
+
+/** compaction_requests 元数据（用于 meta + 详情缝合点消息） */
+export type GrokCompactionRecord = {
+  requestId: string;
+  createdAt: string;
+  createdAtMs: number;
+  trigger?: string;
+  model?: string;
+  summary?: string;
+  error?: string | null;
+  entries: any[];
+};
+
+export type GrokCompactionMeta = {
+  compact_count: number;
+  time_compacting?: number;
+  tokensBefore?: number;
+  records: GrokCompactionRecord[];
 };
 
 /**
@@ -701,6 +722,143 @@ export function isGrokContinuationSummary(text: string): boolean {
   return /^This session is being continued from a previous conversation/i.test((text || '').trim());
 }
 
+/** 合成 compact 消息 / Kimi 风格文案 */
+export function isGrokCompactionText(text: string): boolean {
+  return /^\[Context Compacted\]/i.test((text || '').trim());
+}
+
+/** session compact 元数据：compaction_requests 优先，signals 兜底计数 */
+export function getGrokCompactionMeta(sessionDir: string): GrokCompactionMeta {
+  const records = readCompactionRequests(sessionDir);
+  const signals = readGrokSignals(sessionDir);
+  const okRecords = records.filter((r) => !r.error || r.summary);
+  const fromReqs = okRecords.length;
+  const fromSignals = typeof signals?.compactionCount === 'number' && signals.compactionCount > 0
+    ? signals.compactionCount
+    : 0;
+  const compact_count = Math.max(fromReqs, fromSignals);
+  const timeFromReqs = okRecords
+    .map((r) => r.createdAtMs)
+    .filter((t) => t > 0);
+  const time_compacting = timeFromReqs.length > 0
+    ? Math.max(...timeFromReqs)
+    : undefined;
+  const tokensBefore = typeof signals?.totalTokensBeforeCompaction === 'number'
+    && signals.totalTokensBeforeCompaction > 0
+    ? signals.totalTokensBeforeCompaction
+    : undefined;
+  return {
+    compact_count,
+    time_compacting,
+    tokensBefore,
+    records: okRecords,
+  };
+}
+
+function readGrokSignals(sessionDir: string): {
+  compactionCount?: number;
+  totalTokensBeforeCompaction?: number;
+} | null {
+  const p = path.join(sessionDir, 'signals.json');
+  if (!fs.existsSync(p)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    if (!data || typeof data !== 'object') return null;
+    return {
+      compactionCount: typeof data.compactionCount === 'number' ? data.compactionCount : undefined,
+      totalTokensBeforeCompaction: typeof data.totalTokensBeforeCompaction === 'number'
+        ? data.totalTokensBeforeCompaction
+        : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildGrokCompactMessageText(
+  rec: GrokCompactionRecord,
+  tokensBefore?: number,
+): string {
+  const trigger = (rec.trigger || '').toLowerCase();
+  const sourceLabel = trigger === 'manual' ? '手动' : trigger === 'auto' ? '自动' : undefined;
+  const lines: string[] = [
+    sourceLabel ? `[Context Compacted] ${sourceLabel}压缩` : '[Context Compacted]',
+  ];
+  if (tokensBefore != null && tokensBefore > 0) {
+    lines.push(`压缩前上下文约 ${tokensBefore.toLocaleString()} tokens。`);
+  }
+  if (rec.summary) {
+    lines.push('', '## 摘要', rec.summary);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 在 pre/post compact 缝合点插入 assistant compact 消息（对齐 Kimi）。
+ * afterMsgIndex：该 entry 处理完后 messages 的最后下标（-1 表示尚无消息）。
+ */
+function injectGrokCompactMessages(
+  messages: GrokMessageItem[],
+  sessionId: string,
+  inserts: Array<{ afterMsgIndex: number; rec: GrokCompactionRecord }>,
+  tokensBefore?: number,
+): void {
+  if (!inserts.length) return;
+  // 从后往前插，保持 earlier 下标有效
+  const ordered = [...inserts].sort((a, b) => b.afterMsgIndex - a.afterMsgIndex);
+  for (const { afterMsgIndex, rec } of ordered) {
+    const idx = Math.max(-1, Math.min(afterMsgIndex, messages.length - 1));
+    const prev = idx >= 0 ? messages[idx] : undefined;
+    const next = idx + 1 < messages.length ? messages[idx + 1] : undefined;
+    let parentID: string | undefined;
+    for (let i = idx; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== 'user') continue;
+      if (isGrokContinuationSummary(m.text) || isGrokCompactionText(m.text)) continue;
+      parentID = m.uuid;
+      break;
+    }
+    // 优先夹在相邻消息之间（墙钟回填后顺序稳定）；createdAt 落在区间内则用真实时间
+    let ts: number;
+    if (
+      rec.createdAtMs > 1e11
+      && prev
+      && next
+      && rec.createdAtMs > prev.timestamp
+      && rec.createdAtMs < next.timestamp
+    ) {
+      ts = rec.createdAtMs;
+    } else if (prev && next && next.timestamp > prev.timestamp) {
+      ts = Math.floor((prev.timestamp + next.timestamp) / 2);
+    } else if (rec.createdAtMs > 1e11) {
+      ts = rec.createdAtMs;
+    } else if (prev) {
+      ts = prev.timestamp + 1;
+    } else if (next) {
+      ts = Math.max(1, next.timestamp - 1);
+    } else {
+      ts = Date.now();
+    }
+    const text = buildGrokCompactMessageText(rec, tokensBefore);
+    const uuid = `grok-compact-${rec.requestId || String(rec.createdAtMs || ts)}`;
+    const item: GrokMessageItem = {
+      uuid,
+      sessionId,
+      role: 'assistant',
+      timestamp: ts,
+      text,
+      toolCalls: [],
+      model: normalizeGrokModelId(rec.model),
+      parentID,
+      compaction: true,
+      parts: [{ type: 'text', text, state: 'done' }],
+      // 不计费：compact summary 用量未稳定落在 turn_completed
+      realUsage: { input: 0, output: 0, cached: 0, reasoning: 0 },
+    };
+    messages.splice(idx + 1, 0, item);
+  }
+}
+
 /** 按 <user_query> 轮次分桶 assistant 步骤（subagent 无 query 时整段一条） */
 function bucketAssistantsByUserTurn(messages: GrokMessageItem[]): GrokMessageItem[][] {
   type TurnBucket = { assistants: GrokMessageItem[] };
@@ -1115,11 +1273,11 @@ async function readChatHistory(sessionDir: string): Promise<any[]> {
   return (await readJsonlCachedAsync(p)) ?? [];
 }
 
-/** 读取 compaction_requests 目录，返回按 created_at 升序的 pre-compact chat_history 列表 */
-function readCompactionRequests(sessionDir: string): { createdAt: string; entries: any[] }[] {
+/** 读取 compaction_requests 目录，返回按 created_at 升序的 pre-compact 记录 */
+function readCompactionRequests(sessionDir: string): GrokCompactionRecord[] {
   const dir = path.join(sessionDir, 'compaction_requests');
   if (!fs.existsSync(dir)) return [];
-  const results: { createdAt: string; entries: any[] }[] = [];
+  const results: GrokCompactionRecord[] = [];
   try {
     for (const file of fs.readdirSync(dir)) {
       if (!file.endsWith('.json')) continue;
@@ -1127,9 +1285,19 @@ function readCompactionRequests(sessionDir: string): { createdAt: string; entrie
       try {
         const raw = fs.readFileSync(p, 'utf-8');
         const data = JSON.parse(raw);
-        if (Array.isArray(data.chat_history) && data.chat_history.length > 0) {
-          results.push({ createdAt: data.created_at || '', entries: data.chat_history });
-        }
+        if (!Array.isArray(data.chat_history) || data.chat_history.length === 0) continue;
+        const createdAt = typeof data.created_at === 'string' ? data.created_at : '';
+        const createdAtMs = createdAt ? Date.parse(createdAt) : NaN;
+        results.push({
+          requestId: String(data.request_id || file.replace(/\.json$/, '')),
+          createdAt,
+          createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : 0,
+          trigger: typeof data.trigger === 'string' ? data.trigger : undefined,
+          model: typeof data.model === 'string' ? data.model : undefined,
+          summary: typeof data.summary === 'string' ? data.summary : undefined,
+          error: data.error == null ? null : String(data.error),
+          entries: data.chat_history,
+        });
       } catch { /* 跳过损坏文件 */ }
     }
   } catch { return []; }
@@ -1541,7 +1709,10 @@ export async function listGrokCodeMessages(params: {
   const chatEntries = await readChatHistory(dir);
 
   // 合并 compact 前的消息：compaction_requests 保存了 compact 时刻的完整 chat_history
-  const compactionReqs = readCompactionRequests(dir);
+  const compactionMeta = getGrokCompactionMeta(dir);
+  const compactionReqs = compactionMeta.records;
+  /** 每个 compact 缝合点：处理完该 entry 下标后插入 compact 消息 */
+  const compactSeamEntryIndexes: Array<{ entryIndex: number; rec: GrokCompactionRecord }> = [];
   let entries: any[];
   if (compactionReqs.length > 0) {
     // 最早一次 compact 的 chat_history：去 system prompt + 去末尾 compaction prompt
@@ -1553,6 +1724,12 @@ export async function listGrokCodeMessages(params: {
         && isCompactionPrompt(getEntryText(e))) return false;
       return true;
     });
+    if (entries.length > 0) {
+      compactSeamEntryIndexes.push({
+        entryIndex: entries.length - 1,
+        rec: compactionReqs[0],
+      });
+    }
     // 后续 compact 及当前 chat_history：找到续写摘要后的新消息追加
     const appendAfterContinuation = (target: any[], source: any[]) => {
       let found = false;
@@ -1572,11 +1749,23 @@ export async function listGrokCodeMessages(params: {
     };
     for (let i = 1; i < compactionReqs.length; i++) {
       appendAfterContinuation(entries, compactionReqs[i].entries);
+      if (entries.length > 0) {
+        compactSeamEntryIndexes.push({
+          entryIndex: entries.length - 1,
+          rec: compactionReqs[i],
+        });
+      }
     }
     appendAfterContinuation(entries, chatEntries);
   } else {
     entries = chatEntries;
   }
+
+  const seamByEntryIndex = new Map<number, GrokCompactionRecord>();
+  for (const s of compactSeamEntryIndexes) {
+    seamByEntryIndex.set(s.entryIndex, s.rec);
+  }
+  const compactInserts: Array<{ afterMsgIndex: number; rec: GrokCompactionRecord }> = [];
 
   const messages: GrokMessageItem[] = [];
   /** 仅 <user_query> 用户轮次，避免 system-reminder 抢走 parentID */
@@ -1656,6 +1845,8 @@ export async function listGrokCodeMessages(params: {
   for (let lineIndex = 0; lineIndex < entries.length; lineIndex++) {
     const e = entries[lineIndex];
     t += 1; // 保序递增
+    // try/finally：continue 也记录 compact 缝合点
+    try {
     if (e.type === 'tool_result') {
       // 已预扫；若 assistant 已创建则回填（兼容乱序）。status 不覆盖 updates.failed
       if (e.tool_call_id) {
@@ -1798,6 +1989,13 @@ export async function listGrokCodeMessages(params: {
       );
       item.timestamp = t;
     }
+    } finally {
+      // compact 缝合点：本 entry 处理完后的 message 下标
+      const seamRec = seamByEntryIndex.get(lineIndex);
+      if (seamRec) {
+        compactInserts.push({ afterMsgIndex: messages.length - 1, rec: seamRec });
+      }
+    }
   }
   flushOrphanReasoning(entries.length);
 
@@ -1845,7 +2043,36 @@ export async function listGrokCodeMessages(params: {
     }
   }
 
+  // compact 消息在 usage 挂载后插入，避免抢 turn 计费桶
+  injectGrokCompactMessages(
+    messages,
+    sessionId,
+    compactInserts,
+    compactionMeta.tokensBefore,
+  );
+
   return messages;
+}
+
+/** 从消息列表推导 compact 次数/时间（合成消息 + 无 req 时的续写摘要兜底） */
+export function deriveGrokCompactionStats(
+  messages: GrokMessageItem[],
+  sessionDir?: string,
+): { compact_count?: number; time_compacting?: number } {
+  const meta = sessionDir ? getGrokCompactionMeta(sessionDir) : null;
+  const fromMsgs = messages.filter(
+    (m) => m.compaction || isGrokCompactionText(m.text) || isGrokContinuationSummary(m.text),
+  );
+  const count = Math.max(meta?.compact_count || 0, fromMsgs.length);
+  if (count <= 0) return {};
+  const times = [
+    ...(meta?.time_compacting ? [meta.time_compacting] : []),
+    ...fromMsgs.map((m) => m.timestamp).filter((t) => t > 0),
+  ];
+  return {
+    compact_count: count,
+    time_compacting: times.length ? Math.max(...times) : meta?.time_compacting,
+  };
 }
 
 /** 从 messages + usage + session 汇总 models_used（逗号分隔、已归一） */
