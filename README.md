@@ -46,5 +46,5 @@ API：`syncSessions` / `queryCached` / `getSessionPrompts` / `listRefs` / `ensur
 - **M1** core 自 monorepo common 迁入
 - **M2** lib + 7 sources + listSessions；server-hono 以 shim 接入；**无缓存**
 - **M3** store schema + sync + meta JSON + CLI
-- M4 server-hono 接缓存 + pricing 填补
+- **M4** server-hono `listSessionsCached` + `fillSessionPricing` + `?fresh=1`/`?live=1`
 - M5 token-stats 切缓存；文档/公开仓

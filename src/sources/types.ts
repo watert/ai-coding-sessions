@@ -121,6 +121,24 @@ export interface UnifiedSessionInfo {
     }>;
   }>;
 
+  /**
+   * 分模型用量明细（缓存列 / 无 pricing 路径）
+   * API 层用此字段现算 AUTO pricing
+   */
+  usage_by_model?: Array<{
+    provider?: string;
+    model?: string;
+    modelKey?: string;
+    input: number;
+    output: number;
+    cache_read?: number;
+    cache_write?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    reasoning?: number;
+    tokens?: number;
+  }>;
+
   source: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy'; // 数据来源标识
 }
 

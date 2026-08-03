@@ -7,9 +7,16 @@ import type { SourceId, SessionPromptRow, UsageByModelEntry } from './schema';
 import { ALL_SOURCES } from './schema';
 import { getStoreDb } from './db';
 import { loadMeta } from './meta';
+import {
+  filterActivityOverlap,
+  getSessionActivityBounds,
+  isTimestamp,
+} from '../lib/date-utils';
+import dayjs from 'dayjs';
 
 export interface QueryCachedOptions {
   source?: SourceId | 'all';
+  /** YYYY-MM-DD 或毫秒时间戳字符串（与 listSessions 一致） */
   startDate?: string;
   endDate?: string;
   /** 默认排除 orphan */
@@ -20,12 +27,17 @@ export interface QueryCachedOptions {
   offset?: number;
 }
 
-function dayStartMs(day: string): number {
-  return new Date(`${day}T00:00:00`).getTime();
+/** SQL 预筛边界（放宽）；精确重叠在 payload 层用 filterActivityOverlap */
+function prefilterStartMs(startDate?: string): number | null {
+  if (!startDate) return null;
+  if (isTimestamp(startDate)) return Number(startDate);
+  return dayjs(startDate).startOf('day').valueOf();
 }
 
-function dayEndMs(day: string): number {
-  return new Date(`${day}T23:59:59.999`).getTime();
+function prefilterEndMs(endDate?: string): number | null {
+  if (!endDate) return null;
+  if (isTimestamp(endDate)) return Number(endDate);
+  return dayjs(endDate).endOf('day').valueOf();
 }
 
 export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
@@ -51,13 +63,16 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
   if (!includeOrphan) {
     where.push('orphaned_at IS NULL');
   }
-  if (startDate) {
+  // 预筛：last_active 不早于 start 太多（放宽，精确过滤在下方）
+  const startMs = prefilterStartMs(startDate);
+  if (startMs != null) {
     where.push('(last_active_at IS NULL OR last_active_at >= ?)');
-    params.push(dayStartMs(startDate));
+    params.push(startMs);
   }
-  if (endDate) {
+  const endMs = prefilterEndMs(endDate);
+  if (endMs != null) {
     where.push('(time_created IS NULL OR time_created <= ?)');
-    params.push(dayEndMs(endDate));
+    params.push(endMs);
   }
   if (projectId) {
     where.push('project = ?');
@@ -67,15 +82,7 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
   let sql = `SELECT payload, source, session_id, orphaned_at FROM sessions`;
   if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
   sql += ` ORDER BY COALESCE(last_active_at, time_updated, 0) DESC`;
-  if (limit != null) {
-    sql += ` LIMIT ?`;
-    params.push(limit);
-    if (offset != null) {
-      sql += ` OFFSET ?`;
-      params.push(offset);
-    }
-  }
-
+  // 日期精确过滤在 JS；limit 在过滤后再切（避免少结果）
   const rows = db.prepare(sql).all(...params) as Array<{
     payload: string;
     source: string;
@@ -95,6 +102,8 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     workbuddy: 0,
   };
 
+  const dateRange = { startDate, endDate };
+
   for (const row of rows) {
     let s: UnifiedSessionInfo;
     try {
@@ -110,16 +119,9 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
       if (!used.some((id) => targetModels.has(id))) continue;
     }
 
-    // 精确活动重叠过滤（payload 内 first/last）
     if (startDate || endDate) {
-      const first = s.first_active_at_iso
-        ? Date.parse(s.first_active_at_iso)
-        : s.time_created || 0;
-      const last = s.last_active_at_iso
-        ? Date.parse(s.last_active_at_iso)
-        : s.time_updated || 0;
-      if (startDate && last < dayStartMs(startDate)) continue;
-      if (endDate && first > dayEndMs(endDate)) continue;
+      const { firstMs, lastMs } = getSessionActivityBounds(s);
+      if (!filterActivityOverlap(firstMs, lastMs, dateRange)) continue;
     }
 
     sessions.push(s);
@@ -127,9 +129,14 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     if (src in bySource) bySource[src]++;
   }
 
+  const off = offset || 0;
+  const sliced =
+    limit != null ? sessions.slice(off, off + limit) : off ? sessions.slice(off) : sessions;
+
+  // bySource 按 slice 前统计更符合 total；保持与 live listSessions 一致用过滤后全集
   const meta = loadMeta();
   return {
-    sessions,
+    sessions: sliced,
     total: sessions.length,
     bySource,
     lastUpdatedAt: meta.last_sync_at ? new Date(meta.last_sync_at) : undefined,
