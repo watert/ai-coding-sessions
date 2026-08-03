@@ -2,7 +2,7 @@
   "name": "ai-coding-sessions",
   "version": "0.1.0",
   "type": "module",
-  "description": "Multi-source AI coding session list/detail + SQLite cache (core isomorphic layer)",
+  "description": "Multi-source AI coding session list/detail + SQLite cache",
   "license": "MIT",
   "author": "waterwu <boatwind@gmail.com>",
   "repository": {
@@ -11,7 +11,8 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./core": "./src/core/index.ts"
+    "./core": "./src/core/index.ts",
+    "./pricing": "./src/pricing.ts"
   },
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -23,6 +24,7 @@
   "typesVersions": {
     "*": {
       "core": ["src/core/index.ts", "core.ts"],
+      "pricing": ["src/pricing.ts"],
       "*": ["src/*"]
     }
   },
@@ -31,10 +33,18 @@
     "test": "bun test src"
   },
   "dependencies": {
-    "lodash": "^4.17.21"
+    "dayjs": "^1.11.13",
+    "debug": "^4.4.3",
+    "diff": "^8.0.4",
+    "lodash": "^4.17.21",
+    "zod": "^3.23.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.8.0"
   },
   "devDependencies": {
     "@types/bun": "^1.3.11",
+    "@types/debug": "^4.1.12",
     "@types/lodash": "^4.17.0"
   },
   "engines": {
