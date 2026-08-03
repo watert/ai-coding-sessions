@@ -8,6 +8,7 @@ import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { spawnSync } from 'child_process';
 import { initSqliteDb, getSqliteDb, closeSqliteDb } from '../lib/sqlite';
 
 const HOMEDIR = os.homedir();
@@ -132,14 +133,27 @@ type ThreadRow = {
   cli_version?: string | null;
 };
 
+/** rollout 路径存在性：原路径或 .jsonl.zst */
+export function resolveExistingRolloutPath(rawPath: string | null | undefined): string | null {
+  if (!rawPath) return null;
+  if (fs.existsSync(rawPath)) return rawPath;
+  if (rawPath.endsWith('.jsonl') && fs.existsSync(`${rawPath}.zst`)) return `${rawPath}.zst`;
+  if (rawPath.endsWith('.jsonl.zst')) {
+    const plain = rawPath.slice(0, -4); // drop .zst
+    if (fs.existsSync(plain)) return plain;
+  }
+  return null;
+}
+
 function rowToSession(row: ThreadRow, parentId?: string): CodexSessionItem {
   const createdAt = row.created_at_ms || parseIsoMs(row.created_at);
   const updatedAt = row.updated_at_ms || parseIsoMs(row.updated_at);
   const title = (row.title || row.preview || row.first_user_message || 'Untitled').trim() || 'Untitled';
+  const rolloutPath = resolveExistingRolloutPath(row.rollout_path) || row.rollout_path;
   return {
     sessionId: row.id,
-    sessionDir: path.dirname(row.rollout_path || ''),
-    rolloutPath: row.rollout_path,
+    sessionDir: path.dirname(rolloutPath || row.rollout_path || ''),
+    rolloutPath,
     workDir: row.cwd || '',
     title,
     createdAt,
@@ -194,7 +208,11 @@ function scanRolloutSessions(): CodexSessionItem[] {
       for (const ent of entries) {
         const full = path.join(dir, ent.name);
         if (ent.isDirectory()) walk(full);
-        else if (ent.isFile() && ent.name.startsWith('rollout-') && ent.name.endsWith('.jsonl')) {
+        else if (
+          ent.isFile() &&
+          ent.name.startsWith('rollout-') &&
+          (ent.name.endsWith('.jsonl') || ent.name.endsWith('.jsonl.zst'))
+        ) {
           files.push(full);
         }
       }
@@ -256,7 +274,7 @@ export async function listCodexSessions(): Promise<CodexSessionItem[]> {
     `).all() as ThreadRow[];
 
     return rows
-      .filter((r) => r.rollout_path && fs.existsSync(r.rollout_path))
+      .filter((r) => !!resolveExistingRolloutPath(r.rollout_path))
       .map((r) => rowToSession(r, parentMap.get(r.id)));
   } catch (e) {
     console.warn('[codex-code] 读取 threads 失败，回退扫描 jsonl:', e);
@@ -277,9 +295,26 @@ type RolloutEvent = {
   payload?: any;
 };
 
-function readRolloutEvents(rolloutPath: string): RolloutEvent[] {
-  if (!rolloutPath || !fs.existsSync(rolloutPath)) return [];
-  const content = fs.readFileSync(rolloutPath, 'utf-8');
+/** 读 rollout 文本（支持 .jsonl.zst，需 PATH 上有 zstd） */
+export function readRolloutText(rolloutPath: string): string {
+  const resolved = resolveExistingRolloutPath(rolloutPath) || rolloutPath;
+  if (!resolved || !fs.existsSync(resolved)) return '';
+  if (resolved.endsWith('.jsonl.zst') || resolved.endsWith('.zst')) {
+    const r = spawnSync('zstd', ['-dc', resolved], {
+      encoding: 'utf-8',
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    if (r.error || r.status !== 0) {
+      const detail = (r.stderr || r.error?.message || 'zstd failed').toString().slice(0, 200);
+      console.warn(`[codex-code] zstd decompress failed for ${resolved}: ${detail}`);
+      return '';
+    }
+    return r.stdout || '';
+  }
+  return fs.readFileSync(resolved, 'utf-8');
+}
+
+function parseRolloutLines(content: string): RolloutEvent[] {
   return content
     .split('\n')
     .filter((l) => l.trim())
@@ -291,6 +326,58 @@ function readRolloutEvents(rolloutPath: string): RolloutEvent[] {
       }
     })
     .filter(Boolean) as RolloutEvent[];
+}
+
+/**
+ * 读 rollout 事件并应用 compact 裁剪（P1 #5）：
+ * - 最后一个带 replacement_history 的 compacted：以其为基线，只保留之后的记录
+ * - replacement_history 项转为 synthetic response_item
+ */
+export function readRolloutEvents(rolloutPath: string): RolloutEvent[] {
+  if (!rolloutPath) return [];
+  const content = readRolloutText(rolloutPath);
+  if (!content) return [];
+  const raw = parseRolloutLines(content);
+  return applyCodexCompaction(raw);
+}
+
+/** 纯函数：compacted.replacement_history + 后续事件 */
+export function applyCodexCompaction(records: RolloutEvent[]): RolloutEvent[] {
+  let startIndex = 0;
+  let baseItems: any[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    if (rec.type !== 'compacted') continue;
+    const replacement = rec.payload?.replacement_history;
+    if (Array.isArray(replacement)) {
+      baseItems = replacement;
+      startIndex = i + 1;
+    }
+  }
+  if (!baseItems.length && startIndex === 0) return records;
+
+  const synthetic: RolloutEvent[] = baseItems.map((item, idx) => ({
+    type: 'response_item',
+    timestamp: records[startIndex - 1]?.timestamp,
+    payload: item,
+    // 标记便于调试
+    _from_compact_replacement: true,
+    _compact_idx: idx,
+  })) as RolloutEvent[];
+
+  return [...synthetic, ...records.slice(startIndex)];
+}
+
+/** 从 messages 列表丢弃末尾 N 个 user 及其后内容（thread_rolled_back） */
+export function dropLastUserTurns<T extends { role: string }>(messages: T[], numTurns: number): T[] {
+  if (numTurns <= 0 || !messages.length) return messages;
+  const positions: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'user') positions.push(i);
+  }
+  if (!positions.length) return messages;
+  const cutIdx = positions[Math.max(0, positions.length - numTurns)];
+  return messages.slice(0, cutIdx);
 }
 
 function extractTextFromContent(content: unknown): string {
@@ -529,6 +616,21 @@ export async function listCodexMessages(params: {
         continue;
       }
 
+      // P1: 用户回滚最近 N 个 user turn
+      if (subtype === 'thread_rolled_back') {
+        flushAssistant();
+        const n = typeof pl.num_turns === 'number' ? pl.num_turns : 0;
+        if (n > 0) {
+          const kept = dropLastUserTurns(messages, n);
+          messages.length = 0;
+          messages.push(...kept);
+          // 重置 last user 锚点
+          const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+          lastUserUuid = lastUser?.uuid;
+        }
+        continue;
+      }
+
       continue;
     }
 
@@ -579,7 +681,27 @@ export async function listCodexMessages(params: {
         continue;
       }
 
-      // assistant response_item 作为 event_msg 缺失时的 fallback
+      // response_item.message：compact replacement 或 event_msg 缺失时的 fallback
+      if (itemType === 'message' && pl.role === 'user') {
+        flushAssistant();
+        const text = extractTextFromContent(pl.content).trim();
+        if (!text) continue;
+        const uuid = stableId(`${sessionId}:user:ri:${lineIdx}:${ts}`);
+        lastUserUuid = uuid;
+        messages.push({
+          uuid,
+          sessionId,
+          role: 'user',
+          timestamp: ts || Date.now(),
+          text,
+          toolCalls: [],
+          parts: [{ type: 'text', text, state: 'done' }],
+          model: currentModel,
+          turnId: currentTurnId,
+        });
+        continue;
+      }
+
       if (itemType === 'message' && pl.role === 'assistant') {
         const text = extractTextFromContent(pl.content).trim();
         if (text && !pendingText.includes(text)) {
@@ -604,29 +726,48 @@ export async function getCodexSessionUsageSummary(sessionIdOrPath: string): Prom
   model?: string;
 }> {
   let rolloutPath = sessionIdOrPath;
-  if (!fs.existsSync(rolloutPath) || !rolloutPath.endsWith('.jsonl')) {
+  const resolved = resolveExistingRolloutPath(rolloutPath);
+  if (!resolved) {
     const session = await findCodexSession(sessionIdOrPath);
     if (!session) throw new Error(`Codex session not found: ${sessionIdOrPath}`);
     rolloutPath = session.rolloutPath;
+  } else {
+    rolloutPath = resolved;
   }
 
-  const events = readRolloutEvents(rolloutPath);
+  // usage 统计：用未 compact 的原始事件更准确（compact 后 token_count 可能不全）
+  // 但若仅有 zst/compact 后文件，仍用 readRolloutEvents 的后续 token_count
+  const content = readRolloutText(rolloutPath);
+  const rawEvents = parseRolloutLines(content);
+  const events = applyCodexCompaction(rawEvents);
   const summary = { input: 0, output: 0, cacheRead: 0, reasoning: 0, total: 0, model: undefined as string | undefined };
 
-  for (const ev of events) {
-    if (ev.type === 'turn_context' && ev.payload?.model && !summary.model) {
-      summary.model = ev.payload.model;
+  // 优先扫 compact 后时间线里的 token_count；若无则扫全量 raw
+  const countFrom = (list: RolloutEvent[]) => {
+    for (const ev of list) {
+      if (ev.type === 'turn_context' && ev.payload?.model && !summary.model) {
+        summary.model = ev.payload.model;
+      }
+      if (ev.type === 'event_msg' && ev.payload?.type === 'token_count') {
+        const u = parseUsageFromTokenCount(ev.payload.info);
+        if (!u) continue;
+        summary.input += u.input;
+        summary.output += u.output;
+        summary.cacheRead += u.cacheRead;
+        summary.reasoning += u.reasoning;
+        summary.total += u.total;
+      }
     }
-    if (ev.type === 'event_msg' && ev.payload?.type === 'token_count') {
-      const u = parseUsageFromTokenCount(ev.payload.info);
-      if (!u) continue;
-      // last_token_usage 是该 turn 增量；累加各 turn
-      summary.input += u.input;
-      summary.output += u.output;
-      summary.cacheRead += u.cacheRead;
-      summary.reasoning += u.reasoning;
-      summary.total += u.total;
-    }
+  };
+  countFrom(events);
+  // compact 基线后若没有任何 token_count，回退 raw（避免归零）
+  if (summary.total === 0 && events !== rawEvents) {
+    summary.input = 0;
+    summary.output = 0;
+    summary.cacheRead = 0;
+    summary.reasoning = 0;
+    summary.total = 0;
+    countFrom(rawEvents);
   }
 
   return summary;

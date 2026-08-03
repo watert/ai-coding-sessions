@@ -18,6 +18,7 @@ export * from './sources/deliverable-signals';
 export * from './sources/tool-error-soft';
 
 export * from './sources/claude-code';
+export * from './sources/claude-main-chain';
 export * from './sources/codex-code';
 export * from './sources/grok-code';
 export * from './sources/kimi-code';

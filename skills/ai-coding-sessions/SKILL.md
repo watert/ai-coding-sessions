@@ -2,7 +2,7 @@
 name: ai-coding-sessions
 description: 分析、查询、导出 AI Coding Sessions（多 source：opencode / claude / kimi / grok / codex / zcode / workbuddy）。用户需要会话列表/详情、轨迹 trace、成本 AUTO、导出 prompts、subagent 聚合、tool 失败、prefill/lag/tps、thinkingEffort、grok 真实 usage，或排查 session 数据时使用。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.6.0
+  version: 1.7.0
 ---
 
 # AI Coding Sessions
@@ -12,6 +12,7 @@ metadata:
 - 包 README：`../../README.md`
 - 轨迹设计：[issue #1](https://github.com/watert/ai-coding-sessions/issues/1)
 - 跨 agent handoff：[issue #4](https://github.com/watert/ai-coding-sessions/issues/4)
+- Claude/Codex 主链 fidelity：[issue #5](https://github.com/watert/ai-coding-sessions/issues/5)
 - 参考：[Source](./references/sources.md) · [CLI](./references/cli.md) · [排查](./references/troubleshooting.md)
 
 ## 触发场景

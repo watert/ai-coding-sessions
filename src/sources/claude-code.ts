@@ -7,6 +7,11 @@ import os from 'os';
 import fs from 'fs';
 import z from 'zod';
 import _ from 'lodash';
+import {
+  parseClaudeJsonl,
+  reconstructClaudeMainChain,
+  type ClaudeChainMeta,
+} from './claude-main-chain';
 
 const HOMEDIR = os.homedir();
 const CLAUDE_BASE = `${HOMEDIR}/.claude`;
@@ -119,18 +124,34 @@ export const MsgItemSchema = z.object({
 // 从 Schema 推导出 TypeScript 类型
 export type MsgItem = z.infer<typeof MsgItemSchema>;
 
-export async function listClaudeCodeMessages(params: {project: string, sessionId: string}) {
-  const {project, sessionId} = params;
+/**
+ * 读 session jsonl 并重建主链（P1 #5）。
+ * 跳过 sidechain、处理 compact/snip、沿 parentUuid 取 leaf 链、回收并行 tool sibling。
+ */
+export async function listClaudeCodeMessages(params: {
+  project: string;
+  sessionId: string;
+}): Promise<any[]> {
+  const result = await listClaudeCodeMessagesWithMeta(params);
+  return result.messages;
+}
+
+/** 同 listClaudeCodeMessages，附带重建 meta */
+export async function listClaudeCodeMessagesWithMeta(params: {
+  project: string;
+  sessionId: string;
+}): Promise<{ messages: any[]; meta: ClaudeChainMeta }> {
+  const { project, sessionId } = params;
   const projectPath = getProjectPath(project);
   const subagentPath = `${projectPath}/${sessionId}`;
   const content = await fs.promises.readFile(`${subagentPath}.jsonl`, 'utf-8');
-  let items = content.split('\n').filter(line => line.trim() !== '').map(line => JSON.parse(line)).filter(msg => {
-    const isValidMsg = !!msg.message && !msg.isMeta;
-    const isUserCmd = msg.type === 'user' && !msg.promptId;
-    return isValidMsg && !isUserCmd;
-  });
-  return items;
+  const records = parseClaudeJsonl(content);
+  return reconstructClaudeMainChain(records);
 }
+
+/** 测试/调试：直接对 records 做主链重建 */
+export { reconstructClaudeMainChain, parseClaudeJsonl } from './claude-main-chain';
+export type { ClaudeChainMeta, ClaudeChainResult } from './claude-main-chain';
 
 if (require.main === module) { // call from cli script
 

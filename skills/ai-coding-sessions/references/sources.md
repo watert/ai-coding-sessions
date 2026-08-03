@@ -5,10 +5,10 @@
 | source | 本地形态（默认） | 适配文件 |
 |--------|------------------|----------|
 | `opencode` | OpenCode SQLite（`opencode db path`） | `opencode.ts` + 统一层 |
-| `claude` | `~/.claude/` history + project JSONL | `claude-code.ts` + `claude-source.ts` |
+| `claude` | `~/.claude/` history + project JSONL | `claude-code.ts` + `claude-main-chain.ts` + `claude-source.ts` |
 | `kimi` | `~/.kimi-code/` index + wire.jsonl | `kimi-code.ts` + `kimi-source.ts`（含 subagent 虚拟 session） |
 | `grok` | `~/.grok/sessions/` | `grok-code.ts` + `grok-source.ts`（真实 usage；cost 优先 costUsdTicks；旧 → `usage_source=estimate`） |
-| `codex` | `~/.codex/` state sqlite + rollout JSONL | `codex-code.ts` + `codex-source.ts` |
+| `codex` | `~/.codex/` state sqlite + rollout JSONL/`.jsonl.zst` | `codex-code.ts` + `codex-source.ts` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts` |
 
@@ -29,6 +29,10 @@
 | grok usage | 新会话 real；旧 estimate；trace 时间戳可能偏序号化（见 #1 P1） |
 | 成本 | 缓存不写 pricing；detail 依赖 `configurePricing` 或源内 cost 字段 |
 | step 边界 | opencode 有 `step-start`/`step-finish`；其它多条 assistant 拼一轮 |
+| **Claude 主链**（[#5](https://github.com/watert/ai-coding-sessions/issues/5)） | `parentUuid` leaf 链；`compact_boundary` / snip；跳过 `isSidechain`；并行 tool sibling 回收 → 避免长会话 token **重复计入** |
+| **Codex compact**（#5） | `.jsonl.zst`（需 `zstd`）；`compacted.replacement_history`；`thread_rolled_back` → 修正 usage 口径 |
+
+改完 Claude/Codex 解析后需 **`sync --reconcile`**（或 `?fresh=1`）再看 token-stats。
 
 ## 研究 agent 源码（可选）
 
