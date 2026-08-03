@@ -172,7 +172,7 @@ bun src/store/cli.ts help
 | `tool-errors` | **live** | soft/hard tool failure rows for one session |
 | `detail` | **live** | full messages; use size flags to fit Agent context |
 | `prompts` | cache | user prompts only |
-| `stats` | cache | **P0** window clip (`usage_by_day`) + root/sub `split` + `quality` + totals / tokensByDay ([#2](https://github.com/watert/ai-coding-sessions/issues/2)) |
+| `stats` | cache | **P0** clip + split + quality ([#2](https://github.com/watert/ai-coding-sessions/issues/2)); **P1** `by_model` · optional cost · `costByDay` · `tool_fail` ([#3](https://github.com/watert/ai-coding-sessions/issues/3)) |
 | `sync` | write cache | `--full` / `--reconcile` |
 | `refs` | live refs | no convert/write |
 

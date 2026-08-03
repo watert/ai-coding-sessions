@@ -114,5 +114,8 @@ export type {
   CliStatsResult,
   StatsTokenBucket,
   StatsQuality,
+  ModelStatRow,
+  ToolFailSnapshot,
+  ToolFailTopSession,
   ComputeCliStatsOptions,
 } from './store';

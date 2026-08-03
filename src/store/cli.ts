@@ -798,7 +798,11 @@ async function cmdStats(args: CliArgs) {
       rootsOnly: args.rootsOnly,
     });
 
-    const stats = computeCliStats(result.sessions, { startDate, endDate });
+    const stats = computeCliStats(result.sessions, {
+      startDate,
+      endDate,
+      topFail: args.limit ?? 10,
+    });
     const meta = loadMeta(paths.metaPath);
     const dbStats = countStats();
 
@@ -808,7 +812,6 @@ async function cmdStats(args: CliArgs) {
         source: args.source,
         startDate: startDate ?? null,
         endDate: endDate ?? null,
-        /** list 过滤后的 session 数（与 stats.sessions 一致） */
         sessions: stats.sessions,
         clipped: stats.clipped,
         window: stats.window,
@@ -816,15 +819,18 @@ async function cmdStats(args: CliArgs) {
         quality: stats.quality,
         bySource: stats.bySource,
         bySourceDetail: stats.bySourceDetail,
+        by_model: stats.by_model,
         totals: stats.totals,
         tokensByDay: stats.tokensByDay,
+        costByDay: stats.costByDay,
+        tool_fail: stats.tool_fail,
         store: {
           paths,
           meta_last_sync_at: meta.last_sync_at ?? null,
           db_stats: dbStats,
         },
         note:
-          'P0: totals tokens clipped via usage_by_day when present; see split/quality. by_model/cost → issue #3',
+          'P0 clip+split+quality (#2); P1 by_model/cost/costByDay/tool_fail (#3). No host model-normalize.',
       },
       args.pretty,
     );

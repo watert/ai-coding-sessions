@@ -172,7 +172,7 @@ bun src/store/cli.ts help
 | `tool-errors` | **live** | 单 session soft/hard 工具失败行 |
 | `detail` | **live** | 完整 messages；用体量 flag 适配 Agent 上下文 |
 | `prompts` | 缓存 | 仅 user prompts |
-| `stats` | 缓存 | **P0** 窗口裁剪（`usage_by_day`）+ root/sub `split` + `quality` + totals / tokensByDay（[#2](https://github.com/watert/ai-coding-sessions/issues/2)） |
+| `stats` | 缓存 | **P0** 裁剪 + split + quality（[#2](https://github.com/watert/ai-coding-sessions/issues/2)）；**P1** `by_model` · 可选成本 · `costByDay` · `tool_fail`（[#3](https://github.com/watert/ai-coding-sessions/issues/3)） |
 | `sync` | 写缓存 | `--full` / `--reconcile` |
 | `refs` | live refs | 不 convert / 不写库 |
 

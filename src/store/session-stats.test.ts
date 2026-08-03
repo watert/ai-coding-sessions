@@ -32,6 +32,8 @@ function base(partial: Partial<UnifiedSessionInfo> & { id: string }): UnifiedSes
     first_active_at_iso: '2026-08-01T00:00:00.000Z',
     parent_id: partial.parent_id,
     usage_by_day: partial.usage_by_day,
+    usage_by_model: partial.usage_by_model,
+    pricing: partial.pricing,
     usage_is_incomplete: partial.usage_is_incomplete,
     cost_is_partial: partial.cost_is_partial,
     usage_source: partial.usage_source,
@@ -176,5 +178,141 @@ describe('computeCliStats P0', () => {
     expect(stats.clipped).toBe(false);
     expect(stats.totals.tokens).toBe(350);
     expect(stats.tokensByDay['2026-08-01']).toBe(100);
+  });
+});
+
+describe('computeCliStats P1', () => {
+  const s1 = base({
+    id: 's1',
+    source: 'kimi',
+    total_tokens: 300,
+    total_input: 200,
+    total_output: 100,
+    total_tool_calls: 20,
+    total_tool_calls_failed: 4,
+    title: 'main',
+    usage_by_day: [
+      {
+        date: '2026-08-01',
+        tokens: 100,
+        input: 60,
+        output: 40,
+        cacheRead: 0,
+        cacheWrite: 0,
+        usd: 0.1,
+        cny: 0.7,
+        byModel: [
+          {
+            modelKey: 'kimi/k2',
+            tokens: 100,
+            input: 60,
+            output: 40,
+            cacheRead: 0,
+            cacheWrite: 0,
+            usd: 0.1,
+            cny: 0.7,
+          },
+        ],
+      },
+      {
+        date: '2026-08-03',
+        tokens: 200,
+        input: 140,
+        output: 60,
+        cacheRead: 0,
+        cacheWrite: 0,
+        usd: 0.2,
+        cny: 1.4,
+        byModel: [
+          {
+            modelKey: 'kimi/k2',
+            tokens: 150,
+            input: 100,
+            output: 50,
+            cacheRead: 0,
+            cacheWrite: 0,
+            usd: 0.15,
+            cny: 1.05,
+          },
+          {
+            modelKey: 'kimi/k3',
+            tokens: 50,
+            input: 40,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            usd: 0.05,
+            cny: 0.35,
+          },
+        ],
+      },
+    ],
+  });
+
+  const s2 = base({
+    id: 's2',
+    source: 'grok',
+    parent_id: 's1',
+    total_tokens: 80,
+    total_input: 50,
+    total_output: 30,
+    total_tool_calls: 10,
+    total_tool_calls_failed: 8,
+    title: 'sub fail-heavy',
+    usage_by_model: [
+      { modelKey: 'xai/grok', input: 50, output: 30, cache_read: 0, tokens: 80 },
+    ],
+    pricing: { usd: 0.5, cny: 3.5, details: [] },
+  });
+
+  test('by_model + cost + costByDay', () => {
+    const stats = computeCliStats([s1, s2], {
+      startDate: '2026-08-03',
+      endDate: '2026-08-03',
+    });
+
+    // s1 clipped to day 08-03 only → 200 tokens; s2 no usage_by_day → full 80
+    expect(stats.totals.tokens).toBe(280);
+    expect(stats.totals.cost_available).toBe(true);
+    expect(stats.totals.usd).toBeCloseTo(0.2 + 0.5, 5);
+    expect(stats.totals.cost_note).toBeNull();
+
+    expect(stats.by_model.length).toBeGreaterThanOrEqual(2);
+    const k2 = stats.by_model.find((m) => m.modelKey === 'kimi/k2')!;
+    const k3 = stats.by_model.find((m) => m.modelKey === 'kimi/k3')!;
+    const grok = stats.by_model.find((m) => m.modelKey === 'xai/grok')!;
+    expect(k2.tokens).toBe(150);
+    expect(k2.usd).toBeCloseTo(0.15, 5);
+    expect(k3.tokens).toBe(50);
+    expect(grok.tokens).toBe(80);
+    expect(grok.usd).toBeCloseTo(0.5, 5);
+    // sorted by tokens desc
+    expect(stats.by_model[0].tokens).toBeGreaterThanOrEqual(stats.by_model[1].tokens);
+
+    expect(stats.tokensByDay['2026-08-03']).toBe(200);
+    expect(stats.costByDay['2026-08-03'].usd).toBeCloseTo(0.2, 5);
+    expect(stats.tokensByDay['2026-08-01']).toBeUndefined();
+  });
+
+  test('tool_fail top_sessions', () => {
+    const stats = computeCliStats([s1, s2], { topFail: 5 });
+    expect(stats.tool_fail.tool_calls_failed).toBe(12);
+    expect(stats.tool_fail.sessions_with_fails).toBe(2);
+    expect(stats.tool_fail.top_sessions[0].id).toBe('s2');
+    expect(stats.tool_fail.top_sessions[0].tool_calls_failed).toBe(8);
+    expect(stats.tool_fail.fail_rate).toBeCloseTo(12 / 30, 4);
+  });
+
+  test('无成本时 cost_note', () => {
+    const bare = base({
+      id: 'b',
+      total_tokens: 10,
+      usage_by_day: [
+        { date: '2026-08-01', tokens: 10, input: 5, output: 5, cacheRead: 0, cacheWrite: 0, usd: 0, cny: 0 },
+      ],
+    });
+    const stats = computeCliStats([bare]);
+    expect(stats.totals.cost_available).toBe(false);
+    expect(stats.totals.cost_note).toContain('no day/pricing');
   });
 });
