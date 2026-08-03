@@ -15,15 +15,16 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 |------|------|
 | `list` | 列表（cache 默认；`--live`；`--parent=` / `--roots`；日期与 limit） |
 | `children` | 子 session（`list --parent=<id>`） |
-| `trace` / `timeline` | **轨迹骨架**（turn 分组 + soft-fail；默认无 tool I/O；`--io` / `--reasoning` / `--jsonl`；`--status=soft`） |
-| `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children` |
+| `trace` / `timeline` | **轨迹骨架**（turn + soft-fail + lag/prefill；默认无 tool I/O；`--io` / `--format=md` / `--out=`） |
+| `tool-errors` | 单 session soft/hard 工具失败（`--status=hard` / `--tool=` / `--out=`） |
+| `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children`；含 `timing` |
 | `prompts` | 缓存 user prompts |
 | `stats` | 聚合 token / bySource / tokensByDay |
 | `sync` | 增量同步缓存（`--reconcile` / `--full`） |
 | `refs` | listRefs（无 convert/write） |
 | `help` | 帮助 |
 
-默认 stdout **JSON**（`--raw` 单行；`trace --jsonl` 逐步一行）。日志走 **stderr**。
+默认 stdout **JSON**（`--raw` 单行；`trace --jsonl` 逐步一行；`--format=md --out=trace.md` 落盘）。日志走 **stderr**。
 
 ### Agent 轨迹
 
@@ -31,7 +32,9 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 bun src/store/cli.ts list --source=all --days=3 --roots --limit=20
 bun src/store/cli.ts children --source=kimi --id=<parent>
 bun src/store/cli.ts trace --source=kimi --id=<id>
+bun src/store/cli.ts tool-errors --source=kimi --id=<id> --status=hard
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --from=0 --to=12
+bun src/store/cli.ts trace --source=kimi --id=<id> --format=md --out=/tmp/trace.md
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 ```
 

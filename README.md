@@ -153,6 +153,8 @@ bun src/store/cli.ts children --source=kimi --id=<parentSessionId>
 bun src/store/cli.ts trace --source=kimi --id=<id>                    # skeleton (~KB)
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
 bun src/store/cli.ts trace --source=kimi --id=<id> --jsonl --max-steps=30
+bun src/store/cli.ts trace --source=kimi --id=<id> --format=md --out=trace.md
+bun src/store/cli.ts tool-errors --source=kimi --id=<id> --status=hard
 bun src/store/cli.ts detail --source=opencode --id=ses_xxx
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
@@ -167,13 +169,16 @@ bun src/store/cli.ts help
 | `list` | cache (default) or `--live` | `--parent=` / `--roots`; compact by default |
 | `children` | cache | `list --parent=<id>` |
 | `trace` | **live** | timeline skeleton (no tool I/O by default); alias `timeline` |
+| `tool-errors` | **live** | soft/hard tool failure rows for one session |
 | `detail` | **live** | full messages; use size flags to fit Agent context |
 | `prompts` | cache | user prompts only |
 | `stats` | cache | bySource + token totals + tokensByDay |
 | `sync` | write cache | `--full` / `--reconcile` |
 | `refs` | live refs | no convert/write |
 
-**Trace / detail flags:** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--with-children` · `--max-steps=`
+**Trace / detail flags:** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=json\|jsonl\|md` · `--out=PATH` · `--with-children` · `--max-steps=`
+
+**Trace step timing (stable across sources):** `lag_ms` (TTFT) · `prefill_tps` · `decode_tps` · `duration_ms`. Detail/trace also expose session-level `timing` (`avg_latency_ms` / `avg_prefill_tps` / `avg_tps`).
 
 **Recommended Agent workflow**
 
@@ -181,7 +186,9 @@ bun src/store/cli.ts help
 list --roots → pick id
 children --id=…          # subagents if any
 trace --id=…             # cheap full path
+tool-errors --id=…       # soft/hard failures only
 trace --id=… --io --from=N --to=M   # dig a slice
+trace --id=… --out=trace.md        # export markdown
 detail --tools-only --max-output-chars=500 --from=N --to=M
 ```
 
@@ -189,7 +196,7 @@ Common flags: `--source=` · `--days=` · `--start=` · `--end=` · `--limit=` �
 
 **Legacy:** bare flags = `sync`; `--prompts=src:id`; `--refs-only`.
 
-Heavier host analysis (`export-weekly-prompts`, `analyze-tool-errors`, full token-stats) stays out of this package for now.
+Heavier host analysis (`export-weekly-prompts`, cross-session `analyze-tool-errors`, full token-stats) stays out of this package for now.
 
 npm scripts: `bun run cli` · `bun run sync` · `bun run sync:reconcile`.
 

@@ -1,9 +1,16 @@
 /**
  * Session trajectory helpers（Agent 友好 skeleton / detail 裁剪）
  * P1: turn 分组 · soft-fail 暴露
+ * P2: tool-errors · export md/jsonl · 稳定 prefill/lag
  */
 
 import { classifySoftToolError } from '../sources/tool-error-soft';
+import {
+  createTimingLists,
+  pushAssistantTimingSample,
+  summarizeTimingLists,
+  type TimingSummary,
+} from '../lib/timing-stats';
 
 export interface TraceBuildOptions {
   /** include tool name rows (default true) */
@@ -41,6 +48,32 @@ export interface TraceToolRow {
   soft_kind?: string;
 }
 
+/** 包级 tool-error 行（单 session 过滤） */
+export interface ToolErrorRow {
+  i: number;
+  turn: number;
+  msg_id: string;
+  role: string;
+  name: string;
+  status: string;
+  callID?: string;
+  soft: boolean;
+  soft_kind?: string;
+  input_len?: number;
+  output_len?: number;
+  error_preview?: string | null;
+  output_preview?: string | null;
+}
+
+export interface StepTiming {
+  /** TTFT / wait before decode：decodeStart - created */
+  lag_ms: number | null;
+  /** decode 时长：completed - decodeStart（无 decodeStart 则为 duration） */
+  decode_ms: number | null;
+  prefill_tps: number | null;
+  decode_tps: number | null;
+}
+
 export interface TraceStep {
   i: number;
   /** 0-based user turn（user boundary / parentID 链） */
@@ -53,6 +86,10 @@ export interface TraceStep {
   t: number | null;
   done: number | null;
   duration_ms: number | null;
+  /** 稳定字段：TTFT / prefill / decode（跨 source 统一口径） */
+  lag_ms: number | null;
+  prefill_tps: number | null;
+  decode_tps: number | null;
   model: string | null;
   tokens: {
     input: number;
@@ -60,6 +97,7 @@ export interface TraceStep {
     cache_read: number;
     total: number;
   } | null;
+  /** 兼容：= decode_tps */
   tps: number | null;
   cost: number | null;
   parts: string[];
@@ -121,13 +159,22 @@ function msgInfo(m: any): any {
   return m?.info || m || {};
 }
 
-function msgTime(info: any): { t: number | null; done: number | null } {
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function msgTime(info: any): { t: number | null; done: number | null; decodeStart: number | null } {
   const time = info.time || {};
   const t = time.created ?? time.start ?? info.created_at ?? null;
   const done = time.completed ?? time.end ?? null;
+  const decodeStart = time.decodeStart ?? time.decode_start ?? null;
   return {
-    t: typeof t === 'number' ? t : t != null ? Number(t) || null : null,
-    done: typeof done === 'number' ? done : done != null ? Number(done) || null : null,
+    t: numOrNull(t),
+    done: numOrNull(done),
+    decodeStart: numOrNull(decodeStart),
   };
 }
 
@@ -141,6 +188,85 @@ function msgTokens(info: any): TraceStep['tokens'] {
     cache_read: cacheRead ?? 0,
     total: tok.total ?? (tok.input || 0) + (tok.output || 0) + (cacheRead || 0),
   };
+}
+
+/**
+ * 跨 source 统一 prefill/lag/decode 口径：
+ * - lag_ms = decodeStart - created（TTFT）
+ * - decode_ms = completed - decodeStart；无 decodeStart 则用 duration
+ * - prefill/decode tps：优先 info.tps 对象/数字，否则 tokens/时长推算
+ */
+export function extractStepTiming(info: any): StepTiming & { tps: number | null } {
+  const { t, done, decodeStart } = msgTime(info);
+  const tokens = msgTokens(info);
+  const input = tokens?.input ?? 0;
+  const output = tokens?.output ?? 0;
+
+  let lag_ms: number | null = null;
+  if (t != null && decodeStart != null && decodeStart >= t) {
+    lag_ms = decodeStart - t;
+  }
+
+  let decode_ms: number | null = null;
+  if (decodeStart != null && done != null && done >= decodeStart) {
+    decode_ms = done - decodeStart;
+  } else if (t != null && done != null && done >= t && decodeStart == null) {
+    // 无 TTFT 拆分时，整段当 decode（Grok 等）
+    decode_ms = done - t;
+  }
+
+  const rawTps = info?.tps ?? info?.meta?.tps ?? null;
+  let prefill_tps: number | null = null;
+  let decode_tps: number | null = null;
+
+  if (typeof rawTps === 'number' && Number.isFinite(rawTps) && rawTps > 0) {
+    decode_tps = rawTps;
+  } else if (rawTps && typeof rawTps === 'object') {
+    const p = numOrNull((rawTps as any).prefill);
+    const d = numOrNull((rawTps as any).decode);
+    if (p != null && p > 0) prefill_tps = p;
+    if (d != null && d > 0) decode_tps = d;
+  }
+
+  if (prefill_tps == null && lag_ms != null && lag_ms > 0 && input > 0) {
+    prefill_tps = Number((input / (lag_ms / 1000)).toFixed(2));
+  }
+  if (decode_tps == null && decode_ms != null && decode_ms > 0 && output > 0) {
+    decode_tps = Number((output / (decode_ms / 1000)).toFixed(2));
+  }
+
+  return {
+    lag_ms,
+    decode_ms,
+    prefill_tps,
+    decode_tps,
+    tps: decode_tps,
+  };
+}
+
+/** 从 messages 聚合 session 级 timing（与 list 字段口径一致） */
+export function summarizeSessionTimingFromMessages(
+  messages: any[] | undefined | null,
+): TimingSummary {
+  const lists = createTimingLists();
+  for (const m of Array.isArray(messages) ? messages : []) {
+    const info = msgInfo(m);
+    if (String(info.role || '') !== 'assistant') continue;
+    const timing = extractStepTiming(info);
+    const tokens = msgTokens(info);
+    const { t, done } = msgTime(info);
+    // 有 TTFT 时 latency=lag；无则用整段 duration（只填 decode，不造 prefill）
+    const hasLag = timing.lag_ms != null && timing.lag_ms > 0;
+    const fullDur = t != null && done != null && done >= t ? done - t : 0;
+    const latencyMs = hasLag ? timing.lag_ms! : fullDur;
+    pushAssistantTimingSample(lists, {
+      latencyMs,
+      outputTokens: tokens?.output ?? 0,
+      decodeDurationMs: timing.decode_ms ?? undefined,
+      inputTokens: hasLag ? (tokens?.input ?? 0) : 0,
+    });
+  }
+  return summarizeTimingLists(lists);
 }
 
 function toolStatus(p: any): string {
@@ -334,6 +460,7 @@ export function buildTraceSteps(messages: any[] | undefined | null, opts: TraceB
     }
 
     const { t, done } = msgTime(info);
+    const timing = extractStepTiming(info);
     const textParts = parts.filter((p) => p.type === 'text').map((p) => p.text || '').join('\n');
     const reasoningParts = parts
       .filter((p) => p.type === 'reasoning' || p.type === 'thinking')
@@ -350,9 +477,12 @@ export function buildTraceSteps(messages: any[] | undefined | null, opts: TraceB
       t,
       done,
       duration_ms: t != null && done != null && done >= t ? done - t : null,
+      lag_ms: timing.lag_ms,
+      prefill_tps: timing.prefill_tps,
+      decode_tps: timing.decode_tps,
       model: info.model?.modelID || info.modelID || null,
       tokens: msgTokens(info),
-      tps: info.tps ?? info.meta?.tps ?? null,
+      tps: timing.tps,
       cost: info.cost ?? info.costUSD ?? null,
       parts: parts.map((p) => p.type || '?'),
       text_preview: previewText(textParts, textPreview),
@@ -508,4 +638,188 @@ export function shapeDetailMessages(messages: any[] | undefined | null, opts: De
     out.push({ ...m, parts });
   }
   return out;
+}
+
+export interface CollectToolErrorsOptions {
+  tool?: string;
+  /** soft | hard | error | failed | completed… 默认：soft 或 error/fail */
+  status?: string;
+  includeIo?: boolean;
+  maxOutputChars?: number;
+  from?: number;
+  to?: number;
+}
+
+/**
+ * 包级 tool-error 过滤：单 session 内错误/soft 工具行（默认仅异常态）
+ */
+export function collectToolErrors(
+  messages: any[] | undefined | null,
+  opts: CollectToolErrorsOptions = {},
+): ToolErrorRow[] {
+  const list = Array.isArray(messages) ? messages : [];
+  const from = opts.from ?? 0;
+  const to = opts.to ?? list.length;
+  const maxOut = opts.maxOutputChars ?? 400;
+  const includeIo = !!opts.includeIo;
+  const statusFilter = opts.status;
+  const { turnOf } = buildTurnIndex(list);
+  const rows: ToolErrorRow[] = [];
+
+  for (let absIdx = from; absIdx < Math.min(to, list.length); absIdx++) {
+    const m = list[absIdx];
+    const info = msgInfo(m);
+    const parts: any[] = m.parts || [];
+    for (const p of parts) {
+      if (p.type !== 'tool' && !p.tool) continue;
+      const name = toolName(p);
+      const status = toolStatus(p);
+      const softInfo = classifyToolPartSoft(p);
+      const st = status.toLowerCase();
+      const isErrorish = softInfo.soft
+        || st.includes('error')
+        || st.includes('fail')
+        || p.state?.error != null
+        || p.error != null;
+
+      // 默认：只收异常；显式 status 时走 matchToolFilter
+      if (statusFilter) {
+        if (!matchToolFilter(name, status, softInfo.soft, opts.tool, statusFilter)) continue;
+      } else {
+        if (opts.tool && !name.toLowerCase().includes(opts.tool.toLowerCase())) continue;
+        if (!isErrorish) continue;
+      }
+
+      const input = p.state?.input ?? p.input ?? p.args;
+      const output = p.state?.output ?? p.output ?? p.result;
+      const error = p.state?.error ?? p.error;
+      const row: ToolErrorRow = {
+        i: absIdx,
+        turn: turnOf[absIdx] ?? 0,
+        msg_id: String(info.id || ''),
+        role: String(info.role || '?'),
+        name,
+        status,
+        callID: p.callID || p.callId || p.toolCallId || undefined,
+        soft: !!softInfo.soft,
+        soft_kind: softInfo.kind,
+        input_len: lenOf(input),
+        output_len: lenOf(output),
+      };
+      if (includeIo) {
+        row.error_preview = asPreview(error, maxOut);
+        row.output_preview = asPreview(output, maxOut);
+      } else if (error != null) {
+        row.error_preview = asPreview(error, Math.min(maxOut, 200));
+      }
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+export interface TraceExportMeta {
+  source?: string;
+  id?: string;
+  title?: string | null;
+  parent_id?: string | null;
+  step_count?: number;
+  message_count?: number;
+  tool_summary?: Record<string, number>;
+  turns?: TraceTurn[];
+  editDiffs?: unknown;
+  options?: Record<string, unknown>;
+  timing?: TimingSummary | null;
+}
+
+/** 导出 Markdown 轨迹（可读、适合 Agent / 人审） */
+export function formatTraceMarkdown(
+  steps: TraceStep[],
+  meta: TraceExportMeta = {},
+): string {
+  const lines: string[] = [];
+  const title = meta.title || meta.id || 'session';
+  lines.push(`# Trace: ${title}`);
+  lines.push('');
+  if (meta.source || meta.id) {
+    lines.push(`- **source**: \`${meta.source ?? '?'}\` · **id**: \`${meta.id ?? '?'}\``);
+  }
+  if (meta.parent_id) lines.push(`- **parent_id**: \`${meta.parent_id}\``);
+  lines.push(
+    `- **steps**: ${meta.step_count ?? steps.length}`
+    + (meta.message_count != null ? ` / messages ${meta.message_count}` : ''),
+  );
+  if (meta.timing) {
+    const t = meta.timing;
+    const bits = [
+      t.avg_latency_ms != null ? `avg_lag=${t.avg_latency_ms}ms` : null,
+      t.avg_prefill_tps != null ? `prefill=${t.avg_prefill_tps}` : null,
+      t.avg_tps != null ? `decode=${t.avg_tps}` : null,
+    ].filter(Boolean);
+    if (bits.length) lines.push(`- **timing**: ${bits.join(' · ')}`);
+  }
+  if (meta.tool_summary && Object.keys(meta.tool_summary).length) {
+    const ts = Object.entries(meta.tool_summary)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k}×${v}`)
+      .join(', ');
+    lines.push(`- **tools**: ${ts}`);
+  }
+  lines.push('');
+
+  const turns = meta.turns ?? summarizeTraceTurns(steps);
+  if (turns.length) {
+    lines.push('## Turns');
+    lines.push('');
+    for (const tr of turns) {
+      const dur = tr.duration_ms != null ? ` · ${tr.duration_ms}ms` : '';
+      const soft = tr.soft_tool_count ? ` · soft=${tr.soft_tool_count}` : '';
+      lines.push(
+        `### Turn ${tr.turn} (${tr.step_count} steps · ${tr.tool_count} tools${soft}${dur})`,
+      );
+      if (tr.text_preview) lines.push(`- user: ${tr.text_preview}`);
+      if (Object.keys(tr.tools).length) {
+        lines.push(
+          `- tools: ${Object.entries(tr.tools).map(([k, v]) => `${k}×${v}`).join(', ')}`,
+        );
+      }
+      lines.push('');
+    }
+  }
+
+  lines.push('## Steps');
+  lines.push('');
+  lines.push('| i | turn | role | lag_ms | decode_tps | tools | ms | preview |');
+  lines.push('|---|------|------|--------|------------|-------|----|---------|');
+  for (const s of steps) {
+    const tools = s.tools.length
+      ? s.tools.map((t) => {
+        const mark = t.soft ? '~' : /error|fail/i.test(t.status) ? '!' : '';
+        return `${mark}${t.name}:${t.status}`;
+      }).join(', ')
+      : '—';
+    const preview = (s.text_preview || '').replace(/\|/g, '\\|').slice(0, 80) || '—';
+    lines.push(
+      `| ${s.i} | ${s.turn} | ${s.role} | ${s.lag_ms ?? '—'} | ${s.decode_tps ?? s.tps ?? '—'} | ${tools} | ${s.duration_ms ?? '—'} | ${preview} |`,
+    );
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+/** 逐步 JSONL 字符串（末尾无多余空行） */
+export function formatTraceJsonl(steps: TraceStep[]): string {
+  return steps.map((s) => JSON.stringify(s)).join('\n') + (steps.length ? '\n' : '');
+}
+
+export type TraceExportFormat = 'json' | 'jsonl' | 'md';
+
+/** 从路径扩展名推断格式 */
+export function inferTraceFormat(path: string | undefined | null, fallback: TraceExportFormat = 'json'): TraceExportFormat {
+  if (!path) return fallback;
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
+  if (lower.endsWith('.jsonl') || lower.endsWith('.ndjson')) return 'jsonl';
+  if (lower.endsWith('.json')) return 'json';
+  return fallback;
 }

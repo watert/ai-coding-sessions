@@ -5,6 +5,12 @@ import {
   summarizeTraceTools,
   summarizeTraceTurns,
   classifyToolPartSoft,
+  extractStepTiming,
+  summarizeSessionTimingFromMessages,
+  collectToolErrors,
+  formatTraceMarkdown,
+  formatTraceJsonl,
+  inferTraceFormat,
 } from './session-trace';
 
 const sampleMessages = [
@@ -277,5 +283,87 @@ describe('buildTraceSteps edge cases (P0 tests)', () => {
     expect(buildTraceSteps(null)).toEqual([]);
     expect(buildTraceSteps(undefined)).toEqual([]);
     expect(summarizeTraceTurns([])).toEqual([]);
+  });
+});
+
+describe('P2: timing · tool-errors · export', () => {
+  test('extractStepTiming: lag/prefill/decode from decodeStart', () => {
+    const t = extractStepTiming({
+      time: { created: 1100, decodeStart: 1200, completed: 2100 },
+      tokens: { input: 10, output: 20 },
+      tps: 12.5,
+    });
+    expect(t.lag_ms).toBe(100);
+    expect(t.decode_ms).toBe(900);
+    expect(t.prefill_tps).toBe(100); // 10 / 0.1s
+    expect(t.decode_tps).toBe(12.5);
+    expect(t.tps).toBe(12.5);
+  });
+
+  test('extractStepTiming: tps object {prefill,decode}', () => {
+    const t = extractStepTiming({
+      time: { created: 0, decodeStart: 500, completed: 1500 },
+      tokens: { input: 100, output: 50 },
+      tps: { prefill: 200, decode: 50 },
+    });
+    expect(t.lag_ms).toBe(500);
+    expect(t.prefill_tps).toBe(200);
+    expect(t.decode_tps).toBe(50);
+  });
+
+  test('buildTraceSteps 暴露 lag_ms / prefill_tps', () => {
+    const steps = buildTraceSteps(sampleMessages);
+    const a1 = steps.find((s) => s.id === 'a1')!;
+    expect(a1.lag_ms).toBe(100);
+    expect(a1.prefill_tps).toBe(100);
+    expect(a1.decode_tps).toBe(12.5);
+  });
+
+  test('summarizeSessionTimingFromMessages', () => {
+    const sum = summarizeSessionTimingFromMessages(sampleMessages);
+    expect(sum.avg_latency_ms).toBeGreaterThan(0);
+    expect(sum.avg_prefill_tps).toBeGreaterThan(0);
+    expect(sum.avg_tps).toBeGreaterThan(0);
+  });
+
+  test('collectToolErrors 默认 soft+hard', () => {
+    const rows = collectToolErrors(sampleMessages);
+    expect(rows.some((r) => r.name === 'Bash' && !r.soft)).toBe(true);
+    expect(rows.some((r) => r.name === 'AskUser' && r.soft)).toBe(true);
+    expect(rows.some((r) => r.name === 'Read')).toBe(false);
+  });
+
+  test('collectToolErrors --status=hard', () => {
+    const rows = collectToolErrors(sampleMessages, { status: 'hard' });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => !r.soft)).toBe(true);
+    expect(rows.every((r) => r.name === 'Bash')).toBe(true);
+  });
+
+  test('formatTraceMarkdown + jsonl', () => {
+    const steps = buildTraceSteps(sampleMessages);
+    const md = formatTraceMarkdown(steps, {
+      source: 'kimi',
+      id: 's1',
+      title: 'demo',
+      turns: summarizeTraceTurns(steps),
+      tool_summary: summarizeTraceTools(steps),
+    });
+    expect(md).toContain('# Trace: demo');
+    expect(md).toContain('## Turns');
+    expect(md).toContain('## Steps');
+    expect(md).toContain('| i | turn |');
+
+    const jl = formatTraceJsonl(steps);
+    const lines = jl.trim().split('\n');
+    expect(lines).toHaveLength(steps.length);
+    expect(JSON.parse(lines[0]).role).toBe('user');
+  });
+
+  test('inferTraceFormat', () => {
+    expect(inferTraceFormat('a/trace.md')).toBe('md');
+    expect(inferTraceFormat('x.jsonl')).toBe('jsonl');
+    expect(inferTraceFormat('x.json')).toBe('json');
+    expect(inferTraceFormat(null)).toBe('json');
   });
 });

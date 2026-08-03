@@ -67,8 +67,9 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 |------|------|
 | `list` | 缓存列表（`--live` · `--parent=` · `--roots`） |
 | `children` | 子 session |
-| `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O） |
-| `detail` | 详情 live + 体量控制 |
+| `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O；`--format=md --out=`） |
+| `tool-errors` | 单 session soft/hard 工具失败 |
+| `detail` | 详情 live + 体量控制 + `timing` |
 | `prompts` | 缓存 user prompts |
 | `stats` | token / bySource 聚合 |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
@@ -80,12 +81,14 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 bun src/store/cli.ts list --source=kimi --days=3 --roots --limit=20
 bun src/store/cli.ts children --source=kimi --id=<parent>
 bun src/store/cli.ts trace --source=kimi --id=<id>
+bun src/store/cli.ts tool-errors --source=kimi --id=<id> --status=hard
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash --max-steps=30
+bun src/store/cli.ts trace --source=kimi --id=<id> --out=trace.md
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 ```
 
-标志速查：`--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--with-children` · `--raw`  
+标志速查：`--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
 完整说明 → [references/cli.md](./references/cli.md)
 
 ## 库 API 摘要
@@ -94,7 +97,8 @@ bun src/store/cli.ts sync --days=7 --source=all --reconcile
 import {
   initAiCodingStats, listSessions, getSessionDetail,
   syncSessions, queryCached, getSessionPrompts,
-  buildTraceSteps, shapeDetailMessages, configurePricing,
+  buildTraceSteps, shapeDetailMessages, collectToolErrors,
+  formatTraceMarkdown, configurePricing,
 } from 'ai-coding-sessions';
 ```
 

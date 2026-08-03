@@ -153,6 +153,8 @@ bun src/store/cli.ts children --source=kimi --id=<parentSessionId>
 bun src/store/cli.ts trace --source=kimi --id=<id>                    # 骨架（~KB）
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
 bun src/store/cli.ts trace --source=kimi --id=<id> --jsonl --max-steps=30
+bun src/store/cli.ts trace --source=kimi --id=<id> --format=md --out=trace.md
+bun src/store/cli.ts tool-errors --source=kimi --id=<id> --status=hard
 bun src/store/cli.ts detail --source=opencode --id=ses_xxx
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
@@ -167,13 +169,16 @@ bun src/store/cli.ts help
 | `list` | 默认缓存，或 `--live` | `--parent=` / `--roots`；默认紧凑字段 |
 | `children` | 缓存 | 等价 `list --parent=<id>` |
 | `trace` | **live** | 时间线骨架（默认无 tool I/O）；别名 `timeline` |
+| `tool-errors` | **live** | 单 session soft/hard 工具失败行 |
 | `detail` | **live** | 完整 messages；用体量 flag 适配 Agent 上下文 |
 | `prompts` | 缓存 | 仅 user prompts |
 | `stats` | 缓存 | bySource + token 合计 + tokensByDay |
 | `sync` | 写缓存 | `--full` / `--reconcile` |
 | `refs` | live refs | 不 convert / 不写库 |
 
-**Trace / detail 标志：** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=`（`error`/`soft`/`hard`/`completed`） · `--jsonl` · `--with-children` · `--max-steps=`
+**Trace / detail 标志：** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=`（`error`/`soft`/`hard`/`completed`） · `--jsonl` · `--format=json\|jsonl\|md` · `--out=PATH` · `--with-children` · `--max-steps=`
+
+**跨 source 稳定 timing：** step 上 `lag_ms`（TTFT）· `prefill_tps` · `decode_tps` · `duration_ms`；detail/trace 另有 session 级 `timing`。
 
 **推荐 Agent 流程**
 
@@ -181,17 +186,19 @@ bun src/store/cli.ts help
 list --roots → 选 id
 children --id=…          # 有 subagent 时
 trace --id=…             # 低成本全路径
+tool-errors --id=…       # 仅失败/soft
 trace --id=… --io --from=N --to=M   # 切片深挖
+trace --id=… --out=trace.md
 detail --tools-only --max-output-chars=500 --from=N --to=M
 ```
 
-`trace` 输出含 `steps[]`（含 `turn` / `parent_id` / tool `soft`）与 `turns[]` 摘要。
+`trace` 输出含 `steps[]`（`turn` / `lag_ms` / tool `soft`）与 `turns[]` 摘要。
 
 通用标志：`--source=` · `--days=` · `--start=` · `--end=` · `--limit=` · `--offset=` · `--db=` · `--meta=` · `--raw`。
 
 **兼容旧调用：** 无子命令 = `sync`；`--prompts=src:id`；`--refs-only`。
 
-更重的宿主分析（`export-weekly-prompts`、`analyze-tool-errors`、完整 token-stats）暂不在本包。
+更重的宿主分析（`export-weekly-prompts`、跨 session `analyze-tool-errors`、完整 token-stats）暂不在本包。
 
 npm scripts：`bun run cli` · `bun run sync` · `bun run sync:reconcile`。
 

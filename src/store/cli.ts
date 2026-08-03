@@ -9,6 +9,8 @@
  *   bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
  *   bun src/store/cli.ts trace --source=kimi --id=<sessionId>
  *   bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
+ *   bun src/store/cli.ts trace --source=kimi --id=<id> --format=md --out=trace.md
+ *   bun src/store/cli.ts tool-errors --source=kimi --id=<id> --status=hard
  *   bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
  *   bun src/store/cli.ts stats --source=all --days=7
  *   bun src/store/cli.ts sync --days=7 --source=all --reconcile
@@ -20,6 +22,7 @@
  * Trajectory / Agent trace: https://github.com/watert/ai-coding-sessions/issues/1
  */
 
+import { writeFileSync } from 'node:fs';
 import { ALL_SOURCES, isSourceId, type SourceId } from './schema';
 import { syncSessions, reconcileSessions } from './sync';
 import { listRefs } from './list-refs';
@@ -41,6 +44,12 @@ import {
   shapeDetailMessages,
   summarizeTraceTools,
   summarizeTraceTurns,
+  collectToolErrors,
+  formatTraceMarkdown,
+  formatTraceJsonl,
+  inferTraceFormat,
+  summarizeSessionTimingFromMessages,
+  type TraceExportFormat,
 } from './session-trace';
 import { countStats } from './upsert';
 import { loadMeta } from './meta';
@@ -52,6 +61,7 @@ const COMMANDS = [
   'detail',
   'trace',
   'timeline', // alias → trace
+  'tool-errors',
   'children',
   'prompts',
   'stats',
@@ -103,6 +113,9 @@ interface CliArgs {
   jsonl: boolean;
   /** detail: attach children from cache */
   withChildren: boolean;
+  /** export path (trace/tool-errors); format inferred from ext or --format */
+  out?: string;
+  format?: TraceExportFormat;
 }
 
 function parseSource(s: string): SourceId | 'all' {
@@ -153,8 +166,10 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--no-reasoning') out.noReasoning = true;
     else if (a === '--io' || a === '--include-io') out.includeIo = true;
     else if (a === '--reasoning' || a === '--include-reasoning') out.includeReasoning = true;
-    else if (a === '--jsonl') out.jsonl = true;
-    else if (a === '--with-children' || a === '--children') out.withChildren = true;
+    else if (a === '--jsonl') {
+      out.jsonl = true;
+      out.format = out.format || 'jsonl';
+    } else if (a === '--with-children' || a === '--children') out.withChildren = true;
     else if (a === '--roots' || a === '--roots-only') out.rootsOnly = true;
     else if (a.startsWith('--days=')) out.days = Number(a.slice('--days='.length));
     else if (a.startsWith('--start=')) out.startDate = a.slice('--start='.length);
@@ -182,8 +197,21 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (a.startsWith('--max-steps=')) out.maxSteps = Number(a.slice('--max-steps='.length));
     else if (a.startsWith('--tool=')) out.tool = a.slice('--tool='.length);
     else if (a.startsWith('--status=')) out.status = a.slice('--status='.length);
-    else if (a === '--json') {
-      /* default already JSON */
+    else if (a.startsWith('--out=') || a.startsWith('--output=')) {
+      out.out = a.includes('--output=')
+        ? a.slice('--output='.length)
+        : a.slice('--out='.length);
+    } else if (a.startsWith('--format=')) {
+      const f = a.slice('--format='.length).toLowerCase();
+      if (f === 'json' || f === 'jsonl' || f === 'md' || f === 'markdown') {
+        out.format = f === 'markdown' ? 'md' : f;
+      } else {
+        throw new Error(`--format expects json|jsonl|md, got ${f}`);
+      }
+    } else if (a === '--json') {
+      out.format = 'json';
+    } else if (a === '--md' || a === '--markdown') {
+      out.format = 'md';
     } else if (a.startsWith('-')) {
       throw new Error(`unknown flag: ${a}`);
     } else {
@@ -202,14 +230,15 @@ Usage:
   bun src/store/cli.ts [sync options]     # bare flags = sync (legacy)
 
 Commands:
-  list       List sessions (cache default; --live; --parent=; --roots)
-  children   List child sessions of --id (cache; alias of list --parent=)
-  detail     Session detail live (size flags for Agent context)
-  trace      Trajectory skeleton (default no tool I/O)  [alias: timeline]
-  prompts    Cached user prompts
-  stats      Aggregate counts / tokens (cache)
-  sync       Incremental sync → SQLite
-  refs       listRefs only
+  list         List sessions (cache default; --live; --parent=; --roots)
+  children     List child sessions of --id (cache; alias of list --parent=)
+  detail       Session detail live (size flags for Agent context)
+  trace        Trajectory skeleton (default no tool I/O)  [alias: timeline]
+  tool-errors  Tool error/soft rows for one session
+  prompts      Cached user prompts
+  stats        Aggregate counts / tokens (cache)
+  sync         Incremental sync → SQLite
+  refs         listRefs only
   help
 
 Agent trajectory (issue #1):
@@ -217,13 +246,15 @@ Agent trajectory (issue #1):
   children --source=kimi --id=<parent>
   trace --source=kimi --id=<id>                 # skeleton
   trace --source=kimi --id=<id> --io --tool=Bash
+  trace --source=kimi --id=<id> --format=md --out=trace.md
+  tool-errors --source=kimi --id=<id> --status=hard
   detail --source=kimi --id=<id> --tools-only --max-output-chars=500
   detail --source=kimi --id=<id> --from=0 --to=5 --no-reasoning
 
 Options:
   --source=NAME       all|${ALL_SOURCES.join('|')}
   --days=N --start= --end=
-  --id=SESSION        detail/trace/prompts/children
+  --id=SESSION        detail/trace/tool-errors/prompts/children
   --parent=SESSION    list children of parent
   --roots             list top-level only (no parent_id)
   --limit=N --offset=N
@@ -235,11 +266,13 @@ Options:
   --no-reasoning      detail: drop reasoning/thinking parts
   --max-output-chars=N  truncate tool I/O & long text
   --from=N --to=N     message index range
-  --io                trace: include tool input/output previews
+  --io                trace/tool-errors: include tool I/O previews
   --reasoning         trace: include reasoning_preview
-  --tool=NAME --status=STATUS  filter tools (trace/detail; status: error|soft|hard|completed)
+  --tool=NAME --status=STATUS  filter tools (error|soft|hard|completed)
   --text-preview=N --max-steps=N
   --jsonl             trace: one JSON object per line
+  --format=json|jsonl|md   export format (trace; default json)
+  --out=PATH          write export to file (format from ext if unset)
   --full --reconcile  sync
   --db=PATH --meta=PATH
   --raw               single-line JSON
@@ -247,6 +280,37 @@ Options:
 
 Env: AI_CODING_SESSIONS_DB / AI_CODING_SESSIONS_META
 `);
+}
+
+function resolveExportFormat(args: CliArgs, fallback: TraceExportFormat = 'json'): TraceExportFormat {
+  if (args.format) return args.format;
+  if (args.jsonl) return 'jsonl';
+  if (args.out) return inferTraceFormat(args.out, fallback);
+  return fallback;
+}
+
+/** 写 --out 或 stdout；有 out 时 stdout 回执 {ok,out,bytes,format} */
+function emitExport(
+  body: string,
+  args: CliArgs,
+  format: TraceExportFormat,
+  meta?: Record<string, unknown>,
+) {
+  if (args.out) {
+    writeFileSync(args.out, body, 'utf8');
+    printJson(
+      {
+        ok: true,
+        out: args.out,
+        bytes: Buffer.byteLength(body, 'utf8'),
+        format,
+        ...(meta || {}),
+      },
+      args.pretty,
+    );
+    return;
+  }
+  process.stdout.write(body.endsWith('\n') ? body : `${body}\n`);
 }
 
 function printJson(data: unknown, pretty: boolean) {
@@ -438,6 +502,20 @@ async function cmdDetail(args: CliArgs) {
       });
     }
 
+    // 稳定 prefill/lag：优先 info 上已有聚合，否则从 messages 重算
+    const timingFromMsgs = summarizeSessionTimingFromMessages(detail.messages);
+    const info = detail.info as UnifiedSessionInfo;
+    const timing = {
+      avg_latency_ms: info.avg_latency_ms ?? timingFromMsgs.avg_latency_ms ?? null,
+      avg_prefill_tps: info.avg_prefill_tps ?? timingFromMsgs.avg_prefill_tps ?? null,
+      avg_tps: info.avg_tps ?? timingFromMsgs.avg_tps ?? null,
+      source: info.avg_latency_ms != null || info.avg_tps != null || info.avg_prefill_tps != null
+        ? 'info'
+        : timingFromMsgs.avg_latency_ms != null || timingFromMsgs.avg_tps != null
+          ? 'messages'
+          : null,
+    };
+
     const payload: Record<string, unknown> = {
       ok: true,
       source,
@@ -445,6 +523,7 @@ async function cmdDetail(args: CliArgs) {
       info: args.compact ? compactSession(detail.info) : detail.info,
       editDiffs: detail.editDiffs,
       pricing: detail.pricing ?? null,
+      timing,
       message_count: detail.messages?.length ?? 0,
       messages_returned: args.messages ? messages.length : 0,
       shape: {
@@ -504,12 +583,10 @@ async function cmdTrace(args: CliArgs) {
       maxSteps: args.maxSteps ?? args.limit,
     });
 
-    if (args.jsonl) {
-      for (const step of steps) {
-        console.log(JSON.stringify(step));
-      }
-      return;
-    }
+    const turns = summarizeTraceTurns(steps);
+    const tool_summary = summarizeTraceTools(steps);
+    const timing = summarizeSessionTimingFromMessages(detail.messages);
+    const format = resolveExportFormat(args, 'json');
 
     const payload: Record<string, unknown> = {
       ok: true,
@@ -522,8 +599,9 @@ async function cmdTrace(args: CliArgs) {
       session_status: detail.info?.session_status ?? null,
       message_count: detail.messages?.length ?? 0,
       step_count: steps.length,
-      tool_summary: summarizeTraceTools(steps),
-      turns: summarizeTraceTurns(steps),
+      tool_summary,
+      turns,
+      timing,
       editDiffs: detail.editDiffs,
       options: {
         io: args.includeIo,
@@ -532,6 +610,7 @@ async function cmdTrace(args: CliArgs) {
         status: args.status ?? null,
         max_output_chars: args.maxOutputChars ?? 400,
         text_preview: args.textPreview ?? 120,
+        format,
       },
       steps,
     };
@@ -545,6 +624,127 @@ async function cmdTrace(args: CliArgs) {
       }
     }
 
+    if (format === 'jsonl') {
+      emitExport(formatTraceJsonl(steps), args, 'jsonl', {
+        step_count: steps.length,
+        source,
+        id,
+      });
+      return;
+    }
+
+    if (format === 'md') {
+      const md = formatTraceMarkdown(steps, {
+        source,
+        id,
+        title: detail.info?.title ?? null,
+        parent_id: detail.info?.parent_id ?? null,
+        step_count: steps.length,
+        message_count: detail.messages?.length ?? 0,
+        tool_summary,
+        turns,
+        timing,
+        options: payload.options as Record<string, unknown>,
+      });
+      emitExport(md, args, 'md', { step_count: steps.length, source, id });
+      return;
+    }
+
+    // json
+    if (args.out) {
+      const body = args.pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload);
+      emitExport(body.endsWith('\n') ? body : `${body}\n`, args, 'json', {
+        step_count: steps.length,
+        source,
+        id,
+      });
+      return;
+    }
+    printJson(payload, args.pretty);
+  } finally {
+    closeAiCodingStats();
+  }
+}
+
+async function cmdToolErrors(args: CliArgs) {
+  const id = requireId(args, 'tool-errors');
+  const source = requireOneSource(args, 'tool-errors');
+
+  await initAiCodingStats();
+  try {
+    const detail = await getSessionDetail({ sessionId: id, source });
+    if (!detail) {
+      printJson({ ok: false, error: 'not_found', source, id }, args.pretty);
+      process.exitCode = 1;
+      return;
+    }
+
+    const errors = collectToolErrors(detail.messages, {
+      tool: args.tool,
+      status: args.status,
+      includeIo: args.includeIo,
+      maxOutputChars: args.maxOutputChars ?? 400,
+      from: args.from,
+      to: args.to,
+    });
+
+    const hard = errors.filter((e) => !e.soft).length;
+    const soft = errors.filter((e) => e.soft).length;
+    const by_tool: Record<string, number> = {};
+    for (const e of errors) by_tool[e.name] = (by_tool[e.name] || 0) + 1;
+
+    const payload = {
+      ok: true,
+      mode: 'tool-errors',
+      source,
+      id,
+      title: detail.info?.title ?? null,
+      count: errors.length,
+      hard,
+      soft,
+      by_tool,
+      options: {
+        tool: args.tool ?? null,
+        status: args.status ?? null,
+        io: args.includeIo,
+      },
+      errors,
+    };
+
+    const format = resolveExportFormat(args, 'json');
+    if (format === 'jsonl') {
+      const body = errors.map((e) => JSON.stringify(e)).join('\n') + (errors.length ? '\n' : '');
+      emitExport(body, args, 'jsonl', { count: errors.length, source, id });
+      return;
+    }
+    if (format === 'md') {
+      const lines = [
+        `# Tool errors: ${detail.info?.title || id}`,
+        '',
+        `- source: \`${source}\` · id: \`${id}\``,
+        `- count: ${errors.length} (hard=${hard} soft=${soft})`,
+        '',
+        '| i | turn | tool | status | soft | preview |',
+        '|---|------|------|--------|------|---------|',
+        ...errors.map((e) => {
+          const prev = (e.error_preview || e.output_preview || '—').replace(/\|/g, '\\|').slice(0, 80);
+          return `| ${e.i} | ${e.turn} | ${e.name} | ${e.status} | ${e.soft ? e.soft_kind || 'soft' : '—'} | ${prev} |`;
+        }),
+        '',
+      ];
+      emitExport(lines.join('\n'), args, 'md', { count: errors.length, source, id });
+      return;
+    }
+
+    if (args.out) {
+      const body = args.pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload);
+      emitExport(body.endsWith('\n') ? body : `${body}\n`, args, 'json', {
+        count: errors.length,
+        source,
+        id,
+      });
+      return;
+    }
     printJson(payload, args.pretty);
   } finally {
     closeAiCodingStats();
@@ -774,6 +974,9 @@ async function main() {
     case 'trace':
     case 'timeline':
       await cmdTrace(args);
+      break;
+    case 'tool-errors':
+      await cmdToolErrors(args);
       break;
     case 'prompts':
       await cmdPrompts(args);

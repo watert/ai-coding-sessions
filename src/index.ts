@@ -74,6 +74,12 @@ export {
   shapeDetailMessages,
   summarizeTraceTools,
   summarizeTraceTurns,
+  collectToolErrors,
+  formatTraceMarkdown,
+  formatTraceJsonl,
+  inferTraceFormat,
+  extractStepTiming,
+  summarizeSessionTimingFromMessages,
 } from './store';
 
 export type {
@@ -94,5 +100,10 @@ export type {
   TraceStep,
   TraceTurn,
   TraceToolRow,
+  ToolErrorRow,
+  StepTiming,
   DetailShapeOptions,
+  CollectToolErrorsOptions,
+  TraceExportMeta,
+  TraceExportFormat,
 } from './store';

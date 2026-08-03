@@ -29,6 +29,6 @@ stderr 有 sqlite 路径日志；stdout 应是纯 JSON。
 
 - 新 source：见 [sources.md](./sources.md)
 - 新 CLI 子命令：`src/store/cli.ts` + 需要时下沉逻辑到 `session-trace.ts` 等
-- 轨迹增强（P1 done）：turn 分组 · grok 墙钟 · editDiffs · soft-fail on tool parts
+- 轨迹增强：P0/P1/P2 done — turn 分组 · grok 墙钟 · editDiffs · soft-fail · tool-errors · `--out` md/jsonl · 稳定 lag/prefill
 - 跨 session 趋势：不要堆进 list → 宿主 **token-stats**
 - 宿主 Web/REST：listSessionsCached + fillSessionPricing；勿 fork 包内 convert 逻辑
