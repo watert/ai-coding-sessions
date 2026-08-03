@@ -1,0 +1,43 @@
+{
+  "name": "ai-coding-sessions",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Multi-source AI coding session list/detail + SQLite cache (core isomorphic layer)",
+  "license": "MIT",
+  "author": "waterwu <boatwind@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/watert/ai-coding-sessions.git"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./core": "./src/core/index.ts"
+  },
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": [
+    "src",
+    "core.ts",
+    "!**/*.test.ts"
+  ],
+  "typesVersions": {
+    "*": {
+      "core": ["src/core/index.ts", "core.ts"],
+      "*": ["src/*"]
+    }
+  },
+  "scripts": {
+    "check": "bunx tsc --noEmit --project tsconfig.json",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.11",
+    "@types/lodash": "^4.17.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}
