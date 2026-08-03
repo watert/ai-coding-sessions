@@ -21,6 +21,8 @@ import { loadMeta } from './meta';
 function parseArgs(argv: string[]) {
   const out: {
     days?: number;
+    startDate?: string;
+    endDate?: string;
     source: SourceId | 'all';
     full: boolean;
     reconcile: boolean;
@@ -43,6 +45,8 @@ function parseArgs(argv: string[]) {
     else if (a === '--reconcile') out.reconcile = true;
     else if (a === '--refs-only') out.refsOnly = true;
     else if (a.startsWith('--days=')) out.days = Number(a.slice('--days='.length));
+    else if (a.startsWith('--start=')) out.startDate = a.slice('--start='.length);
+    else if (a.startsWith('--end=')) out.endDate = a.slice('--end='.length);
     else if (a.startsWith('--source=')) {
       const s = a.slice('--source='.length);
       if (s === 'all' || isSourceId(s)) out.source = s;
@@ -61,7 +65,9 @@ Usage:
   bun src/store/cli.ts [options]
 
 Options:
-  --days=N          sync window (default 7); ignored with --full
+  --days=N          sync window (default 7); ignored with --full / --start
+  --start=YYYY-MM-DD  窗口起点（优先于 --days）
+  --end=YYYY-MM-DD    窗口终点
   --source=NAME     all|claude|opencode|kimi|grok|codex|zcode|workbuddy
   --full            full rebuild window + orphan mark
   --reconcile       after sync, compare cache vs live
@@ -114,9 +120,13 @@ async function main() {
     return;
   }
 
-  console.error(`[cli] sync source=${args.source} days=${args.days ?? 7} full=${args.full}`);
+  console.error(
+    `[cli] sync source=${args.source} start=${args.startDate || '-'} end=${args.endDate || '-'} days=${args.days ?? 7} full=${args.full}`,
+  );
   const result = await syncSessions({
     days: args.days,
+    startDate: args.startDate,
+    endDate: args.endDate,
     source: args.source,
     full: args.full,
     dbPath: args.dbPath,
@@ -143,6 +153,8 @@ async function main() {
     console.error('[cli] reconcile…');
     const rec = await reconcileSessions({
       days: args.days,
+      startDate: args.startDate,
+      endDate: args.endDate,
       source: args.source,
       full: args.full,
       dbPath: args.dbPath,

@@ -702,8 +702,9 @@ export function getSessionList(
   const endIsTimestamp = isTimestamp(endDate);
 
   // 区间重叠: last_active >= start AND first_active <= end（用 session.time_created 近似 first）
+  // 无日期：全量（full sync / orphan 扫描依赖此语义；切勿默认「仅今天」）
   if (!startDate && !endDate) {
-    whereClause = 's.time_updated > strftime(\'%s\', \'now\', \'start of day\') * 1000';
+    whereClause = '1=1';
     params = [];
   } else if (startIsTimestamp && !endDate) {
     whereClause = `s.time_updated >= ${startDate}`;
