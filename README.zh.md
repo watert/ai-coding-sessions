@@ -23,7 +23,7 @@
 | 项 | 说明 |
 |------|--------|
 | License | MIT |
-| Runtime | 优先 **Bun ≥ 1.2**（`bun:sqlite`）；Node 可用可选依赖 `better-sqlite3` |
+| Runtime | **仅 Bun ≥ 1.2**（`bun:sqlite`）。测试与 CLI 以 Bun 为准。 |
 | 路径 / Windows | `path.join` + 只读 SQLite `pathToFileURL`；env 根目录覆盖；JSONL 兼容 CRLF。**仍以 Bun 为主**，无完整 Win CI（[#6](https://github.com/watert/ai-coding-sessions/issues/6)） |
 | 网络 | list / detail / sync 不需要网络 |
 | 宿主耦合 | **无** — 纯包，不依赖私有 monorepo |
@@ -256,9 +256,8 @@ npm scripts：`bun run cli` · `bun run sync` · `bun run sync:reconcile`。
 | `zod` | MIT | Schema（OpenCode / Claude / Kimi） |
 | `debug` | MIT | 调试日志（`DEBUG=…`） |
 | `diff` | BSD-3-Clause | 行 diff（Kimi / Grok editDiffs 等） |
-| `better-sqlite3` | MIT | **可选** — 无 `bun:sqlite` 时的 Node 回落 |
 
-运行时 I/O 仅本地文件系统 + SQLite。宿主可自行拉 [models.dev](https://models.dev) 做实时单价；**本包不强制**。
+运行时 I/O 仅本地文件系统 + SQLite（`bun:sqlite`）。宿主可自行拉 [models.dev](https://models.dev) 做实时单价；**本包不强制**。
 
 ## 脚本
 

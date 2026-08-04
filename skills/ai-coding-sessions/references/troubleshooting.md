@@ -12,7 +12,7 @@
 | subagent 找不到 | `children --id=<parent>` 或 `list --parent=`；先 `sync` 写缓存 |
 | grok token 怪 | `usage_source` real vs estimate；看 `grok-code` / `grok-source` |
 | zcode 列表空 | `~/.zcode/cli/db/db.sqlite` 是否存在 |
-| SQLite 打不开 | Bun 优先 `bun:sqlite`；Node 需 optional `better-sqlite3` |
+| SQLite 打不开 | 需 **Bun** + `bun:sqlite`；路径/权限/`mode=ro` URI 见 sources.md Windows 节 |
 | 子计双算 | 聚合场景只用 root（`list --roots`）；token-stats 分位数仅 root |
 
 ## CLI 调试

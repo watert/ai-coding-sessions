@@ -23,7 +23,7 @@ local CLI data (SQLite / JSONL / wire / logs)
 | Item | Notes |
 |------|--------|
 | License | MIT |
-| Runtime | **Bun ≥ 1.2** preferred (`bun:sqlite`); Node via optional `better-sqlite3` |
+| Runtime | **Bun ≥ 1.2 only** (`bun:sqlite`). Tests and CLI assume Bun. |
 | Paths / Windows | `path.join` + `pathToFileURL` readonly SQLite; env roots (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …); CRLF-safe jsonl. **Still Bun-first** — not full Win CI ([#6](https://github.com/watert/ai-coding-sessions/issues/6)) |
 | Network | None required for list/detail/sync |
 | Host coupling | **None** — pure package, no private monorepo imports |
@@ -253,10 +253,9 @@ Unified session fields (subset): `id`, `title`, `source`, `parent_id`, `spawn_gr
 | `lodash` | MIT | Utilities |
 | `zod` | MIT | Schemas (OpenCode / Claude / Kimi) |
 | `debug` | MIT | Debug logs (`DEBUG=…`) |
-| `diff` | BSD-3-Clause | Edit diff (Kimi) |
-| `better-sqlite3` | MIT | **Optional** — Node fallback when `bun:sqlite` unavailable |
+| `diff` | BSD-3-Clause | Edit diff (Kimi / Grok editDiffs) |
 
-Runtime I/O is local filesystem + SQLite only. Optional host may fetch [models.dev](https://models.dev) for live prices; that is **not** required by this package.
+Runtime I/O is local filesystem + SQLite only (`bun:sqlite`). Optional host may fetch [models.dev](https://models.dev) for live prices; that is **not** required by this package.
 
 ## Scripts
 

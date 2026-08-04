@@ -37,7 +37,7 @@
 - Claude project 目录名：`/` 与 `\` 均编码为 `-`
 - JSONL 按行切分兼容 CRLF（`splitLines`：cache / Claude / kimi index / codex rollout / workbuddy）
 - 缓存 meta 原子写：Windows 下 rename 覆盖目标会先 unlink
-- **仍需 Bun 运行时**；本 issue 不解决 Node-only / better-sqlite3 预编译
+- **文档与验收按 Bun-only**；sqlite 层仍保留 better-sqlite3 代码分支但不宣传
 
 ## 新 source 步骤
 

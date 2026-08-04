@@ -1,6 +1,7 @@
 /**
  * SQLite 通用工具
- * 支持 Bun:sqlite 和 better-sqlite3 双驱动自动适配
+ * 主路径：Bun `bun:sqlite`（文档与验收均按 Bun-only）。
+ * 仍保留 better-sqlite3 分支以便宿主 Node 偶发加载，但不在 README 宣传。
  */
 
 import pathMod from 'node:path';
