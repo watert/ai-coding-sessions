@@ -56,7 +56,8 @@
 | step 边界 | opencode 有 `step-start`/`step-finish`；其它多条 assistant 拼一轮 |
 | **Claude 主链**（[#5](https://github.com/watert/ai-coding-sessions/issues/5)） | `parentUuid` leaf 链；`compact_boundary` / snip；跳过 `isSidechain`；并行 tool sibling 回收 → 避免长会话 token **重复计入** |
 | **Codex compact**（#5） | `.jsonl.zst`（需 `zstd`）；`compacted.replacement_history`；`thread_rolled_back` → 修正 usage 口径 |
-| **Cursor usage** | 本地 **无可靠 billed token**；`bubble.tokenCount` 常为 0；`promptTokenBreakdown` 仅上下文估算 → `usage_source=estimate` + `cost_is_partial`。消息以 bubble/`toolFormerData` 为主，transcript JSONL 回退 |
+| **Cursor usage** | 本地 **无 billed / per-call usage**（`usageData={}`，`bubble.tokenCount` 全 0）。**有**末次 context 快照：`composerData.promptTokenBreakdown`（`totalUsedTokens` / `maxTokens` / categories）+ `contextUsagePercent` → 挂 last assistant `tokens.context`，`usage_source=estimate`，**不**写入 `total_tokens`（避免 token-stats 把窗口占用当累计消耗）。Grok estimate 是多轮 context 累加；Cursor 只有一帧 |
+| **Cursor steps** | bubble 按 **thinking 边界**拆 assistant（`capabilityType=30` / `thinking.text` → `reasoning` part）；tool=`capabilityType=15`+`toolFormerData`；text 归当前 step。对齐 UI「Thought for Xs」多轮，勿把整段 type=2 合成一条 |
 
 改完 Claude/Codex 解析后需 **`sync --reconcile`**（或 `?fresh=1`）再看 token-stats。
 

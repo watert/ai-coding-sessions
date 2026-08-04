@@ -115,9 +115,16 @@ export type CursorBubble = {
   tokenCount?: CursorTokenCount;
   modelInfo?: { modelName?: string };
   toolFormerData?: CursorToolFormerData;
+  /** 思考正文（Cursor UI "Thought for Xs"） */
+  thinking?: { text?: string; signature?: string } | string;
   thinkingDurationMs?: number;
+  thinkingStyle?: number;
+  /** 30=thinking, 15=tool；header.grouping 也会带 */
+  capabilityType?: number;
   isAgentic?: boolean;
   requestId?: string;
+  /** header.grouping 透传（step 边界 / tool 展示） */
+  grouping?: Record<string, any>;
   [k: string]: any;
 };
 
@@ -126,6 +133,20 @@ export type CursorBubbleHeader = {
   type?: number;
   createdAt?: string;
   serverBubbleId?: string;
+  grouping?: {
+    isRenderable?: boolean;
+    hasText?: boolean;
+    hasThinking?: boolean;
+    thinkingDurationMs?: number;
+    capabilityType?: number;
+    toolFormerTool?: number;
+    toolCallId?: string;
+    toolCallCase?: string;
+    isToolGroupable?: boolean;
+    isKeptFinalAiVisibleOutsideWorkedForGroup?: boolean;
+    turnDurationMs?: number;
+    [k: string]: any;
+  };
 };
 
 export type CursorComposerData = {
@@ -487,6 +508,16 @@ export async function getCursorBubbles(sessionId: string): Promise<CursorBubble[
       if (b) {
         if (h.createdAt && !b.createdAt) b.createdAt = h.createdAt;
         if (h.type != null && b.type == null) b.type = h.type;
+        // header.grouping 补 capability / thinking 标记（body 有时缺 capabilityType）
+        if (h.grouping) {
+          b.grouping = { ...(b.grouping || {}), ...h.grouping };
+          if (b.capabilityType == null && h.grouping.capabilityType != null) {
+            b.capabilityType = h.grouping.capabilityType;
+          }
+          if (b.thinkingDurationMs == null && h.grouping.thinkingDurationMs != null) {
+            b.thinkingDurationMs = h.grouping.thinkingDurationMs;
+          }
+        }
         out.push(b);
       } else {
         // header 有但 body 缺失时保留占位
@@ -495,6 +526,9 @@ export async function getCursorBubbles(sessionId: string): Promise<CursorBubble[
           type: h.type ?? 2,
           createdAt: h.createdAt,
           text: '',
+          grouping: h.grouping,
+          capabilityType: h.grouping?.capabilityType,
+          thinkingDurationMs: h.grouping?.thinkingDurationMs,
         });
       }
     }

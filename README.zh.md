@@ -4,7 +4,7 @@
 
 **MIT** · 多源 AI Coding Session 列表 / 详情 / SQLite 缓存。
 
-只读聚合本机 CLI 会话数据（Claude Code、OpenCode、Kimi、Grok Build、Codex、ZCode、WorkBuddy），统一为 OpenCode 形状协议。无云端、无账号、无遥测。
+只读聚合本机 CLI / Desktop 会话数据（Claude Code、OpenCode、Kimi、Grok Build、Codex、ZCode、WorkBuddy、Cursor），统一为 OpenCode 形状协议。无云端、无账号、无遥测。
 
 ```
 本地 CLI 数据 (SQLite / JSONL / wire / logs)
@@ -39,7 +39,7 @@ bun add git+https://github.com/watert/ai-coding-sessions.git
 bun add ./packages/ai-coding-sessions
 ```
 
-需要 [Bun](https://bun.sh)。各 CLI 默认本机路径下须已有数据（见 [数据源](#数据源)）。
+需要 [Bun](https://bun.sh)。各 CLI 默认本机路径下须已有数据（见 [支持的数据源](#支持的数据源supported-sources)）。
 
 ## 库 API
 
@@ -210,20 +210,38 @@ detail --tools-only --max-output-chars=500 --from=N --to=M
 
 npm scripts：`bun run cli` · `bun run sync` · `bun run sync:reconcile`。
 
-## 数据源
+## 支持的数据源（Supported Sources）
 
-| Source | 本地数据（默认） | 说明 |
-|--------|----------------------|--------|
-| `opencode` | OpenCode SQLite（`opencode db path`） | 保真度最高 |
-| `claude` | `~/.claude/` history + 项目 JSONL | Subagent 在 session 目录下 |
-| `kimi` | `~/.kimi-code/` index + wire.jsonl | 虚拟 subagent session |
-| `grok` | `~/.grok/sessions/` | 有真实 usage 则用；否则 `usage_source=estimate`；墙钟来自 updates |
-| `codex` | `~/.codex/` state sqlite + rollout JSONL | |
+| Source | 本地数据（默认） | 保真度 / 限制 |
+|--------|----------------------|----------------|
+| `opencode` | OpenCode SQLite（`opencode db path`） | 最高（真实 usage、step timing、subagent） |
+| `claude` | `~/.claude/` history + 项目 JSONL | Subagent 在 session 目录；长会话主链去重 |
+| `kimi` | `~/.kimi-code/` index + wire.jsonl | 虚拟 subagent（`parent_id` / `spawn_group_id`） |
+| `grok` | `~/.grok/sessions/` | 有真实 usage 则用；否则 `usage_source=estimate`（多轮 context 可累加） |
+| `codex` | `~/.codex/` state sqlite + rollout JSONL / `.jsonl.zst` | 感知 compact / rollback；`.zst` 可能需 `zstd` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + 项目 JSONL | |
-| `cursor` | Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | 无可靠 billed usage；`usage_source=estimate` |
+| `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | 见下方 **Cursor 限制** |
 
 某 source 目录不存在会告警并跳过（其它源仍可用）。
+
+环境变量覆盖（节选）：`CLAUDE_CONFIG_DIR`、`KIMI_DATA_DIR`、`CODEX_HOME`、`GROK_HOME` / `GROK_SESSIONS_DIR`、`ZCODE_HOME` / `ZCODE_DB_PATH`、`WORKBUDDY_HOME`、`CURSOR_HOME`、`CURSOR_APP_DATA`、`CURSOR_STATE_DB`。完整表见 skill `references/sources.md`。
+
+### Cursor 限制
+
+仅 **Cursor Desktop 本机数据**（`state.vscdb` + agent-transcripts），不含云端历史、非 Cursor CLI 远端。
+
+| 主题 | 行为 |
+|------|------|
+| 消息 | 主源：`composerHeaders` + bubble（`toolFormerData`）；bubble 空时回退 project `agent-transcripts` JSONL |
+| Step | 按 **thinking 边界**拆 assistant（`capabilityType=30` / `thinking.text` → `reasoning`；tool=`capabilityType=15`），对齐 UI「Thought for Xs」多轮 |
+| Token usage | 本地 **无 billed / per-call usage**（`usageData` 空，`bubble.tokenCount` 多为 0） |
+| Context 快照 | 仅会话末次窗口：`promptTokenBreakdown` + `contextUsagePercent` → 挂 **last assistant** 的 `tokens.context` / `last_message_tokens` |
+| `usage_source` | 仅有 context 快照时为 `estimate`；仅当 bubble 真有 token 才为 `real` |
+| 合计 / 成本 | context used **不**写入 session `total_tokens` / `usage_by_day`（避免 token-stats 把窗口占用当累计消耗）；estimate 路径 pricing 为 `0` |
+| vs Grok estimate | Grok 可多轮 context 累加；Cursor **只有一帧**末次窗口 |
+| 模型 | 常见 `default` / `auto`，provider `cursor` |
+| Subagent | 无 kimi/opencode 式 parent/spawn 图 |
 
 统一 session 字段（节选）：`id`、`title`、`source`、`parent_id`、`spawn_group_id`、token 合计、`avg_tps` / `avg_latency_ms`、`session_status`、`usage_by_model`、`usage_by_day`、`bashSignals`、`deliverableSignals`、可选 `pricing`。
 
@@ -256,7 +274,7 @@ bun run sync:reconcile
 ```
 src/
   core/       同构协议、静态单价、列表预览
-  sources/    7 个适配器 + listSessions / getSessionDetail
+  sources/    8 个适配器 + listSessions / getSessionDetail
   store/      schema、sync、queryCached、session-trace、CLI
   lib/        sqlite、jsonl-cache、date-utils、timing-stats
   pricing.ts  configurePricing 钩子

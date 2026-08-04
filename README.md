@@ -4,7 +4,7 @@
 
 **MIT** · Multi-source AI coding session list / detail / SQLite cache.
 
-Read-only aggregation of local CLI session data (Claude Code, OpenCode, Kimi, Grok Build, Codex, ZCode, WorkBuddy) into one OpenCode-shaped protocol. No cloud, no account, no telemetry.
+Read-only aggregation of local CLI / Desktop session data (Claude Code, OpenCode, Kimi, Grok Build, Codex, ZCode, WorkBuddy, Cursor) into one OpenCode-shaped protocol. No cloud, no account, no telemetry.
 
 ```
 local CLI data (SQLite / JSONL / wire / logs)
@@ -39,7 +39,7 @@ bun add git+https://github.com/watert/ai-coding-sessions.git
 bun add ./packages/ai-coding-sessions
 ```
 
-Requires [Bun](https://bun.sh). Peer data must already exist under each CLI’s default home paths (see [Sources](#sources)).
+Requires [Bun](https://bun.sh). Peer data must already exist under each CLI’s default home paths (see [Supported Sources](#supported-sources)).
 
 ## Library API
 
@@ -208,20 +208,38 @@ Heavier host analysis (`export-weekly-prompts`, cross-session `analyze-tool-erro
 
 npm scripts: `bun run cli` · `bun run sync` · `bun run sync:reconcile`.
 
-## Sources
+## Supported Sources
 
-| Source | Local data (defaults) | Notes |
-|--------|----------------------|--------|
-| `opencode` | OpenCode SQLite (`opencode db path`) | Full fidelity |
-| `claude` | `~/.claude/` history + project JSONL | Subagents under session dirs |
-| `kimi` | `~/.kimi-code/` index + wire.jsonl | Virtual subagent sessions |
-| `grok` | `~/.grok/sessions/` | Real usage when present; else `usage_source=estimate` |
-| `codex` | `~/.codex/` state sqlite + rollout JSONL | |
+| Source | Local data (defaults) | Fidelity / limits |
+|--------|----------------------|-------------------|
+| `opencode` | OpenCode SQLite (`opencode db path`) | Full fidelity (real usage, step timing, subagents) |
+| `claude` | `~/.claude/` history + project JSONL | Subagents under session dirs; main-chain de-dup for long sessions |
+| `kimi` | `~/.kimi-code/` index + wire.jsonl | Virtual subagent sessions (`parent_id` / `spawn_group_id`) |
+| `grok` | `~/.grok/sessions/` | Real usage when present; else `usage_source=estimate` (multi-turn context accumulate) |
+| `codex` | `~/.codex/` state sqlite + rollout JSONL / `.jsonl.zst` | Compact / rollback aware; zstd may need `zstd` CLI |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + project JSONL | |
-| `cursor` | Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | 无可靠 billed usage；`usage_source=estimate` |
+| `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | See **Cursor limits** below |
 
 Missing source dirs are skipped with a warning (other sources still work).
+
+Env overrides (subset): `CLAUDE_CONFIG_DIR`, `KIMI_DATA_DIR`, `CODEX_HOME`, `GROK_HOME` / `GROK_SESSIONS_DIR`, `ZCODE_HOME` / `ZCODE_DB_PATH`, `WORKBUDDY_HOME`, `CURSOR_HOME`, `CURSOR_APP_DATA`, `CURSOR_STATE_DB`. Full table in skill `references/sources.md`.
+
+### Cursor limits
+
+Cursor is **Desktop-only** (local `state.vscdb` + agent-transcripts). Not cloud history, not Cursor CLI remote.
+
+| Topic | Behavior |
+|-------|----------|
+| Messages | Primary: `composerHeaders` + bubble body (`toolFormerData`). Fallback: project `agent-transcripts` JSONL when bubbles are empty |
+| Steps | Assistant turns split on **thinking boundaries** (`capabilityType=30` / `thinking.text` → `reasoning` part; tools = `capabilityType=15`) — matches UI multi-step “Thought for Xs”, not one giant assistant blob |
+| Token usage | Local store has **no billed / per-call usage** (`usageData` empty, `bubble.tokenCount` usually 0) |
+| Context snapshot | Last-window only: `composerData.promptTokenBreakdown` + `contextUsagePercent` → hung on **last assistant** as `tokens.context` / `last_message_tokens` |
+| `usage_source` | `estimate` when only context snapshot exists; `real` only if bubble tokens appear |
+| Totals / cost | Context used is **not** written to session `total_tokens` / `usage_by_day` (avoids token-stats treating window fill as cumulative spend). Pricing stays `0` on estimate path |
+| vs Grok estimate | Grok can accumulate multi-turn context frames; Cursor has **one end-of-session frame** |
+| Models | Often `default` / `auto` under provider `cursor` |
+| Subagents | No parent/spawn graph equivalent to kimi/opencode |
 
 Unified session fields (subset): `id`, `title`, `source`, `parent_id`, `spawn_group_id`, token totals, `avg_tps` / `avg_latency_ms`, `session_status`, `usage_by_model`, `usage_by_day`, `bashSignals`, `deliverableSignals`, optional `pricing`.
 
@@ -254,7 +272,7 @@ bun run sync:reconcile
 ```
 src/
   core/       isomorphic protocol, static pricing, list preview
-  sources/    7 adapters + listSessions / getSessionDetail
+  sources/    8 adapters + listSessions / getSessionDetail
   store/      schema, sync, queryCached, session-trace, CLI
   lib/        sqlite, jsonl-cache, date-utils, timing-stats
   pricing.ts  configurePricing hooks

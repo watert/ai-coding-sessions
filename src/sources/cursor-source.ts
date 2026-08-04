@@ -114,9 +114,61 @@ function toolStatus(tf: NonNullable<CursorBubble['toolFormerData']>): 'completed
 
 // ==================== bubbles → messages ====================
 
+/** 从 bubble 抽 thinking 正文 */
+export function extractCursorThinkingText(b: CursorBubble): string {
+  const t = b.thinking;
+  if (typeof t === 'string' && t.trim()) return t.trim();
+  if (t && typeof t === 'object' && typeof (t as any).text === 'string') {
+    return String((t as any).text).trim();
+  }
+  // allThinkingBlocks 偶发
+  const blocks = (b as any).allThinkingBlocks;
+  if (Array.isArray(blocks) && blocks.length) {
+    const parts: string[] = [];
+    for (const bl of blocks) {
+      if (typeof bl === 'string' && bl.trim()) parts.push(bl.trim());
+      else if (bl?.text) parts.push(String(bl.text).trim());
+    }
+    if (parts.length) return parts.join('\n');
+  }
+  return '';
+}
+
 /**
- * 连续 type=2 bubbles 合并为一条 assistant（text + tools parts）
- * type=1 → user
+ * 是否为 thinking step 边界 bubble（Cursor UI "Thought for Xs"）
+ * capabilityType 30 / grouping.hasThinking / 有 thinking 正文
+ */
+export function isCursorThinkingBubble(b: CursorBubble): boolean {
+  if (b.type === 1) return false;
+  if (b.capabilityType === 30 || b.grouping?.capabilityType === 30) return true;
+  if (b.grouping?.hasThinking) return true;
+  if (extractCursorThinkingText(b)) return true;
+  // 仅有 thinkingDurationMs、无 text/tool 的空壳也算（UI 仍显示 Thought）
+  if (
+    (b.thinkingDurationMs != null || b.grouping?.thinkingDurationMs != null) &&
+    !(b.text && String(b.text).trim()) &&
+    !(b.toolFormerData?.name)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isCursorToolBubble(b: CursorBubble): boolean {
+  const tf = b.toolFormerData;
+  return !!(tf && (tf.name || tf.params || tf.rawArgs || tf.result));
+}
+
+/**
+ * Cursor bubbles → 多条 assistant step（对齐 UI 轮次）
+ *
+ * 边界：
+ * - type=1 → user
+ * - thinking bubble（capabilityType=30）→ 新 assistant step 起手（reasoning part）
+ * - 随后 tool / text 归入当前 step，直到下一个 thinking
+ * - 无 thinking 仅 tool/text 时也开 step
+ *
+ * 旧实现把整段 type=2 合成一条，丢失 Thought 与中间轮次。
  */
 export function convertCursorBubblesToMessages(
   sessionId: string,
@@ -135,6 +187,7 @@ export function convertCursorBubblesToMessages(
     created: number;
     completed: number;
     modelName?: string;
+    reasonings: Array<{ text: string; durationMs?: number }>;
     texts: string[];
     tools: Array<{
       id: string;
@@ -155,13 +208,24 @@ export function convertCursorBubblesToMessages(
 
   const flushAsst = () => {
     if (!asst) return;
-    if (!asst.texts.length && !asst.tools.length) {
+    if (!asst.texts.length && !asst.tools.length && !asst.reasonings.length) {
       asst = null;
       return;
     }
     const model = normalizeModel(asst.modelName || fallbackModel);
     const parts: any[] = [];
     let pi = 0;
+    for (const r of asst.reasonings) {
+      parts.push({
+        id: `${asst.id}-r${pi++}`,
+        type: 'reasoning',
+        text: r.text,
+        sessionID: sessionId,
+        messageID: asst.id,
+        // 可选：duration 供 UI
+        ...(r.durationMs != null ? { time: { start: asst.created, end: asst.created + r.durationMs } } : {}),
+      });
+    }
     for (const t of asst.texts) {
       parts.push({
         id: `${asst.id}-t${pi++}`,
@@ -195,14 +259,14 @@ export function convertCursorBubblesToMessages(
     const totalIn = asst.inputTokens;
     const totalOut = asst.outputTokens;
     const total = totalIn + totalOut;
-    // activity span 读 created；用末条 bubble 时间避免 last_active 停在首条 asst
+    // activity：step 结束时间
     const endTs = asst.completed || asst.created;
     const info: any = {
       id: asst.id,
       sessionID: sessionId,
       role: 'assistant',
       parentID: lastUserId,
-      time: { created: endTs, completed: endTs },
+      time: { created: asst.created || endTs, completed: endTs },
       path: { cwd: fallbackCwd, root: '' },
       model,
       providerID: model.providerID,
@@ -220,6 +284,32 @@ export function convertCursorBubblesToMessages(
     }
     messages.push({ info, parts });
     asst = null;
+  };
+
+  const startAsst = (b: CursorBubble, ts: number): AsstAcc => ({
+    id: b.bubbleId || `asst-${ts || messages.length}`,
+    created: ts || Date.now(),
+    completed: ts || 0,
+    modelName: b.modelInfo?.modelName,
+    reasonings: [],
+    texts: [],
+    tools: [],
+    inputTokens: 0,
+    outputTokens: 0,
+  });
+
+  const touchAsst = (b: CursorBubble, ts: number) => {
+    if (!asst) asst = startAsst(b, ts);
+    else {
+      if (ts && (!asst.created || ts < asst.created)) asst.created = ts;
+      if (ts && ts > asst.completed) asst.completed = ts;
+      if (!asst.modelName && b.modelInfo?.modelName) asst.modelName = b.modelInfo.modelName;
+    }
+    const tc = b.tokenCount;
+    if (tc) {
+      asst.inputTokens += Number(tc.inputTokens) || 0;
+      asst.outputTokens += Number(tc.outputTokens) || 0;
+    }
   };
 
   for (const b of bubbles) {
@@ -247,41 +337,40 @@ export function convertCursorBubblesToMessages(
       continue;
     }
 
-    // assistant / tool bubble
-    if (!asst) {
-      asst = {
-        id: b.bubbleId || `asst-${ts || messages.length}`,
-        created: ts || Date.now(),
-        completed: ts || 0,
-        modelName: b.modelInfo?.modelName,
-        texts: [],
-        tools: [],
-        inputTokens: 0,
-        outputTokens: 0,
-      };
-    } else {
-      if (ts && (!asst.created || ts < asst.created)) asst.created = ts;
-      if (ts && ts > asst.completed) asst.completed = ts;
-      if (!asst.modelName && b.modelInfo?.modelName) asst.modelName = b.modelInfo.modelName;
+    // --- assistant 侧 ---
+    const thinkingText = extractCursorThinkingText(b);
+    const isThinking = isCursorThinkingBubble(b);
+    const isTool = isCursorToolBubble(b);
+    const text = b.text && String(b.text).trim() ? String(b.text) : '';
+
+    // thinking = 新 step 边界（对齐 UI "Thought for …"）
+    if (isThinking) {
+      flushAsst();
+      touchAsst(b, ts);
+      const duration =
+        b.thinkingDurationMs ??
+        b.grouping?.thinkingDurationMs ??
+        undefined;
+      asst!.reasonings.push({
+        text: thinkingText || (duration != null ? `(thought ${duration}ms)` : '(thinking)'),
+        durationMs: typeof duration === 'number' ? duration : undefined,
+      });
+      // thinking bubble 偶带短 text 时一并收
+      if (text) asst!.texts.push(text);
+      continue;
     }
 
-    const tc = b.tokenCount;
-    if (tc) {
-      asst.inputTokens += Number(tc.inputTokens) || 0;
-      asst.outputTokens += Number(tc.outputTokens) || 0;
-    }
-
-    const tf = b.toolFormerData;
-    if (tf && (tf.name || tf.params || tf.rawArgs || tf.result)) {
-      const callId = tf.toolCallId || tf.modelCallId || b.bubbleId || `call-${asst.tools.length}`;
+    if (isTool) {
+      touchAsst(b, ts);
+      const tf = b.toolFormerData!;
+      const callId = tf.toolCallId || tf.modelCallId || b.bubbleId || `call-${asst!.tools.length}`;
       const name = normalizeCursorToolName(tf.name);
       const input = toolInputFromFormer(tf);
-      // Bash: params.command
       if (name === 'Bash' && !input.command) {
         const raw = parseCursorToolParams(tf.rawArgs);
         if (raw.command) input.command = raw.command;
       }
-      asst.tools.push({
+      asst!.tools.push({
         id: b.bubbleId || callId,
         callId,
         name,
@@ -291,9 +380,16 @@ export function convertCursorBubblesToMessages(
         start: ts,
         end: ts,
       });
-    } else if (b.text && String(b.text).trim()) {
-      asst.texts.push(String(b.text));
+      continue;
     }
+
+    if (text) {
+      touchAsst(b, ts);
+      asst!.texts.push(text);
+      continue;
+    }
+
+    // 空 bubble：忽略
   }
   flushAsst();
   return messages;
@@ -433,6 +529,100 @@ function editDiffsFromComposer(
   };
 }
 
+// ==================== context estimate（对齐 grok estimate 语义，但只有「末次窗口快照」） ====================
+
+/**
+ * Cursor 本地无 per-call billed usage；composerData.promptTokenBreakdown 是
+ * **当前 context 填充量**（非累计消耗），categories 为 system/tools/rules/... 估算。
+ *
+ * 与 Grok 的 estimate 差异：
+ * - Grok：updates 里多轮 context 快照，可近似累加
+ * - Cursor：仅会话末次窗口一帧 → 只挂 last assistant，不写 session total_tokens
+ */
+export function extractCursorContextEstimate(composer?: CursorComposerData | null): {
+  used: number;
+  maxTokens: number;
+  /** 按 category 拆（全属 context 输入侧，无 output） */
+  byCategory: Record<string, number>;
+  contextUsagePercent?: number;
+} | null {
+  const ptb = composer?.promptTokenBreakdown;
+  const used = Number(ptb?.totalUsedTokens) || 0;
+  if (used <= 0) return null;
+  const byCategory: Record<string, number> = {};
+  for (const c of ptb?.categories || []) {
+    const id = String(c?.id || c?.label || 'other');
+    const n = Number(c?.estimatedTokens) || 0;
+    if (n > 0) byCategory[id] = (byCategory[id] || 0) + n;
+  }
+  return {
+    used,
+    maxTokens: Number(ptb?.maxTokens) || 0,
+    byCategory,
+    contextUsagePercent:
+      typeof composer?.contextUsagePercent === 'number'
+        ? composer.contextUsagePercent
+        : undefined,
+  };
+}
+
+/**
+ * 无 bubble.tokenCount 时，把 context 快照挂到最后一条 assistant：
+ * - tokens.context.total = used（窗口占用）
+ * - tokens.input = used（UI lastTokenInfo 左栏）
+ * - tokens.output = 0（本地无 output 累计）
+ * - tokens.total = used（供 buildLastTokenInfo）
+ */
+export function applyCursorContextEstimateToMessages(
+  messages: UnifiedMessage[],
+  composer?: CursorComposerData | null,
+): { messages: UnifiedMessage[]; applied: boolean; used: number } {
+  const est = extractCursorContextEstimate(composer);
+  if (!est) return { messages, applied: false, used: 0 };
+
+  // 已有任意 real token 则不覆盖
+  const hasReal = messages.some((m) => {
+    const t = m.info?.tokens;
+    if (!t) return false;
+    return (t.input || 0) > 0 || (t.output || 0) > 0;
+  });
+  if (hasReal) return { messages, applied: false, used: est.used };
+
+  let lastAsstIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].info?.role === 'assistant') {
+      lastAsstIdx = i;
+      break;
+    }
+  }
+  if (lastAsstIdx < 0) return { messages, applied: false, used: est.used };
+
+  const next = messages.slice();
+  const m = { ...next[lastAsstIdx], info: { ...next[lastAsstIdx].info } };
+  m.info.tokens = {
+    total: est.used,
+    input: est.used,
+    output: 0,
+    reasoning: 0,
+    cache: { read: 0, write: 0 },
+    context: {
+      total: est.used,
+      input: est.used,
+      cacheRead: 0,
+    },
+  };
+  // 透传 breakdown，宿主/详情可用（非协议必填）
+  (m.info as any).cursorContextEstimate = {
+    used: est.used,
+    maxTokens: est.maxTokens,
+    byCategory: est.byCategory,
+    contextUsagePercent: est.contextUsagePercent,
+    usage_source: 'estimate' as const,
+  };
+  next[lastAsstIdx] = m;
+  return { messages: next, applied: true, used: est.used };
+}
+
 // ==================== load messages ====================
 
 async function loadCursorMessages(
@@ -450,27 +640,27 @@ async function loadCursorMessages(
       b.toolFormerData?.name ||
       b.toolFormerData?.result,
   );
+  let messages: UnifiedMessage[] = [];
+  let from: 'bubbles' | 'transcript' | 'empty' = 'empty';
   if (hasSubstance) {
-    return {
-      messages: convertCursorBubblesToMessages(session.sessionId, bubbles, {
+    messages = convertCursorBubblesToMessages(session.sessionId, bubbles, {
+      fallbackCwd: session.cwd,
+      fallbackModel: modelHint,
+    });
+    from = 'bubbles';
+  } else {
+    const tx = readCursorTranscript(session.sessionId);
+    if (tx.length) {
+      messages = convertCursorTranscriptToMessages(session.sessionId, tx, {
         fallbackCwd: session.cwd,
         fallbackModel: modelHint,
-      }),
-      from: 'bubbles',
-    };
+      });
+      from = 'transcript';
+    }
   }
-
-  const tx = readCursorTranscript(session.sessionId);
-  if (tx.length) {
-    return {
-      messages: convertCursorTranscriptToMessages(session.sessionId, tx, {
-        fallbackCwd: session.cwd,
-        fallbackModel: modelHint,
-      }),
-      from: 'transcript',
-    };
-  }
-  return { messages: [], from: 'empty' };
+  // context 快照 → last assistant（estimate）
+  messages = applyCursorContextEstimateToMessages(messages, composer).messages;
+  return { messages, from };
 }
 
 // ==================== stats ====================
@@ -619,12 +809,16 @@ async function getCursorSessionStats(
       if (um.info.tokens) {
         const tin = um.info.tokens.input || 0;
         const tout = um.info.tokens.output || 0;
-        if (tin || tout) anyRealTokens = true;
-        stats.total_input += tin;
-        stats.total_output += tout;
-        stats.total_reasoning += um.info.tokens.reasoning || 0;
-        stats.total_cache_read += um.info.tokens.cache?.read || 0;
-        stats.total_cache_write += um.info.tokens.cache?.write || 0;
+        // context estimate 挂在 last asst，不算 real billed
+        const isCtxEst = !!(um.info as any).cursorContextEstimate;
+        if (!isCtxEst && (tin || tout)) anyRealTokens = true;
+        if (!isCtxEst) {
+          stats.total_input += tin;
+          stats.total_output += tout;
+          stats.total_reasoning += um.info.tokens.reasoning || 0;
+          stats.total_cache_read += um.info.tokens.cache?.read || 0;
+          stats.total_cache_write += um.info.tokens.cache?.write || 0;
+        }
       }
       const mk = um.info.modelID || um.info.model?.modelID;
       if (mk && mk !== 'unknown') models.add(mk);
@@ -663,8 +857,9 @@ async function getCursorSessionStats(
       Array.from(models).join(',') ||
       (modelFromConfig ? normalizeModel(modelFromConfig).modelID : '');
 
-    // context 估算（非累计 usage）
-    const breakdownTotal = Number(composer?.promptTokenBreakdown?.totalUsedTokens) || 0;
+    // context 估算：max_context = 末次窗口占用（非 model maxTokens）
+    const ctxEst = extractCursorContextEstimate(composer);
+    const breakdownTotal = ctxEst?.used || 0;
     const maxFromMsgs = maxContextFromUnifiedMessages(unifiedMessages);
     stats.max_context_tokens = maxFromMsgs || breakdownTotal || undefined;
 
@@ -674,14 +869,27 @@ async function getCursorSessionStats(
       stats.cost_is_partial = true;
       stats.usage_is_incomplete = false;
     } else {
-      // 无 bubble token 快照：非 aborted 截断，只是本地无 billed usage
+      // 无 bubble token：仅 context 快照 → estimate
+      // 故意不把 used 写入 total_tokens（那是窗口占用，不是累计消耗；token-stats 会虚高）
       stats.usage_source = 'estimate';
       stats.cost_is_partial = true;
       stats.usage_is_incomplete = false;
-      // 不把 context breakdown 塞进 total_tokens（避免 token-stats 虚高）
+      // 列表 total_* 保持 0；last_message_tokens / lastTokenInfo 走 message.tokens
     }
 
-    const pricing = calculateSessionPricingFromUnifiedMessages(unifiedMessages);
+    // estimate 路径：message 上已挂 context，但 stats 累加会把 used 当 usage；回滚 total_*
+    if (!anyRealTokens && breakdownTotal > 0) {
+      stats.total_input = 0;
+      stats.total_output = 0;
+      stats.total_cache_read = 0;
+      stats.total_cache_write = 0;
+      stats.total_reasoning = 0;
+      stats.total_tokens = 0;
+    }
+
+    const pricing = anyRealTokens
+      ? calculateSessionPricingFromUnifiedMessages(unifiedMessages)
+      : { usd: 0, cny: 0 }; // context estimate 不计费
     const timingSummary = summarizeTimingLists(timingLists);
 
     let userParts = sanitizeUserTextParts(textParts.filter((p) => p.role === 'user'));
@@ -692,6 +900,7 @@ async function getCursorSessionStats(
 
     const lastWithTokens = [...unifiedMessages].reverse().find((m) => m.info.tokens?.total);
     const last_message = lastWithTokens?.info || [...unifiedMessages].reverse().find((m) => m.info.role === 'assistant')?.info;
+    // last_message_tokens：context used（窗口占用），与 total_tokens 语义不同
     const last_message_tokens = lastWithTokens?.info.tokens?.total || breakdownTotal || undefined;
 
     return {
