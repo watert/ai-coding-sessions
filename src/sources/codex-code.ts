@@ -32,7 +32,10 @@ export function resolveCodexBase(env: NodeJS.ProcessEnv = process.env): string {
   });
 }
 
-const CODEX_BASE = resolveCodexBase();
+/** 每次 re-resolve，便于 CODEX_HOME / 测试注入 */
+function codexBase(): string {
+  return resolveCodexBase();
+}
 const SQLITE_INSTANCE = 'codex-state';
 
 // ==================== 类型 ====================
@@ -90,10 +93,11 @@ export type CodexMessageItem = {
 // ==================== SQLite 路径 ====================
 
 function findCodexStateDbPath(): string | null {
-  if (!fs.existsSync(CODEX_BASE)) return null;
+  const base = codexBase();
+  if (!fs.existsSync(base)) return null;
   let files: string[] = [];
   try {
-    files = fs.readdirSync(CODEX_BASE).filter((f) => /^state_\d+\.sqlite$/.test(f));
+    files = fs.readdirSync(base).filter((f) => /^state_\d+\.sqlite$/.test(f));
   } catch {
     return null;
   }
@@ -103,7 +107,7 @@ function findCodexStateDbPath(): string | null {
     const nb = parseInt(b.match(/\d+/)![0], 10);
     return nb - na;
   });
-  return path.join(CODEX_BASE, files[0]);
+  return path.join(base, files[0]);
 }
 
 async function ensureCodexDb(): Promise<boolean> {
@@ -210,9 +214,10 @@ function loadParentMap(db: any): Map<string, string> {
 /** 无 SQLite 时扫描 rollout jsonl */
 function scanRolloutSessions(): CodexSessionItem[] {
   const sessions: CodexSessionItem[] = [];
+  const base = codexBase();
   const roots = [
-    path.join(CODEX_BASE, 'sessions'),
-    path.join(CODEX_BASE, 'archived_sessions'),
+    path.join(base, 'sessions'),
+    path.join(base, 'archived_sessions'),
   ];
 
   for (const root of roots) {

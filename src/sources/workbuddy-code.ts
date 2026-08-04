@@ -31,9 +31,20 @@ export function resolveWorkbuddyRoot(env: NodeJS.ProcessEnv = process.env): stri
   });
 }
 
+/** @deprecated 兼容旧引用；运行时请用 resolveWorkbuddyRoot() / getWorkbuddyDbPath() */
 export const WORKBUDDY_ROOT = resolveWorkbuddyRoot();
 export const WORKBUDDY_DB_PATH = path.join(WORKBUDDY_ROOT, 'workbuddy.db');
 export const WORKBUDDY_PROJECTS_DIR = path.join(WORKBUDDY_ROOT, 'projects');
+
+function workbuddyRoot(): string {
+  return resolveWorkbuddyRoot();
+}
+function workbuddyDbPath(): string {
+  return path.join(workbuddyRoot(), 'workbuddy.db');
+}
+function workbuddyProjectsDir(): string {
+  return path.join(workbuddyRoot(), 'projects');
+}
 const SQLITE_INSTANCE = 'workbuddy';
 
 // ==================== 类型 ====================
@@ -110,12 +121,13 @@ export type WorkbuddyJsonlEvent = {
 // ==================== DB ====================
 
 export function getWorkbuddyDbPath(): string {
-  return WORKBUDDY_DB_PATH;
+  return workbuddyDbPath();
 }
 
 export async function initWorkbuddyDb(): Promise<boolean> {
-  if (!fs.existsSync(WORKBUDDY_DB_PATH)) {
-    console.warn(`[workbuddy-code] DB 不存在: ${WORKBUDDY_DB_PATH}`);
+  const dbPath = workbuddyDbPath();
+  if (!fs.existsSync(dbPath)) {
+    console.warn(`[workbuddy-code] DB 不存在: ${dbPath}`);
     return false;
   }
   try {
@@ -201,12 +213,13 @@ let jsonlIndex: Map<string, string> | null = null;
 
 function buildJsonlIndex(): Map<string, string> {
   const map = new Map<string, string>();
-  if (!fs.existsSync(WORKBUDDY_PROJECTS_DIR)) return map;
+  const projectsDir = workbuddyProjectsDir();
+  if (!fs.existsSync(projectsDir)) return map;
   try {
-    const dirs = fs.readdirSync(WORKBUDDY_PROJECTS_DIR, { withFileTypes: true });
+    const dirs = fs.readdirSync(projectsDir, { withFileTypes: true });
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
-      const dirPath = path.join(WORKBUDDY_PROJECTS_DIR, d.name);
+      const dirPath = path.join(projectsDir, d.name);
       let files: string[];
       try {
         files = fs.readdirSync(dirPath);

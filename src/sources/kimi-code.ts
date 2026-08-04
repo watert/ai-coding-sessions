@@ -34,8 +34,13 @@ export function resolveKimiBase(env: NodeJS.ProcessEnv = process.env): string {
   });
 }
 
-const KIMI_BASE = resolveKimiBase();
-const SESSION_INDEX_PATH = path.join(KIMI_BASE, 'session_index.jsonl');
+/** 每次 re-resolve，便于 KIMI_DATA_DIR / 测试注入 */
+function kimiBase(): string {
+  return resolveKimiBase();
+}
+function sessionIndexPath(): string {
+  return path.join(kimiBase(), 'session_index.jsonl');
+}
 
 // ==================== Zod Schema ====================
 
@@ -172,11 +177,11 @@ export type KimiMessageItem = {
 // ==================== Session 列表 ====================
 
 export async function listKimiCodeSessions(): Promise<KimiSessionItem[]> {
-  if (!fs.existsSync(SESSION_INDEX_PATH)) {
+  if (!fs.existsSync(sessionIndexPath())) {
     return [];
   }
 
-  const indexContent = await fs.promises.readFile(SESSION_INDEX_PATH, 'utf-8');
+  const indexContent = await fs.promises.readFile(sessionIndexPath(), 'utf-8');
   const indexItems = splitLines(indexContent)
     .filter(line => line.trim() !== '')
     .map(line => {
@@ -1271,10 +1276,10 @@ export async function getKimiSessionUsageSummary(
 }
 
 async function findSessionDir(sessionId: string): Promise<string | null> {
-  if (!fs.existsSync(SESSION_INDEX_PATH)) {
+  if (!fs.existsSync(sessionIndexPath())) {
     return null;
   }
-  const content = await fs.promises.readFile(SESSION_INDEX_PATH, 'utf-8');
+  const content = await fs.promises.readFile(sessionIndexPath(), 'utf-8');
   const lines = splitLines(content).filter(line => line.trim() !== '');
   for (const line of lines) {
     try {

@@ -36,6 +36,7 @@ export function resolveZcodeDbPath(env: NodeJS.ProcessEnv = process.env): string
   });
 }
 
+/** @deprecated 兼容旧引用；运行时请用 getZcodeDbPath() 以支持 env 注入 */
 export const ZCODE_DB_PATH = resolveZcodeDbPath();
 const SQLITE_INSTANCE = 'zcode';
 
@@ -98,12 +99,13 @@ export type ZcodeMessageItem = {
 // ==================== DB ====================
 
 export function getZcodeDbPath(): string {
-  return ZCODE_DB_PATH;
+  return resolveZcodeDbPath();
 }
 
 export async function initZcodeDb(): Promise<boolean> {
-  if (!fs.existsSync(ZCODE_DB_PATH)) {
-    console.warn(`[zcode-code] DB 不存在: ${ZCODE_DB_PATH}`);
+  const dbPath = getZcodeDbPath();
+  if (!fs.existsSync(dbPath)) {
+    console.warn(`[zcode-code] DB 不存在: ${dbPath}`);
     return false;
   }
   try {

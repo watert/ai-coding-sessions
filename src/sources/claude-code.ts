@@ -47,8 +47,14 @@ export function resolveClaudeBase(env: NodeJS.ProcessEnv = process.env): string 
   });
 }
 
-const CLAUDE_BASE = resolveClaudeBase();
-const HISTORY_PATH = path.join(CLAUDE_BASE, 'history.jsonl');
+/** 每次调用 re-resolve，便于测试注入 CLAUDE_CONFIG_DIR / HOME */
+function claudeBase(): string {
+  return resolveClaudeBase();
+}
+
+function historyPath(): string {
+  return path.join(claudeBase(), 'history.jsonl');
+}
 
 export type ClaudeSessionItem = {
   display: string;
@@ -60,7 +66,9 @@ export type ClaudeSessionItem = {
   projectPath?: string;
 }
 export async function listClaudeCodeSessions() {
-  const history = await fs.promises.readFile(HISTORY_PATH, 'utf-8');
+  const hp = historyPath();
+  if (!fs.existsSync(hp)) return [];
+  const history = await fs.promises.readFile(hp, 'utf-8');
   const sessions = history.split(/\r\n|\n|\r/).filter(line => line.trim() !== '').map(line => {
     const item: ClaudeSessionItem = JSON.parse(line);
     item.date = new Date(item.timestamp);
@@ -75,7 +83,7 @@ export function encodeClaudeProjectDir(project: string): string {
   return project.replace(/[/\\]/g, '-');
 }
 
-export function getProjectPath(project: string, base: string = CLAUDE_BASE) {
+export function getProjectPath(project: string, base: string = claudeBase()) {
   return path.join(base, 'projects', encodeClaudeProjectDir(project));
 }
 
@@ -203,7 +211,7 @@ if (require.main === module) { // call from cli script
     const projectPath = getProjectPath(project);
     const sessFilePath = path.join(projectPath, `${sessionId}.jsonl`);
 
-    console.log({HISTORY_PATH, sess, sessFilePath});
+    console.log({ HISTORY_PATH: historyPath(), sess, sessFilePath });
     const msgs = await listClaudeCodeMessages({project, sessionId});
 
     // 采样分析 msg 结构，帮助完善 schema 注释

@@ -46,7 +46,10 @@ export function resolveGrokSessionsRoot(env: NodeJS.ProcessEnv = process.env): s
   });
 }
 
-const GROK_SESSIONS_ROOT = resolveGrokSessionsRoot();
+/** 每次 re-resolve，便于 GROK_HOME / GROK_SESSIONS_DIR / 测试注入 */
+function grokSessionsRoot(): string {
+  return resolveGrokSessionsRoot();
+}
 
 /**
  * 无分项用量时，按上下文总量拆成 cache / input / output 预估（百分比）。
@@ -303,11 +306,11 @@ function grokStableMessageId(sessionId: string, lineIndex: number): string {
 }
 
 function findSessionDirById(sessionId: string): string | null {
-  if (!fs.existsSync(GROK_SESSIONS_ROOT)) return null;
+  if (!fs.existsSync(grokSessionsRoot())) return null;
   try {
-    const projDirs = fs.readdirSync(GROK_SESSIONS_ROOT).filter(d => !d.startsWith('.') && !d.endsWith('.sqlite'));
+    const projDirs = fs.readdirSync(grokSessionsRoot()).filter(d => !d.startsWith('.') && !d.endsWith('.sqlite'));
     for (const proj of projDirs) {
-      const cand = path.join(GROK_SESSIONS_ROOT, proj, sessionId);
+      const cand = path.join(grokSessionsRoot(), proj, sessionId);
       const sum = path.join(cand, 'summary.json');
       if (fs.existsSync(sum)) return cand;
     }
@@ -342,12 +345,12 @@ export async function scanGrokSubagentRelations(): Promise<{
 }> {
   const metaByChild = new Map<string, GrokSubagentMeta>();
   const childrenByParent = new Map<string, GrokSubagentMeta[]>();
-  if (!fs.existsSync(GROK_SESSIONS_ROOT)) return { metaByChild, childrenByParent };
+  if (!fs.existsSync(grokSessionsRoot())) return { metaByChild, childrenByParent };
 
   let projDirs: string[] = [];
   try {
-    projDirs = fs.readdirSync(GROK_SESSIONS_ROOT).filter((d) => {
-      const full = path.join(GROK_SESSIONS_ROOT, d);
+    projDirs = fs.readdirSync(grokSessionsRoot()).filter((d) => {
+      const full = path.join(grokSessionsRoot(), d);
       return fs.statSync(full).isDirectory() && !d.endsWith('.sqlite');
     });
   } catch {
@@ -357,7 +360,7 @@ export async function scanGrokSubagentRelations(): Promise<{
   // 先收集全部 updates.jsonl 路径, 再并发异步读取 (IO 交错, mtime 缓存与 convert 复用)
   const updatesPaths: string[] = [];
   for (const projEnc of projDirs) {
-    const projDir = path.join(GROK_SESSIONS_ROOT, projEnc);
+    const projDir = path.join(grokSessionsRoot(), projEnc);
     let sessIds: string[] = [];
     try {
       sessIds = fs.readdirSync(projDir).filter((d) => {
@@ -421,7 +424,7 @@ export async function scanGrokSubagentRelations(): Promise<{
 // ==================== Session 列表 ====================
 
 export async function listGrokCodeSessions(): Promise<GrokSessionItem[]> {
-  if (!fs.existsSync(GROK_SESSIONS_ROOT)) return [];
+  if (!fs.existsSync(grokSessionsRoot())) return [];
 
   // 提前扫描所有 session 的 updates.jsonl，建立 subagent 元数据映射
   const { metaByChild, childrenByParent } = await scanGrokSubagentRelations();
@@ -429,8 +432,8 @@ export async function listGrokCodeSessions(): Promise<GrokSessionItem[]> {
   const sessions: GrokSessionItem[] = [];
   let projDirs: string[] = [];
   try {
-    projDirs = fs.readdirSync(GROK_SESSIONS_ROOT).filter((d) => {
-      const full = path.join(GROK_SESSIONS_ROOT, d);
+    projDirs = fs.readdirSync(grokSessionsRoot()).filter((d) => {
+      const full = path.join(grokSessionsRoot(), d);
       return fs.statSync(full).isDirectory() && !d.endsWith('.sqlite');
     });
   } catch {
@@ -438,7 +441,7 @@ export async function listGrokCodeSessions(): Promise<GrokSessionItem[]> {
   }
 
   for (const projEnc of projDirs) {
-    const projDir = path.join(GROK_SESSIONS_ROOT, projEnc);
+    const projDir = path.join(grokSessionsRoot(), projEnc);
     let sessIds: string[] = [];
     try {
       sessIds = fs.readdirSync(projDir).filter((d) => {

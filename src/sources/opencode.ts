@@ -4,6 +4,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import path from 'node:path';
 import _ from 'lodash';
 import { z } from 'zod';
 import {
@@ -263,8 +264,13 @@ export async function checkLastUpdateTime(): Promise<Date> {
 
 // ==================== DB 初始化 ====================
 
-/** 获取 opencode 数据库路径 */
+/**
+ * 获取 opencode 数据库路径。
+ * 优先 `OPENCODE_DB_PATH`（hermetic 测试 / 自定义安装）；否则 `opencode db path`。
+ */
 export function getOpencodeDbPath(): string {
+  const fromEnv = process.env.OPENCODE_DB_PATH?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
   try {
     return execSync('opencode db path', { encoding: 'utf-8' }).trim();
   } catch (e) {
