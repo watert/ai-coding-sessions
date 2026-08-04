@@ -56,7 +56,7 @@ import {
 await initAiCodingStats();
 
 const { sessions, total, bySource } = await listSessions({
-  source: 'all',           // or claude|opencode|kimi|grok|codex|zcode|workbuddy
+  source: 'all',           // or claude|opencode|kimi|grok|codex|zcode|workbuddy|cursor
   startDate: '2026-07-01', // optional YYYY-MM-DD
   endDate: '2026-07-31',
 });
@@ -219,6 +219,7 @@ npm scripts: `bun run cli` · `bun run sync` · `bun run sync:reconcile`.
 | `codex` | `~/.codex/` state sqlite + rollout JSONL | |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + project JSONL | |
+| `cursor` | Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | 无可靠 billed usage；`usage_source=estimate` |
 
 Missing source dirs are skipped with a warning (other sources still work).
 

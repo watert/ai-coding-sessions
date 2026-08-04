@@ -1,8 +1,8 @@
 ---
 name: ai-coding-sessions
-description: 分析、查询、导出 AI Coding Sessions（多 source：opencode / claude / kimi / grok / codex / zcode / workbuddy）。用户需要会话列表/详情、轨迹 trace、成本 AUTO、导出 prompts、subagent 聚合、tool 失败、prefill/lag/tps、thinkingEffort、grok 真实 usage，或排查 session 数据时使用。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
+description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.7.1
+  version: 1.7.3
 ---
 
 # AI Coding Sessions
@@ -36,7 +36,7 @@ metadata:
 
 ```
 src/core/       同构协议、静态单价、列表预览
-src/sources/    7 source + listSessions / getSessionDetail
+src/sources/    8 source + listSessions / getSessionDetail
 src/store/      schema · sync · queryCached · session-trace · CLI
 src/pricing.ts  configurePricing 钩子
 skills/ai-coding-sessions/   本 skill
@@ -44,7 +44,7 @@ skills/ai-coding-sessions/   本 skill
 
 ## Source
 
-`opencode | claude | kimi | grok | codex | zcode | workbuddy`  
+`opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor`  
 本地路径与适配见 [references/sources.md](./references/sources.md)。  
 新 source：`*-code` + `*-source` → `sources/index.ts` 注册。
 

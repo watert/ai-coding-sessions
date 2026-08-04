@@ -14,6 +14,7 @@ import { listGrokCodeSessions } from './grok-code';
 import { listCodexSessions, closeCodexDb } from './codex-code';
 import { listZcodeSessions, closeZcodeDb, initZcodeDb } from './zcode-code';
 import { listWorkbuddySessions, closeWorkbuddyDb, initWorkbuddyDb } from './workbuddy-code';
+import { listCursorSessions, closeCursorDb, initCursorDb } from './cursor-code';
 import {
   initOpencodeDb,
   closeOpencodeDb,
@@ -33,6 +34,7 @@ import { convertGrokSession, getGrokSessionDetail } from './grok-source';
 import { convertCodexSession, getCodexSessionDetail } from './codex-source';
 import { convertZcodeSession, getZcodeSessionDetail } from './zcode-source';
 import { convertWorkbuddySession, getWorkbuddySessionDetail } from './workbuddy-source';
+import { convertCursorSession, getCursorSessionDetail } from './cursor-source';
 import type {
   UnifiedSessionInfo,
   UnifiedSessionDetail,
@@ -71,6 +73,12 @@ export async function initAiCodingStats(): Promise<void> {
     console.warn('[ai-coding-stats] WorkBuddy 数据库初始化失败:', e);
   }
 
+  try {
+    await initCursorDb();
+  } catch (e) {
+    console.warn('[ai-coding-stats] Cursor state.vscdb 初始化失败:', e);
+  }
+
   // 预加载 models.dev 价格数据（失败不影响主流程）
   try {
     await ensureModelsDevData();
@@ -89,6 +97,7 @@ export function closeAiCodingStats(): void {
   closeCodexDb();
   closeZcodeDb();
   closeWorkbuddyDb();
+  closeCursorDb();
   initialized = false;
 }
 
@@ -114,6 +123,7 @@ export async function listSessions(
   let codexCount = 0;
   let zcodeCount = 0;
   let workbuddyCount = 0;
+  let cursorCount = 0;
 
   const dateRange = { startDate, endDate };
   /** 预筛：last_active >= start（放宽，精确重叠在 convert 后） */
@@ -333,6 +343,22 @@ export async function listSessions(
     }));
   }
 
+  if (source === 'cursor' || source === 'all') {
+    tasks.push((async () => {
+      const cursorSessions = await listCursorSessions();
+      const filtered = cursorSessions.filter(s => prefilterByLastActive(s.updatedAt));
+      const converted = (await withConcurrencyLimit(
+        filtered,
+        convertCursorSession,
+        3,
+      )).filter(filterByModels).filter(filterBySessionOverlap);
+      sessions.push(...converted);
+      cursorCount = converted.length;
+    })().catch(e => {
+      console.warn('[ai-coding-stats] Cursor sessions 获取失败:', e);
+    }));
+  }
+
   await Promise.all(tasks);
 
   // 按时间排序 (最新的在前)
@@ -349,6 +375,7 @@ export async function listSessions(
       codex: codexCount,
       zcode: zcodeCount,
       workbuddy: workbuddyCount,
+      cursor: cursorCount,
     },
     lastUpdatedAt: new Date(),
   };
@@ -382,6 +409,8 @@ export async function getSessionDetail(
     return getZcodeSessionDetail(sessionId);
   } else if (source === 'workbuddy') {
     return getWorkbuddySessionDetail(sessionId);
+  } else if (source === 'cursor') {
+    return getCursorSessionDetail(sessionId);
   } else {
     // OpenCode 直接透传
     const detail = getOpencodeSessionDetail(sessionId);

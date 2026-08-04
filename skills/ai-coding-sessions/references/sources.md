@@ -11,6 +11,7 @@
 | `codex` | `~/.codex/` state sqlite + rollout JSONL/`.jsonl.zst` | `codex-code.ts` + `codex-source.ts` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts` |
+| `cursor` | Desktop `state.vscdb`（composerHeaders + bubbleId）+ `~/.cursor/projects/*/agent-transcripts` | `cursor-code.ts` + `cursor-source.ts` |
 
 路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
 
@@ -24,6 +25,9 @@
 | `GROK_HOME` / `GROK_SESSIONS_DIR` | grok | 可指 `~/.grok` 或 `…/sessions` |
 | `ZCODE_HOME` / `ZCODE_DB_PATH` | zcode | 可指 db 文件或 `.zcode` 根 |
 | `WORKBUDDY_HOME` | workbuddy | 默认 `~/.workbuddy` |
+| `CURSOR_HOME` | cursor | 默认 `~/.cursor`（projects / transcripts） |
+| `CURSOR_APP_DATA` | cursor | Desktop 应用数据根；macOS 默认 `~/Library/Application Support/Cursor` |
+| `CURSOR_STATE_DB` | cursor | 直接指定 `state.vscdb` 路径 |
 
 实现：`src/lib/home-paths.ts`（`resolveHomeDir` / `resolveDataRoot`）。
 
@@ -52,6 +56,7 @@
 | step 边界 | opencode 有 `step-start`/`step-finish`；其它多条 assistant 拼一轮 |
 | **Claude 主链**（[#5](https://github.com/watert/ai-coding-sessions/issues/5)） | `parentUuid` leaf 链；`compact_boundary` / snip；跳过 `isSidechain`；并行 tool sibling 回收 → 避免长会话 token **重复计入** |
 | **Codex compact**（#5） | `.jsonl.zst`（需 `zstd`）；`compacted.replacement_history`；`thread_rolled_back` → 修正 usage 口径 |
+| **Cursor usage** | 本地 **无可靠 billed token**；`bubble.tokenCount` 常为 0；`promptTokenBreakdown` 仅上下文估算 → `usage_source=estimate` + `cost_is_partial`。消息以 bubble/`toolFormerData` 为主，transcript JSONL 回退 |
 
 改完 Claude/Codex 解析后需 **`sync --reconcile`**（或 `?fresh=1`）再看 token-stats。
 

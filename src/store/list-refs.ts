@@ -17,6 +17,7 @@ import { listGrokCodeSessions } from '../sources/grok-code';
 import { listCodexSessions } from '../sources/codex-code';
 import { listZcodeSessions, initZcodeDb } from '../sources/zcode-code';
 import { listWorkbuddySessions, initWorkbuddyDb } from '../sources/workbuddy-code';
+import { listCursorSessions, initCursorDb } from '../sources/cursor-code';
 import { initOpencodeDb } from '../sources/opencode';
 import type { SourceId } from './schema';
 import { ALL_SOURCES } from './schema';
@@ -46,6 +47,7 @@ const SEMANTICS: Partial<Record<SourceId, string>> = {
   kimi: 'session_index updatedAt',
   opencode: 'session.time_updated SQL',
   codex: 'thread updatedAt',
+  cursor: 'composerHeaders lastUpdatedAt; activity prefers bubbles',
 };
 
 export async function listRefs(options?: ListRefsOptions): Promise<SessionRef[]> {
@@ -136,6 +138,18 @@ async function listRefsForSource(source: SourceId): Promise<SessionRef[]> {
         session_id: s.sessionId,
         dirty_mark: String(s.updatedAt || s.lastActivityAt || 0),
         time_updated: s.updatedAt || s.lastActivityAt || 0,
+        title: s.title,
+        dirty_semantics: sem,
+      }));
+    }
+    case 'cursor': {
+      await initCursorDb();
+      const list = await listCursorSessions();
+      return list.map((s) => ({
+        source,
+        session_id: s.sessionId,
+        dirty_mark: String(s.updatedAt || 0),
+        time_updated: s.updatedAt || 0,
         title: s.title,
         dirty_semantics: sem,
       }));
