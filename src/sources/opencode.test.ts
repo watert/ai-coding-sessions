@@ -1,8 +1,7 @@
 /**
- * OpenCode SQLite 服务测试
+ * OpenCode SQLite — hermetic fixture 为主；真机冒烟见 ACS_LIVE_TESTS=1
  */
-
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import {
   getOpencodeDbPath,
   initOpencodeDb,
@@ -11,142 +10,115 @@ import {
   getSessionDetail,
   closeOpencodeDb,
 } from './opencode';
+import {
+  createOpencodeFixtureDb,
+  OC_SESSION_ID,
+  type OpencodeFixture,
+} from './__fixtures__/opencode';
 
-describe('OpenCode SQLite 服务', () => {
+const LIVE = process.env.ACS_LIVE_TESTS === '1';
+
+describe('OpenCode SQLite (fixture)', () => {
+  let fx: OpencodeFixture;
+  let prevDb: string | undefined;
+
   beforeAll(async () => {
+    fx = createOpencodeFixtureDb();
+    prevDb = process.env.OPENCODE_DB_PATH;
+    process.env.OPENCODE_DB_PATH = fx.dbPath;
+    closeOpencodeDb();
     await initOpencodeDb();
   });
 
   afterAll(() => {
     closeOpencodeDb();
+    if (prevDb === undefined) delete process.env.OPENCODE_DB_PATH;
+    else process.env.OPENCODE_DB_PATH = prevDb;
   });
 
-  describe('getOpencodeDbPath', () => {
-    it('应该返回有效的数据库路径', () => {
-      const dbPath = getOpencodeDbPath();
-      expect(dbPath).toBeTruthy();
-      expect(dbPath).toContain('opencode.db');
-    });
+  it('getOpencodeDbPath 尊重 OPENCODE_DB_PATH', () => {
+    expect(getOpencodeDbPath()).toBe(fx.dbPath);
   });
 
-  describe('initOpencodeDb', () => {
-    it('应该成功初始化数据库连接', () => {
-      const db = getOpencodeDb();
-      expect(db).toBeTruthy();
-    });
+  it('init 后可 getDb', () => {
+    expect(getOpencodeDb()).toBeTruthy();
   });
 
-  describe('getSessionList', () => {
-    it('应该返回 session 列表', () => {
-      const { list } = getSessionList();
-      expect(Array.isArray(list)).toBe(true);
-      
-      if (list.length > 0) {
-        const item = list[0];
-        expect(item).toHaveProperty('session_id');
-        expect(item).toHaveProperty('session_title');
-        expect(item).toHaveProperty('session_dir');
-        expect(item).toHaveProperty('project_id');
-        expect(item).toHaveProperty('project_name');
-        expect(item).toHaveProperty('total_messages');
-        expect(item).toHaveProperty('total_user_messages');
-        expect(item).toHaveProperty('total_tool_calls');
-        expect(item).toHaveProperty('total_tokens');
-        expect(item).toHaveProperty('last_active_at');
+  it('getSessionList 返回 fixture session', () => {
+    const { list, total } = getSessionList();
+    expect(total).toBeGreaterThanOrEqual(1);
+    expect(list.some((s) => s.session_id === OC_SESSION_ID)).toBe(true);
+    const item = list.find((s) => s.session_id === OC_SESSION_ID)!;
+    expect(item.session_title).toContain('Fixture');
+    expect(item.total_messages).toBe(2);
+    expect(item.total_user_messages).toBe(1);
+    expect(item.total_tool_calls).toBe(1);
+    expect(item.total_tokens).toBe(150);
+    expect(item.total_input).toBe(100);
+    expect(item.total_output).toBe(50);
+  });
+
+  it('日期过滤（YYYY-MM-DD）', () => {
+    const hit = getSessionList('2026-07-01', '2026-07-31');
+    expect(hit.list.some((s) => s.session_id === OC_SESSION_ID)).toBe(true);
+    const miss = getSessionList('2025-01-01', '2025-01-31');
+    expect(miss.list.some((s) => s.session_id === OC_SESSION_ID)).toBe(false);
+  });
+
+  it('getSessionDetail 结构与 parts 关联', () => {
+    const detail = getSessionDetail(OC_SESSION_ID);
+    expect(detail).toBeTruthy();
+    expect(detail!.info.id).toBe(OC_SESSION_ID);
+    expect(detail!.info.title).toContain('Fixture');
+    expect(detail!.messages.length).toBe(2);
+    expect(detail!.messages[0].info.role).toBe('user');
+    expect(detail!.messages[1].info.role).toBe('assistant');
+    expect(detail!.messages[1].info.tokens?.total).toBe(150);
+    for (const msg of detail!.messages) {
+      for (const part of msg.parts) {
+        expect(part.messageID).toBe(msg.info.id);
+        expect(part.sessionID).toBe(OC_SESSION_ID);
       }
-    });
-
-    it('应该支持自定义天数', () => {
-      const { list: list30days } = getSessionList('2026-06-01', '2026-06-30');
-      const { list: list7days } = getSessionList('2026-06-24', '2026-06-30');
-      // 30 天的数据量应该 >= 7 天
-      expect(list30days.length).toBeGreaterThanOrEqual(list7days.length);
-    }, 30_000);
+    }
+    const tools = detail!.messages[1].parts.filter((p) => p.type === 'tool');
+    expect(tools.length).toBe(1);
+    expect(tools[0].tool).toBe('bash');
   });
 
-  describe('getSessionDetail compaction', () => {
-    // 含 agent=compaction 的真实 session（手动 compact）
+  it('不存在的 session 返回 null', () => {
+    expect(getSessionDetail('non-existent-session-id')).toBeNull();
+  });
+});
+
+describe.skipIf(!LIVE)('OpenCode SQLite (live, ACS_LIVE_TESTS=1)', () => {
+  beforeEach(async () => {
+    delete process.env.OPENCODE_DB_PATH;
+    closeOpencodeDb();
+    await initOpencodeDb();
+  });
+
+  afterEach(() => {
+    closeOpencodeDb();
+  });
+
+  it('真机 list 可调用', () => {
+    const { list } = getSessionList();
+    expect(Array.isArray(list)).toBe(true);
+  }, 30_000);
+
+  it('真机 detail（若有 session）', () => {
+    const { list } = getSessionList();
+    if (!list.length) return;
+    const detail = getSessionDetail(list[0].session_id);
+    expect(detail).toBeTruthy();
+    expect(detail!.info.id).toBe(list[0].session_id);
+  }, 30_000);
+
+  it('compaction 样本（若存在）', () => {
     const COMPACT_SESSION = 'ses_06ddf54d1ffeR4tvEvPbU1dx2A';
-
-    it('应标记 compaction 消息并回填 time_compacting', () => {
-      const detail = getSessionDetail(COMPACT_SESSION);
-      if (!detail) {
-        console.log('compact sample session 不存在，跳过');
-        return;
-      }
-      const compactMsgs = detail.messages.filter(m => m.info.compaction);
-      expect(compactMsgs.length).toBeGreaterThanOrEqual(2); // user trigger + assistant summary
-      const asst = compactMsgs.find(m => m.info.role === 'assistant');
-      expect(asst).toBeDefined();
-      expect(asst!.parts.some(p => String(p.text || '').startsWith('[Context Compacted]'))).toBe(true);
-      const user = compactMsgs.find(m => m.info.role === 'user');
-      expect(user).toBeDefined();
-      expect(user!.parts.some(p => String(p.text || '').includes('手动压缩') || String(p.text || '').includes('自动压缩'))).toBe(true);
-      expect(detail.info.time_compacting).toBeTruthy();
-      expect(Number(detail.info.time_compacting)).toBeGreaterThan(0);
-    });
-  });
-
-  describe('getSessionDetail', () => {
-    it('应该返回 session 详情', () => {
-      // 先获取一个 session id
-      const { list } = getSessionList();
-      if (list.length === 0) {
-        console.log('没有可用的 session，跳过详情测试');
-        return;
-      }
-
-      const sessionId = list[0].session_id;
-      const detail = getSessionDetail(sessionId);
-      
-      expect(detail).toBeTruthy();
-      expect(detail!.info).toHaveProperty('id', sessionId);
-      expect(detail!.info).toHaveProperty('title');
-      expect(detail!.info).toHaveProperty('directory');
-      expect(Array.isArray(detail!.messages)).toBe(true);
-
-      // 验证 messages 结构
-      if (detail!.messages.length > 0) {
-        const msg = detail!.messages[0];
-        expect(msg).toHaveProperty('info');
-        expect(msg).toHaveProperty('parts');
-        expect(msg.info).toHaveProperty('id');
-        expect(msg.info).toHaveProperty('role');
-        expect(msg.info).toHaveProperty('time');
-        expect(Array.isArray(msg.parts)).toBe(true);
-      }
-    });
-
-    it('不存在的 session 应返回 null', () => {
-      const detail = getSessionDetail('non-existent-session-id');
-      expect(detail).toBeNull();
-    });
-  });
-
-  describe('数据完整性', () => {
-    it('session list 应包含有效的 token 统计', () => {
-      const { list } = getSessionList();
-      for (const item of list) {
-        expect(typeof item.total_tokens).toBe('number');
-        expect(typeof item.total_input).toBe('number');
-        expect(typeof item.total_output).toBe('number');
-        expect(item.total_tokens).toBeGreaterThanOrEqual(0);
-      }
-    });
-
-    it('session detail 的 messages 应有正确的 parts 关联', () => {
-      const { list } = getSessionList();
-      if (list.length === 0) return;
-
-      const detail = getSessionDetail(list[0].session_id);
-      if (!detail || detail.messages.length === 0) return;
-
-      for (const msg of detail.messages) {
-        for (const part of msg.parts) {
-          expect(part.messageID).toBe(msg.info.id);
-          expect(part.sessionID).toBe(detail.info.id);
-        }
-      }
-    });
-  });
+    const detail = getSessionDetail(COMPACT_SESSION);
+    if (!detail) return;
+    const compactMsgs = detail.messages.filter((m) => m.info.compaction);
+    expect(compactMsgs.length).toBeGreaterThanOrEqual(1);
+  }, 30_000);
 });

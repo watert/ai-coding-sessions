@@ -260,11 +260,14 @@ Runtime I/O is local filesystem + SQLite only (`bun:sqlite`). Optional host may 
 ## Scripts
 
 ```bash
-bun test src          # unit tests
+bun test src          # hermetic unit tests (no real CLI data required)
+ACS_LIVE_TESTS=1 bun test src/sources/opencode.test.ts   # optional live smoke
 bun run check         # tsc --noEmit
 bun run sync          # store CLI
 bun run sync:reconcile
 ```
+
+Fixtures live under `src/sources/__fixtures__/` (generators only — no large binary blobs). Override roots via env (`OPENCODE_DB_PATH`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …).
 
 ## Package layout
 

@@ -262,11 +262,14 @@ npm scripts：`bun run cli` · `bun run sync` · `bun run sync:reconcile`。
 ## 脚本
 
 ```bash
-bun test src          # 单元测试
+bun test src          # hermetic 单测（无需本机真实 CLI 数据）
+ACS_LIVE_TESTS=1 bun test src/sources/opencode.test.ts   # 可选真机冒烟
 bun run check         # tsc --noEmit
 bun run sync          # store CLI
 bun run sync:reconcile
 ```
+
+Fixture 生成器在 `src/sources/__fixtures__/`（不提交大二进制）。可用 env 覆盖根路径（`OPENCODE_DB_PATH`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME` 等）。
 
 ## 包布局
 

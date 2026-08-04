@@ -28,6 +28,9 @@
 | `CURSOR_HOME` | cursor | 默认 `~/.cursor`（projects / transcripts） |
 | `CURSOR_APP_DATA` | cursor | Desktop 应用数据根；macOS 默认 `~/Library/Application Support/Cursor` |
 | `CURSOR_STATE_DB` | cursor | 直接指定 `state.vscdb` 路径 |
+| `OPENCODE_DB_PATH` | opencode | 直接指定 `opencode.db`（优先于 `opencode db path`；hermetic 测试用） |
+
+测试：`ACS_LIVE_TESTS=1` 才跑依赖本机真实 CLI 数据的冒烟（默认 skip）。各 source list/convert 主路径见 `src/sources/__fixtures__/` + `source-fixtures.test.ts` / `opencode.test.ts`。
 
 实现：`src/lib/home-paths.ts`（`resolveHomeDir` / `resolveDataRoot`）。
 
