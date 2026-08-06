@@ -6,6 +6,7 @@
 |------|--------|
 | 列表空 | 对应 CLI 数据目录是否存在；`--days`/`--start` 范围；source 是否装过 |
 | 缓存旧 | `sync --days=N` / `--full`；宿主 `ensureFresh` / `?fresh=1` |
+| kimi 列表停在 early/in-progress | 旧版 dirty 用 `state.updatedAt`（swarm 中不刷新）；应走 wire mtime:size。确认包版本后 `sync --source=kimi --days=1` |
 | 成本 0 | 未 `configurePricing` 时预期为 0；或 → ai-model-pricing / models.dev |
 | detail 失败 / not_found | `--source` 是否与 list 一致；id 是否完整（含 subagent 后缀） |
 | trace 太大 | 默认勿加 `--io`；用 `--max-steps` / `--from`/`--to`；detail 用 `--max-output-chars` |

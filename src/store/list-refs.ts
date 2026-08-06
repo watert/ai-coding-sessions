@@ -44,7 +44,7 @@ const SEMANTICS: Partial<Record<SourceId, string>> = {
   grok: 'summary/heartbeat may bump updated_at; real activity in updates turns',
   workbuddy: 'sqlite timestamps may lag jsonl usage',
   claude: 'history.jsonl timestamp is list time, not message bounds',
-  kimi: 'session_index updatedAt',
+  kimi: 'max(state.updatedAt, agent wire.jsonl mtime:size)',
   opencode: 'session.time_updated SQL',
   codex: 'thread updatedAt',
   cursor: 'composerHeaders lastUpdatedAt; activity prefers bubbles',
@@ -90,7 +90,8 @@ async function listRefsForSource(source: SourceId): Promise<SessionRef[]> {
       return list.map((s) => ({
         source,
         session_id: s.sessionId,
-        dirty_mark: String(s.updatedAt || 0),
+        // dirtyMark=mtime:size；fallback updatedAt（wire 活动时间，非裸 state.updatedAt）
+        dirty_mark: s.dirtyMark || String(s.updatedAt || 0),
         time_updated: s.updatedAt || 0,
         title: s.title,
         dirty_semantics: sem,

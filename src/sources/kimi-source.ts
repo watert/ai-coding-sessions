@@ -686,6 +686,13 @@ export async function convertKimiSession(
     session.updatedAt,
     session.createdAt,
   );
+  // root.state.updatedAt 在 swarm 中常冻结；与 subagent 一致用 message 活动时间
+  const time_updated = activity.last_active_at_iso
+    ? new Date(activity.last_active_at_iso).getTime()
+    : session.updatedAt;
+  const time_created = activity.first_active_at_iso
+    ? new Date(activity.first_active_at_iso).getTime()
+    : session.createdAt;
 
   return {
     id: session.sessionId,
@@ -702,8 +709,8 @@ export async function convertKimiSession(
     summary_diffs: undefined,
     revert: undefined,
     permission: undefined,
-    time_created: session.createdAt,
-    time_updated: session.updatedAt,
+    time_created,
+    time_updated,
     time_compacting: stats.time_compacting,
     compact_count: stats.compact_count,
     time_archived: undefined,

@@ -121,7 +121,13 @@ export type KimiSessionItem = {
   workDir: string;
   title: string;
   createdAt: number;
+  /**
+   * 活动时间：max(state.updatedAt, agents 下各 wire.jsonl mtime)。
+   * 注意：state.json.updatedAt 在 turn/swarm 中常不刷新，不能单独作脏标记。
+   */
   updatedAt: number;
+  /** listRefs 便宜脏标记：mtime + wire 总 size */
+  dirtyMark?: string;
 };
 
 /** main wire 中 Agent / AgentSwarm 工具调用对应的子会话元数据 */
@@ -176,6 +182,41 @@ export type KimiMessageItem = {
 
 // ==================== Session 列表 ====================
 
+/**
+ * Kimi state.json.updatedAt 在 turn/swarm 进行中常不刷新（仅 prompt 初期写一次）。
+ * 脏检测 / 排序必须看 agents 目录下 wire.jsonl 的 mtime（+ size 防同 ms 追加漏检）。
+ * 返回 max(stateUpdatedAt, wires mtime) 与 cheap dirty_mark。
+ */
+export async function getKimiSessionActivityMark(
+  sessionDir: string,
+  stateUpdatedAt = 0,
+): Promise<{ updatedAt: number; dirtyMark: string }> {
+  let maxMtime = stateUpdatedAt > 0 ? stateUpdatedAt : 0;
+  let totalSize = 0;
+  try {
+    const agentsDir = path.join(sessionDir, 'agents');
+    const agents = await fs.promises.readdir(agentsDir);
+    await Promise.all(
+      agents.map(async (agent) => {
+        try {
+          const st = await fs.promises.stat(path.join(agentsDir, agent, 'wire.jsonl'));
+          totalSize += st.size;
+          const m = Math.floor(st.mtimeMs);
+          if (m > maxMtime) maxMtime = m;
+        } catch {
+          /* agent 无 wire 或竞态删除 */
+        }
+      }),
+    );
+  } catch {
+    /* 无 agents 目录 */
+  }
+  return {
+    updatedAt: maxMtime,
+    dirtyMark: `${maxMtime}:${totalSize}`,
+  };
+}
+
 export async function listKimiCodeSessions(): Promise<KimiSessionItem[]> {
   if (!fs.existsSync(sessionIndexPath())) {
     return [];
@@ -199,22 +240,27 @@ export async function listKimiCodeSessions(): Promise<KimiSessionItem[]> {
     try {
       const stateRaw = JSON.parse(await fs.promises.readFile(statePath, 'utf-8'));
       const state = KimiSessionStateSchema.parse(stateRaw);
+      const stateUpdatedAt = new Date(state.updatedAt).getTime();
+      const mark = await getKimiSessionActivityMark(item.sessionDir, stateUpdatedAt);
       sessions.push({
         sessionId: item.sessionId,
         sessionDir: item.sessionDir,
         workDir: item.workDir,
         title: state.title || state.lastPrompt || 'Untitled',
         createdAt: new Date(state.createdAt).getTime(),
-        updatedAt: new Date(state.updatedAt).getTime(),
+        updatedAt: mark.updatedAt,
+        dirtyMark: mark.dirtyMark,
       });
     } catch {
+      const mark = await getKimiSessionActivityMark(item.sessionDir, 0);
       sessions.push({
         sessionId: item.sessionId,
         sessionDir: item.sessionDir,
         workDir: item.workDir,
         title: 'Untitled',
         createdAt: 0,
-        updatedAt: 0,
+        updatedAt: mark.updatedAt,
+        dirtyMark: mark.dirtyMark,
       });
     }
   }
