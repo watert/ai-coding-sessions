@@ -268,6 +268,87 @@ export async function listKimiCodeSessions(): Promise<KimiSessionItem[]> {
   return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+/**
+ * listRefs 用：只读 index + wire mtime:size，不读 state.json。
+ */
+export type KimiSessionRef = {
+  sessionId: string;
+  sessionDir: string;
+  workDir: string;
+  dirtyMark: string;
+  updatedAt: number;
+};
+
+export async function listKimiSessionRefs(): Promise<KimiSessionRef[]> {
+  if (!fs.existsSync(sessionIndexPath())) return [];
+
+  const indexContent = await fs.promises.readFile(sessionIndexPath(), 'utf-8');
+  const indexItems = splitLines(indexContent)
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      try {
+        return KimiSessionIndexItemSchema.parse(JSON.parse(line));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean) as z.infer<typeof KimiSessionIndexItemSchema>[];
+
+  const refs: KimiSessionRef[] = [];
+  await Promise.all(
+    indexItems.map(async (item) => {
+      // state.updatedAt 常滞后；活动以 wire mtime:size 为准
+      let stateUpdatedAt = 0;
+      try {
+        const st = await fs.promises.stat(path.join(item.sessionDir, 'state.json'));
+        stateUpdatedAt = Math.floor(st.mtimeMs);
+      } catch {
+        /* no state */
+      }
+      const mark = await getKimiSessionActivityMark(item.sessionDir, stateUpdatedAt);
+      refs.push({
+        sessionId: item.sessionId,
+        sessionDir: item.sessionDir,
+        workDir: item.workDir,
+        dirtyMark: mark.dirtyMark,
+        updatedAt: mark.updatedAt,
+      });
+    }),
+  );
+  return refs;
+}
+
+/** 按 id 取 KimiSessionItem（增量 sync） */
+export async function getKimiSessionItemsByIds(sessionIds: string[]): Promise<KimiSessionItem[]> {
+  if (!sessionIds.length) return [];
+  const want = new Set(sessionIds);
+  const refs = await listKimiSessionRefs();
+  const matched = refs.filter((r) => want.has(r.sessionId));
+  const sessions: KimiSessionItem[] = [];
+  for (const r of matched) {
+    let title = 'Untitled';
+    let createdAt = 0;
+    try {
+      const stateRaw = JSON.parse(await fs.promises.readFile(path.join(r.sessionDir, 'state.json'), 'utf-8'));
+      const state = KimiSessionStateSchema.parse(stateRaw);
+      title = state.title || state.lastPrompt || 'Untitled';
+      createdAt = new Date(state.createdAt).getTime();
+    } catch {
+      /* keep defaults */
+    }
+    sessions.push({
+      sessionId: r.sessionId,
+      sessionDir: r.sessionDir,
+      workDir: r.workDir,
+      title,
+      createdAt,
+      updatedAt: r.updatedAt,
+      dirtyMark: r.dirtyMark,
+    });
+  }
+  return sessions;
+}
+
 // ==================== Wire 事件解析 ====================
 
 const KIMI_SUBAGENT_ID_SEP = '__';

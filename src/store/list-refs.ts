@@ -3,7 +3,7 @@
  *
  * 已知偏差（脏标记语义）：
  * - zcode: time_updated 可被 title 同步刷新，活动应以 message 为准
- * - grok: summary/heartbeat 会刷 updated_at；真实活动靠 updates 最后 turn
+ * - grok: dirty_mark = updates.jsonl mtime:size（勿用 summary last_active 心跳）
  * - workbuddy: 用量在 jsonl，SQLite 时间戳可能滞后
  * - claude: history.jsonl timestamp 为列表时间，非 message 边界
  *
@@ -12,8 +12,8 @@
 
 import { getSqliteDb } from '../lib/sqlite';
 import { listClaudeCodeSessions } from '../sources/claude-code';
-import { listKimiCodeSessions } from '../sources/kimi-code';
-import { listGrokCodeSessions } from '../sources/grok-code';
+import { listKimiSessionRefs } from '../sources/kimi-code';
+import { listGrokSessionRefs } from '../sources/grok-code';
 import { listCodexSessions } from '../sources/codex-code';
 import { listZcodeSessions, initZcodeDb } from '../sources/zcode-code';
 import { listWorkbuddySessions, initWorkbuddyDb } from '../sources/workbuddy-code';
@@ -41,10 +41,10 @@ export interface ListRefsOptions {
 
 const SEMANTICS: Partial<Record<SourceId, string>> = {
   zcode: 'time_updated may refresh on title sync; activity prefers messages',
-  grok: 'summary/heartbeat may bump updated_at; real activity in updates turns',
+  grok: 'updates.jsonl mtime:size (not summary last_active heartbeat)',
   workbuddy: 'sqlite timestamps may lag jsonl usage',
   claude: 'history.jsonl timestamp is list time, not message bounds',
-  kimi: 'max(state.updatedAt, agent wire.jsonl mtime:size)',
+  kimi: 'wire.jsonl mtime:size (+ state.json mtime floor)',
   opencode: 'session.time_updated SQL',
   codex: 'thread updatedAt',
   cursor: 'composerHeaders lastUpdatedAt; activity prefers bubbles',
@@ -56,16 +56,23 @@ export async function listRefs(options?: ListRefsOptions): Promise<SessionRef[]>
   const sources: SourceId[] =
     source === 'all' ? [...ALL_SOURCES] : [source];
 
-  const out: SessionRef[] = [];
-  for (const s of sources) {
-    try {
-      const refs = await listRefsForSource(s);
-      for (const r of refs) {
-        if (since != null && r.time_updated != null && r.time_updated < since) continue;
-        out.push(r);
+  // 多源并行：脏检测热路径
+  const batches = await Promise.all(
+    sources.map(async (s) => {
+      try {
+        return await listRefsForSource(s);
+      } catch (e) {
+        console.warn(`[listRefs] ${s} failed:`, e);
+        return [] as SessionRef[];
       }
-    } catch (e) {
-      console.warn(`[listRefs] ${s} failed:`, e);
+    }),
+  );
+
+  const out: SessionRef[] = [];
+  for (const refs of batches) {
+    for (const r of refs) {
+      if (since != null && r.time_updated != null && r.time_updated < since) continue;
+      out.push(r);
     }
   }
   return out;
@@ -86,25 +93,24 @@ async function listRefsForSource(source: SourceId): Promise<SessionRef[]> {
       }));
     }
     case 'kimi': {
-      const list = await listKimiCodeSessions();
+      // 轻量：index + wire mtime:size，不读 state 正文
+      const list = await listKimiSessionRefs();
       return list.map((s) => ({
         source,
         session_id: s.sessionId,
-        // dirtyMark=mtime:size；fallback updatedAt（wire 活动时间，非裸 state.updatedAt）
-        dirty_mark: s.dirtyMark || String(s.updatedAt || 0),
+        dirty_mark: s.dirtyMark,
         time_updated: s.updatedAt || 0,
-        title: s.title,
         dirty_semantics: sem,
       }));
     }
     case 'grok': {
-      const list = await listGrokCodeSessions();
+      // 轻量：目录 walk + updates mtime:size，不扫 updates 内容
+      const list = await listGrokSessionRefs();
       return list.map((s) => ({
         source,
         session_id: s.sessionId,
-        dirty_mark: String(s.updatedAt || 0),
+        dirty_mark: s.dirtyMark,
         time_updated: s.updatedAt || 0,
-        title: s.title,
         dirty_semantics: sem,
       }));
     }

@@ -485,6 +485,183 @@ export async function listGrokCodeSessions(): Promise<GrokSessionItem[]> {
   return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+/**
+ * listRefs 用：只扫目录 + 活动文件 mtime:size，不读 updates 内容、不解析 subagent。
+ * dirty_mark 优先 updates.jsonl（真实 turn 写入），避免 summary last_active 心跳刷脏。
+ */
+export type GrokSessionRef = {
+  sessionId: string;
+  sessionDir: string;
+  dirtyMark: string;
+  updatedAt: number;
+};
+
+function fileMtimeSizeMark(filePath: string): { mark: string; mtime: number } | null {
+  try {
+    const st = fs.statSync(filePath);
+    if (!st.isFile()) return null;
+    const mtime = Math.floor(st.mtimeMs);
+    return { mark: `${mtime}:${st.size}`, mtime };
+  } catch {
+    return null;
+  }
+}
+
+/** 活动脏标记：updates → chat_history → summary（后两者仅兜底） */
+export function grokActivityDirtyMark(sessionDir: string): { mark: string; mtime: number } {
+  const updates = fileMtimeSizeMark(path.join(sessionDir, 'updates.jsonl'));
+  if (updates) return updates;
+  const chat = fileMtimeSizeMark(path.join(sessionDir, 'chat_history.jsonl'));
+  if (chat) return chat;
+  const sum = fileMtimeSizeMark(path.join(sessionDir, 'summary.json'));
+  if (sum) return sum;
+  return { mark: '0:0', mtime: 0 };
+}
+
+function walkGrokSessionDirs(): Array<{ sessionId: string; sessionDir: string; projEnc: string }> {
+  const out: Array<{ sessionId: string; sessionDir: string; projEnc: string }> = [];
+  if (!fs.existsSync(grokSessionsRoot())) return out;
+  let projDirs: string[] = [];
+  try {
+    projDirs = fs.readdirSync(grokSessionsRoot()).filter((d) => {
+      const full = path.join(grokSessionsRoot(), d);
+      return fs.statSync(full).isDirectory() && !d.endsWith('.sqlite');
+    });
+  } catch {
+    return out;
+  }
+  for (const projEnc of projDirs) {
+    const projDir = path.join(grokSessionsRoot(), projEnc);
+    let sessIds: string[] = [];
+    try {
+      sessIds = fs.readdirSync(projDir).filter((d) => {
+        const full = path.join(projDir, d);
+        return fs.statSync(full).isDirectory();
+      });
+    } catch {
+      continue;
+    }
+    for (const sid of sessIds) {
+      const sessionDir = path.join(projDir, sid);
+      if (!fs.existsSync(path.join(sessionDir, 'summary.json'))) continue;
+      out.push({ sessionId: sid, sessionDir, projEnc });
+    }
+  }
+  return out;
+}
+
+export async function listGrokSessionRefs(): Promise<GrokSessionRef[]> {
+  const refs: GrokSessionRef[] = [];
+  for (const { sessionId, sessionDir } of walkGrokSessionDirs()) {
+    const { mark, mtime } = grokActivityDirtyMark(sessionDir);
+    refs.push({
+      sessionId,
+      sessionDir,
+      dirtyMark: mark,
+      updatedAt: mtime,
+    });
+  }
+  return refs;
+}
+
+/**
+ * 按 id 批量取 GrokSessionItem（仅扫指定 dirs 的 updates 建 parent 关系）。
+ * 供 incremental sync 用，避免全量 listGrokCodeSessions。
+ */
+export async function getGrokSessionItemsByIds(sessionIds: string[]): Promise<GrokSessionItem[]> {
+  if (!sessionIds.length) return [];
+  const want = new Set(sessionIds);
+  const walked = walkGrokSessionDirs().filter((w) => want.has(w.sessionId));
+  if (!walked.length) return [];
+
+  const updatesPaths = walked.map((w) => path.join(w.sessionDir, 'updates.jsonl'));
+  const { metaByChild, childrenByParent } = await scanGrokSubagentRelationsForPaths(updatesPaths);
+
+  const sessions: GrokSessionItem[] = [];
+  for (const w of walked) {
+    const sum = parseSummary(path.join(w.sessionDir, 'summary.json'));
+    if (!sum?.info?.id) continue;
+    const created = sum.created_at ? new Date(sum.created_at).getTime() : 0;
+    const updated = sum.last_active_at
+      ? new Date(sum.last_active_at).getTime()
+      : (sum.updated_at ? new Date(sum.updated_at).getTime() : created);
+    const sessionId = sum.info.id;
+    const subagentMeta = metaByChild.get(sessionId);
+    sessions.push({
+      sessionId,
+      sessionDir: w.sessionDir,
+      workDir: sum.info.cwd || decodeURIComponent(w.projEnc),
+      title: sum.generated_title || sum.session_summary || 'Untitled',
+      createdAt: created,
+      updatedAt: updated,
+      numMessages: sum.num_messages,
+      numChatMessages: sum.num_chat_messages,
+      modelId: sum.current_model_id,
+      parentId: subagentMeta?.parentId,
+      subagentMeta,
+      subagentChildren: childrenByParent.get(sessionId),
+    });
+  }
+  return sessions;
+}
+
+/** 仅解析给定 updates.jsonl 路径的 subagent 关系（增量 sync 用） */
+async function scanGrokSubagentRelationsForPaths(updatesPaths: string[]): Promise<{
+  metaByChild: Map<string, GrokSubagentMeta>;
+  childrenByParent: Map<string, GrokSubagentMeta[]>;
+}> {
+  const metaByChild = new Map<string, GrokSubagentMeta>();
+  const childrenByParent = new Map<string, GrokSubagentMeta[]>();
+  if (!updatesPaths.length) return { metaByChild, childrenByParent };
+
+  const allRows = await Promise.all(updatesPaths.map((p) => readJsonlCachedAsync(p)));
+  for (const rows of allRows) {
+    if (!rows) continue;
+    try {
+      for (const row of rows) {
+        const update = row?.params?.update;
+        if (!isGrokSessionUpdateMethod(row?.method)) continue;
+        const childId = update?.child_session_id || update?.subagent_id;
+        if (!childId) continue;
+
+        if (update?.sessionUpdate === 'subagent_spawned') {
+          const parentId = update?.parent_session_id;
+          if (parentId && childId !== parentId) {
+            const existing = metaByChild.get(childId);
+            metaByChild.set(childId, {
+              ...existing,
+              parentId,
+              childSessionId: childId,
+            });
+          }
+        } else if (update?.sessionUpdate === 'subagent_finished') {
+          const meta: Partial<GrokSubagentMeta> = metaByChild.get(childId) || {
+            parentId: update?.parent_session_id,
+            childSessionId: childId,
+          };
+          meta.childSessionId = childId;
+          meta.tokensUsed = typeof update?.tokens_used === 'number' ? update.tokens_used : meta.tokensUsed;
+          meta.toolCalls = typeof update?.tool_calls === 'number' ? update.tool_calls : meta.toolCalls;
+          meta.turns = typeof update?.turns === 'number' ? update.turns : meta.turns;
+          meta.durationMs = typeof update?.duration_ms === 'number' ? update.duration_ms : meta.durationMs;
+          if (meta.parentId) {
+            const final = meta as GrokSubagentMeta;
+            metaByChild.set(childId, final);
+            const siblings = childrenByParent.get(final.parentId) || [];
+            const idx = siblings.findIndex((s) => s.childSessionId === childId);
+            if (idx >= 0) siblings[idx] = final;
+            else siblings.push(final);
+            childrenByParent.set(final.parentId, siblings);
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return { metaByChild, childrenByParent };
+}
+
 // ==================== 消息重建 (chat_history.jsonl) ====================
 
 function readUpdatesJsonl(sessionDir: string): any[] {
