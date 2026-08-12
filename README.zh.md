@@ -220,7 +220,7 @@ npm scripts：`bun run cli` · `bun run sync` · `bun run sync:reconcile`。
 | `grok` | `~/.grok/sessions/` | 有真实 usage 则用；否则 `usage_source=estimate`（多轮 context 可累加） |
 | `codex` | `~/.codex/` state sqlite + rollout JSONL / `.jsonl.zst` | 感知 compact / rollback；`.zst` 可能需 `zstd` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | |
-| `workbuddy` | `~/.workbuddy/workbuddy.db` + 项目 JSONL | |
+| `workbuddy` | `~/.workbuddy/workbuddy.db` + 项目 JSONL | 虚拟 subagent（主 jsonl `Agent` tool → `projects/.../<sid>/subagents/agent-*.jsonl`） |
 | `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | 见下方 **Cursor 限制** |
 
 某 source 目录不存在会告警并跳过（其它源仍可用）。

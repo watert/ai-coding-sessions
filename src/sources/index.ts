@@ -13,7 +13,12 @@ import {
 import { listGrokCodeSessions } from './grok-code';
 import { listCodexSessions, closeCodexDb } from './codex-code';
 import { listZcodeSessions, closeZcodeDb, initZcodeDb } from './zcode-code';
-import { listWorkbuddySessions, closeWorkbuddyDb, initWorkbuddyDb } from './workbuddy-code';
+import {
+  listWorkbuddySessions,
+  listWorkbuddySubagentsFromMainJsonl,
+  closeWorkbuddyDb,
+  initWorkbuddyDb,
+} from './workbuddy-code';
 import { listCursorSessions, closeCursorDb, initCursorDb } from './cursor-code';
 import {
   initOpencodeDb,
@@ -33,9 +38,12 @@ import { convertKimiSession, convertKimiSubagentSession, getKimiSessionDetail } 
 import { convertGrokSession, getGrokSessionDetail } from './grok-source';
 import { convertCodexSession, getCodexSessionDetail } from './codex-source';
 import { convertZcodeSession, getZcodeSessionDetail } from './zcode-source';
-import { convertWorkbuddySession, getWorkbuddySessionDetail } from './workbuddy-source';
-import { convertCursorSession, getCursorSessionDetail } from './cursor-source';
-import type {
+import {
+  convertWorkbuddySession,
+  convertWorkbuddySubagentSession,
+  getWorkbuddySessionDetail,
+} from './workbuddy-source';
+import { convertCursorSession, getCursorSessionDetail } from './cursor-source';import type {
   UnifiedSessionInfo,
   UnifiedSessionDetail,
   ListSessionsOptions,
@@ -331,13 +339,23 @@ export async function listSessions(
     tasks.push((async () => {
       const wbSessions = await listWorkbuddySessions();
       const filtered = wbSessions.filter(s => prefilterByLastActive(s.updatedAt));
-      const converted = (await withConcurrencyLimit(
+      // 与 kimi 一致：展开 Agent tool 对应的 subagent 虚拟 session
+      const wbExpanded = await withConcurrencyLimit(
         filtered,
-        convertWorkbuddySession,
+        async (s) => {
+          const results: UnifiedSessionInfo[] = [];
+          results.push(await convertWorkbuddySession(s));
+          const subagents = listWorkbuddySubagentsFromMainJsonl(s);
+          for (const meta of subagents) {
+            results.push(await convertWorkbuddySubagentSession(s, meta));
+          }
+          return results;
+        },
         3,
-      )).filter(filterByModels).filter(filterBySessionOverlap);
-      sessions.push(...converted);
-      workbuddyCount = converted.length;
+      );
+      const flatWb = wbExpanded.flat().filter(filterByModels).filter(filterBySessionOverlap);
+      sessions.push(...flatWb);
+      workbuddyCount = flatWb.length;
     })().catch(e => {
       console.warn('[ai-coding-stats] WorkBuddy sessions 获取失败:', e);
     }));

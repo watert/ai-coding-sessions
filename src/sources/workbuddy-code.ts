@@ -376,3 +376,278 @@ export function tokensFromRawUsage(ru: WorkbuddyRawUsage | undefined | null): {
     credit: typeof ru.credit === 'number' ? ru.credit : undefined,
   };
 }
+
+// ==================== Subagent（Agent tool） ====================
+
+/**
+ * 虚拟 session id：`<rootSessionId>__<agentId>`
+ * agentId 形如 `agent-200abb04`（WorkBuddy subagents 目录名）
+ */
+const WORKBUDDY_SUBAGENT_ID_SEP = '__';
+
+export type WorkbuddySubagentMeta = {
+  virtualSessionId: string;
+  parentSessionId: string;
+  agentId: string;
+  toolCallId: string;
+  /** 并发分组：同一 assistant messageId 下的 Agent 调用算同一轮 */
+  spawnGroupId?: string;
+  subagentType: string;
+  description?: string;
+  promptPreview?: string;
+  outcome?: string;
+  /** 子 agent jsonl 绝对路径 */
+  jsonlPath?: string;
+};
+
+export function parseWorkbuddyVirtualSessionId(
+  sessionId: string,
+): { rootSessionId: string; agentId?: string } {
+  const idx = sessionId.indexOf(WORKBUDDY_SUBAGENT_ID_SEP);
+  if (idx === -1) return { rootSessionId: sessionId };
+  return {
+    rootSessionId: sessionId.slice(0, idx),
+    agentId: sessionId.slice(idx + WORKBUDDY_SUBAGENT_ID_SEP.length),
+  };
+}
+
+export function buildWorkbuddySubagentSessionId(
+  rootSessionId: string,
+  agentId: string,
+): string {
+  return `${rootSessionId}${WORKBUDDY_SUBAGENT_ID_SEP}${agentId}`;
+}
+
+/** 从 function_call_result 提取 agent id */
+export function parseWorkbuddyAgentIdFromResult(
+  ev: WorkbuddyJsonlEvent | { output?: unknown; providerData?: WorkbuddyJsonlEvent['providerData'] },
+): string | undefined {
+  const pd = ev.providerData || {};
+  const fromMeta = (pd as any).toolResult?.subAgent?.sessionId;
+  if (typeof fromMeta === 'string' && fromMeta.startsWith('agent-')) return fromMeta;
+
+  const out = (ev as any).output;
+  let text = '';
+  if (typeof out === 'string') text = out;
+  else if (out && typeof out === 'object') {
+    if (typeof out.text === 'string') text = out.text;
+    else if (typeof out.content === 'string') text = out.content;
+    else text = JSON.stringify(out);
+  }
+  if (!text && (pd as any).toolResult?.content) {
+    text = String((pd as any).toolResult.content);
+  }
+  const m = text.match(/\[Agent ID:\s*(agent-[a-f0-9]+)\]/i)
+    || text.match(/\b(agent-[a-f0-9]{6,})\b/i);
+  return m?.[1];
+}
+
+/** parent jsonl 旁的 subagents 目录：`<projects>/<hash>/<sid>/subagents/` */
+export function resolveWorkbuddySubagentsDir(
+  parentSessionId: string,
+  parentJsonlPath?: string,
+): string | undefined {
+  const p = parentJsonlPath || findWorkbuddyJsonlPath(parentSessionId);
+  if (!p) return undefined;
+  // projects/<hash>/<sid>.jsonl → projects/<hash>/<sid>/subagents
+  return path.join(path.dirname(p), parentSessionId, 'subagents');
+}
+
+export function findWorkbuddySubagentJsonlPath(
+  parentSessionId: string,
+  agentId: string,
+  parentJsonlPath?: string,
+): string | undefined {
+  const dir = resolveWorkbuddySubagentsDir(parentSessionId, parentJsonlPath);
+  if (!dir) return undefined;
+  const candidate = path.join(dir, `${agentId}.jsonl`);
+  if (fs.existsSync(candidate)) return candidate;
+  return undefined;
+}
+
+/** 磁盘上已有的 agent id 列表（含仅有目录、jsonl 尚未 flush 的情况） */
+export function listWorkbuddySubagentIdsOnDisk(
+  parentSessionId: string,
+  parentJsonlPath?: string,
+): string[] {
+  const dir = resolveWorkbuddySubagentsDir(parentSessionId, parentJsonlPath);
+  if (!dir || !fs.existsSync(dir)) return [];
+  const ids = new Set<string>();
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (name.endsWith('.jsonl') && name.startsWith('agent-')) {
+        ids.add(name.slice(0, -'.jsonl'.length));
+      } else if (name.startsWith('agent-')) {
+        // 目录形态 agent-xxx/
+        try {
+          if (fs.statSync(path.join(dir, name)).isDirectory()) ids.add(name);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    return [];
+  }
+  return Array.from(ids).sort();
+}
+
+function parseWorkbuddyToolArgs(raw: string | Record<string, any> | undefined): Record<string, any> {
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { raw };
+  }
+}
+
+/**
+ * 扫描主 session jsonl 的 Agent tool call/result，并与磁盘 subagents/ 对齐。
+ * 产出可转为虚拟 session 的 meta（含运行中：有目录尚无 result）。
+ */
+export function listWorkbuddySubagentsFromMainJsonl(
+  session: WorkbuddySessionItem,
+): WorkbuddySubagentMeta[] {
+  const parentSessionId = session.sessionId;
+  const events = readWorkbuddyJsonl(parentSessionId, session.jsonlPath);
+
+  type CallInfo = {
+    callId: string;
+    args: Record<string, any>;
+    messageId?: string;
+    ts?: number;
+  };
+  type ResultInfo = {
+    agentId?: string;
+    status?: string;
+    ts?: number;
+  };
+
+  const calls = new Map<string, CallInfo>();
+  const results = new Map<string, ResultInfo>();
+  const callOrder: string[] = [];
+
+  for (const ev of events) {
+    const name = (ev.name || '').toLowerCase();
+    if (name !== 'agent') continue;
+
+    if (ev.type === 'function_call') {
+      const callId = ev.callId || ev.id || `call-${calls.size}`;
+      if (!calls.has(callId)) callOrder.push(callId);
+      calls.set(callId, {
+        callId,
+        args: parseWorkbuddyToolArgs(ev.arguments as any),
+        messageId: ev.providerData?.messageId,
+        ts: ev.timestamp,
+      });
+    } else if (ev.type === 'function_call_result') {
+      const callId = ev.callId || '';
+      if (!callId) continue;
+      results.set(callId, {
+        agentId: parseWorkbuddyAgentIdFromResult(ev),
+        status: ev.status,
+        ts: ev.timestamp,
+      });
+    }
+  }
+
+  const diskIds = listWorkbuddySubagentIdsOnDisk(parentSessionId, session.jsonlPath);
+  const usedAgents = new Set<string>();
+  const metas: WorkbuddySubagentMeta[] = [];
+
+  const pushMeta = (opts: {
+    agentId: string;
+    callId: string;
+    args?: Record<string, any>;
+    messageId?: string;
+    outcome?: string;
+  }) => {
+    if (usedAgents.has(opts.agentId)) return;
+    usedAgents.add(opts.agentId);
+    const args = opts.args || {};
+    const desc = String(args.description || '').trim() || undefined;
+    const prompt = String(args.prompt || '').trim();
+    const subagentType = String(args.subagent_type || args.subagentType || 'general-purpose');
+    const outcome = opts.outcome
+      || (opts.agentId ? 'completed' : 'started');
+    metas.push({
+      virtualSessionId: buildWorkbuddySubagentSessionId(parentSessionId, opts.agentId),
+      parentSessionId,
+      agentId: opts.agentId,
+      toolCallId: opts.callId,
+      spawnGroupId: opts.messageId || opts.callId,
+      subagentType,
+      description: desc,
+      promptPreview: prompt ? prompt.slice(0, 200) : undefined,
+      outcome,
+      jsonlPath: findWorkbuddySubagentJsonlPath(parentSessionId, opts.agentId, session.jsonlPath),
+    });
+  };
+
+  // 1) 已完成：call + result 带 agentId
+  for (const callId of callOrder) {
+    const call = calls.get(callId)!;
+    const res = results.get(callId);
+    if (!res?.agentId) continue;
+    const status = (res.status || 'completed').toLowerCase();
+    const outcome =
+      status === 'failed' || status === 'error' ? 'failed'
+        : status === 'aborted' || status === 'cancelled' ? 'aborted'
+          : 'completed';
+    pushMeta({
+      agentId: res.agentId,
+      callId,
+      args: call.args,
+      messageId: call.messageId,
+      outcome,
+    });
+  }
+
+  // 2) 运行中：有 call 无 result，按调用顺序绑定未认领的磁盘 agent
+  const pendingCalls = callOrder.filter((id) => {
+    const res = results.get(id);
+    return !res?.agentId;
+  });
+  const unclaimedDisk = diskIds.filter((id) => !usedAgents.has(id));
+  for (let i = 0; i < pendingCalls.length; i++) {
+    const callId = pendingCalls[i];
+    const call = calls.get(callId)!;
+    const agentId = unclaimedDisk[i];
+    if (!agentId) {
+      // 尚无目录：跳过（无法建虚拟 session）
+      continue;
+    }
+    pushMeta({
+      agentId,
+      callId,
+      args: call.args,
+      messageId: call.messageId,
+      outcome: 'started',
+    });
+  }
+
+  // 3) 磁盘有、jsonl 未覆盖的孤儿 agent（result 丢失等）
+  for (const agentId of diskIds) {
+    if (usedAgents.has(agentId)) continue;
+    pushMeta({
+      agentId,
+      callId: `disk:${agentId}`,
+      messageId: undefined,
+      outcome: 'completed',
+      args: { description: agentId, subagent_type: 'general-purpose' },
+    });
+  }
+
+  return metas;
+}
+
+export function readWorkbuddySubagentJsonl(
+  parentSessionId: string,
+  agentId: string,
+  jsonlPath?: string,
+): WorkbuddyJsonlEvent[] {
+  const p = jsonlPath || findWorkbuddySubagentJsonlPath(parentSessionId, agentId);
+  if (!p) return [];
+  return readWorkbuddyJsonl(agentId, p);
+}

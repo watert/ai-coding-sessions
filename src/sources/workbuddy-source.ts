@@ -9,14 +9,20 @@ import {
   listWorkbuddySessions,
   getWorkbuddySession,
   readWorkbuddyJsonl,
+  readWorkbuddySubagentJsonl,
   tokensFromRawUsage,
   normalizeWorkbuddyModel,
   listWorkbuddyWorkspacePaths,
+  listWorkbuddySubagentsFromMainJsonl,
+  parseWorkbuddyVirtualSessionId,
+  parseWorkbuddyAgentIdFromResult,
+  buildWorkbuddySubagentSessionId,
+  findWorkbuddySubagentJsonlPath,
   type WorkbuddySessionItem,
   type WorkbuddyJsonlEvent,
   type WorkbuddyRawUsage,
-} from './workbuddy-code';
-import { checkSessionStatus } from './opencode';
+  type WorkbuddySubagentMeta,
+} from './workbuddy-code';import { checkSessionStatus } from './opencode';
 import { calculateSessionPricingFromUnifiedMessages, type SessionPricing } from '../pricing';
 import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from './types';
 import type { BashSignals } from '../core';
@@ -125,7 +131,7 @@ export function convertWorkbuddyEventsToMessages(
     reasoningTexts: string[];
     textParts: string[];
     tools: ToolPending[];
-    results: Map<string, { status: string; output: any; timestamp?: number }>;
+    results: Map<string, { status: string; output: any; timestamp?: number; agentId?: string }>;
     rawUsage?: WorkbuddyRawUsage;
     cwd?: string;
     /** 事件层 parentId（常指向 reasoning / 上一条），用于回链 user */
@@ -253,10 +259,12 @@ export function convertWorkbuddyEventsToMessages(
       } else if (pd.toolResult?.content) {
         outputText = String(pd.toolResult.content);
       }
+      const agentId = parseWorkbuddyAgentIdFromResult(ev);
       target.results.set(callId, {
         status: ev.status || 'completed',
         output: outputText,
         timestamp: ev.timestamp,
+        agentId,
       });
     }
   }
@@ -314,6 +322,7 @@ export function convertWorkbuddyEventsToMessages(
 
     // 按 callId 去重 tools（同一 call 可能重复）
     const seenCalls = new Set<string>();
+    const rootId = parseWorkbuddyVirtualSessionId(sessionId).rootSessionId;
     for (const tool of g.tools) {
       if (seenCalls.has(tool.callId)) continue;
       seenCalls.add(tool.callId);
@@ -323,6 +332,33 @@ export function convertWorkbuddyEventsToMessages(
         : result
           ? 'completed'
           : 'completed';
+      const toolNameNorm = (tool.name || '').toLowerCase().replace(/[_-]/g, '');
+      let metadata: Record<string, any> | undefined;
+      if (toolNameNorm === 'agent') {
+        const agentId = result?.agentId
+          || parseWorkbuddyAgentIdFromResult({ output: result?.output });
+        if (agentId) {
+          const virtualSessionId = buildWorkbuddySubagentSessionId(rootId, agentId);
+          const outcome = status === 'error' ? 'failed' : result ? 'completed' : 'started';
+          metadata = {
+            kind: 'agent',
+            sessionId: virtualSessionId,
+            agents: [{
+              agentDir: agentId,
+              item: String(tool.input?.description || '').trim() || undefined,
+              outcome,
+              virtualSessionId,
+            }],
+            summary: {
+              completed: outcome === 'completed' ? 1 : 0,
+              failed: outcome === 'failed' ? 1 : 0,
+              aborted: 0,
+              started: outcome === 'started' ? 1 : 0,
+              total: 1,
+            },
+          };
+        }
+      }
       parts.push({
         id: tool.id,
         type: 'tool',
@@ -334,10 +370,11 @@ export function convertWorkbuddyEventsToMessages(
           status,
           input: tool.input,
           output: result?.output,
-          title: tool.name,
+          title: tool.input?.description || tool.name,
           time: tool.timestamp
             ? { start: tool.timestamp, end: result?.timestamp || tool.timestamp }
             : undefined,
+          ...(metadata ? { metadata } : {}),
         },
       });
     }
@@ -641,6 +678,30 @@ function deriveProjectName(cwd: string): string {
   return parent || base;
 }
 
+function resolveWorkbuddyProjectFields(session: WorkbuddySessionItem): {
+  projectName?: string;
+  projectRoot?: string;
+} {
+  const workspacePaths = new Set(listWorkbuddyWorkspacePaths());
+  const isDefaultWorkspace = session.cwd ? workspacePaths.has(session.cwd) : false;
+
+  const projectName = isDefaultWorkspace
+    ? 'WorkBuddy默认'
+    : session.cwd
+      ? deriveProjectName(session.cwd)
+      : session.projectId || undefined;
+  // cwd basename 像日期/UUID/长 hash 时，把 project_id 提到父目录，
+  // 让多个会话在 aggregateByProject 合并到同一项目切片
+  const projectRoot = isDefaultWorkspace
+    ? session.cwd
+    : session.cwd
+      ? (isSessionLikeDirName(path.basename(session.cwd))
+          ? path.dirname(session.cwd)
+          : session.cwd)
+      : undefined;
+  return { projectName, projectRoot };
+}
+
 export async function convertWorkbuddySession(
   session: WorkbuddySessionItem,
   preloaded?: UnifiedMessage[],
@@ -658,28 +719,12 @@ export async function convertWorkbuddySession(
     session.createdAt,
   );
 
-  // session.cwd 命中某个 WorkBuddy 空间（workspaces 表）→ 默认工作区
-  const workspacePaths = new Set(listWorkbuddyWorkspacePaths());
-  const isDefaultWorkspace = session.cwd ? workspacePaths.has(session.cwd) : false;
-
-  const projectName = isDefaultWorkspace
-    ? 'WorkBuddy默认'
-    : session.cwd
-      ? deriveProjectName(session.cwd)
-      : session.projectId || undefined;
-  // cwd basename 像日期/UUID/长 hash 时，把 project_id 提到父目录，
-  // 让多个会话在 aggregateByProject 合并到同一项目切片
-  const projectRoot = isDefaultWorkspace
-    ? session.cwd
-    : session.cwd
-      ? (isSessionLikeDirName(path.basename(session.cwd))
-          ? path.dirname(session.cwd)
-          : session.cwd)
-    : undefined;
+  const { projectName, projectRoot } = resolveWorkbuddyProjectFields(session);
 
   return {
     id: session.sessionId,
     project_id: session.projectId || projectRoot || session.cwd || '',
+    parent_id: undefined,
     slug: session.sessionId,
     directory: session.cwd,
     title: session.title,
@@ -731,8 +776,157 @@ export async function convertWorkbuddySession(
   };
 }
 
+function loadSubagentUnifiedMessages(
+  parent: WorkbuddySessionItem,
+  meta: WorkbuddySubagentMeta,
+): UnifiedMessage[] {
+  const events = readWorkbuddySubagentJsonl(parent.sessionId, meta.agentId, meta.jsonlPath);
+  return convertWorkbuddyEventsToMessages(
+    meta.virtualSessionId,
+    events,
+    parent.cwd,
+    parent.model,
+  );
+}
+
+export async function convertWorkbuddySubagentSession(
+  parent: WorkbuddySessionItem,
+  meta: WorkbuddySubagentMeta,
+  preloaded?: UnifiedMessage[],
+): Promise<UnifiedSessionInfo> {
+  const unifiedMessages = preloaded || loadSubagentUnifiedMessages(parent, meta);
+  const pseudo: WorkbuddySessionItem = {
+    ...parent,
+    sessionId: meta.virtualSessionId,
+    title: meta.description
+      ? `${meta.subagentType}: ${meta.description}`
+      : `${meta.subagentType} (${meta.agentId})`,
+    jsonlPath: meta.jsonlPath,
+    // subagent 状态不写 DB；用 outcome 近似
+    status: meta.outcome === 'started' || meta.outcome === 'running'
+      ? 'working'
+      : meta.outcome === 'failed'
+        ? 'error'
+        : 'completed',
+  };
+  const { stats, pricing } = await getWorkbuddySessionStats(pseudo, unifiedMessages);
+
+  let session_status = checkSessionStatus(unifiedMessages);
+  if (meta.outcome === 'failed') session_status = 'error';
+  else if (meta.outcome === 'aborted') session_status = 'aborted';
+  else if (meta.outcome === 'started' || meta.outcome === 'running') session_status = 'in-progress';
+
+  const activity = buildActivitySpanFromUnifiedMessages(
+    unifiedMessages,
+    parent.updatedAt,
+    parent.createdAt,
+  );
+  const time_updated = activity.last_active_at_iso
+    ? new Date(activity.last_active_at_iso).getTime()
+    : parent.updatedAt;
+  const time_created = activity.first_active_at_iso
+    ? new Date(activity.first_active_at_iso).getTime()
+    : parent.createdAt;
+
+  const { projectName, projectRoot } = resolveWorkbuddyProjectFields(parent);
+  const title = meta.description
+    ? `${meta.subagentType}: ${meta.description}`
+    : `${meta.subagentType} (${meta.agentId})`;
+
+  const subDir = meta.jsonlPath
+    ? path.dirname(meta.jsonlPath)
+    : path.join(parent.cwd || '', 'subagents', meta.agentId);
+
+  return {
+    id: meta.virtualSessionId,
+    project_id: parent.projectId || projectRoot || parent.cwd || '',
+    parent_id: meta.parentSessionId,
+    spawn_group_id: meta.spawnGroupId || meta.toolCallId || undefined,
+    slug: meta.virtualSessionId,
+    directory: subDir,
+    title,
+    version: parent.mode || 'unknown',
+    time_created,
+    time_updated,
+    project_name: projectName,
+    project_worktree: projectRoot,
+
+    total_messages: stats.total_messages,
+    total_user_messages: stats.total_user_messages,
+    total_tool_calls: stats.total_tool_calls,
+    total_tool_calls_success: stats.total_tool_calls_success,
+    total_tool_calls_failed: stats.total_tool_calls_failed,
+    total_tokens: stats.total_tokens,
+    total_input: stats.total_input,
+    total_output: stats.total_output,
+    total_reasoning: stats.total_reasoning,
+    total_cache_read: stats.total_cache_read,
+    total_cache_write: stats.total_cache_write,
+    last_active_at_iso: activity.last_active_at_iso,
+    last_active_at: activity.last_active_at_iso,
+    first_active_at_iso: activity.first_active_at_iso,
+    span_days: activity.span_days,
+    usage_by_day: activity.usage_by_day,
+    models_used: stats.models_used,
+    session_status,
+    last_message_tokens: stats.last_message_tokens,
+    max_context_tokens: stats.max_context_tokens,
+    last_message: stats.last_message,
+    lastTokenInfo: buildLastTokenInfo(unifiedMessages),
+    textParts: stats.textParts,
+    userParts: stats.userParts,
+    avg_tps: stats.avg_tps,
+    avg_latency_ms: stats.avg_latency_ms,
+    avg_prefill_tps: stats.avg_prefill_tps,
+    assistant_tps_list: stats.assistant_tps_list,
+    latency_list: stats.latency_list,
+    prefill_tps_list: stats.prefill_tps_list,
+    editDiffs: stats.editDiffs,
+    bashSignals: stats.bashSignals,
+    deliverableSignals: inferDeliverableSignals({ messages: unifiedMessages }),
+    pricing,
+    usage_source: 'real',
+
+    source: 'workbuddy',
+  };
+}
+
 export async function getWorkbuddySessionDetail(sessionId: string): Promise<UnifiedSessionDetail | null> {
-  const session = await getWorkbuddySession(sessionId);
+  const parsed = parseWorkbuddyVirtualSessionId(sessionId);
+
+  if (parsed.agentId) {
+    const parent = await getWorkbuddySession(parsed.rootSessionId);
+    if (!parent) return null;
+    const metas = listWorkbuddySubagentsFromMainJsonl(parent);
+    let meta = metas.find((m) => m.agentId === parsed.agentId);
+    if (!meta) {
+      // 磁盘有 jsonl 但 main 未挂到：兜底
+      const jsonlPath = findWorkbuddySubagentJsonlPath(parsed.rootSessionId, parsed.agentId, parent.jsonlPath);
+      if (!jsonlPath) return null;
+      meta = {
+        virtualSessionId: buildWorkbuddySubagentSessionId(parsed.rootSessionId, parsed.agentId),
+        parentSessionId: parsed.rootSessionId,
+        agentId: parsed.agentId,
+        toolCallId: `disk:${parsed.agentId}`,
+        subagentType: 'general-purpose',
+        description: parsed.agentId,
+        outcome: 'completed',
+        jsonlPath,
+      };
+    }
+    const unifiedMessages = loadSubagentUnifiedMessages(parent, meta);
+    const editDiffs = calculateEditDiffs(unifiedMessages);
+    const pricing = calculateSessionPricingFromUnifiedMessages(unifiedMessages);
+    const info = await convertWorkbuddySubagentSession(parent, meta, unifiedMessages);
+    return {
+      info: { ...info, pricing },
+      messages: unifiedMessages,
+      editDiffs,
+      pricing,
+    };
+  }
+
+  const session = await getWorkbuddySession(parsed.rootSessionId);
   if (!session) return null;
 
   const unifiedMessages = loadUnifiedMessages(session);
@@ -748,4 +942,4 @@ export async function getWorkbuddySessionDetail(sessionId: string): Promise<Unif
   };
 }
 
-export { listWorkbuddySessions };
+export { listWorkbuddySessions, listWorkbuddySubagentsFromMainJsonl };

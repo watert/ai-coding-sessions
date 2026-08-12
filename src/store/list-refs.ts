@@ -16,8 +16,13 @@ import { listKimiSessionRefs } from '../sources/kimi-code';
 import { listGrokSessionRefs } from '../sources/grok-code';
 import { listCodexSessions } from '../sources/codex-code';
 import { listZcodeSessions, initZcodeDb } from '../sources/zcode-code';
-import { listWorkbuddySessions, initWorkbuddyDb } from '../sources/workbuddy-code';
-import { listCursorSessions, initCursorDb } from '../sources/cursor-code';
+import {
+  listWorkbuddySessions,
+  initWorkbuddyDb,
+  resolveWorkbuddySubagentsDir,
+} from '../sources/workbuddy-code';
+import fs from 'fs';
+import path from 'path';import { listCursorSessions, initCursorDb } from '../sources/cursor-code';
 import { initOpencodeDb } from '../sources/opencode';
 import type { SourceId } from './schema';
 import { ALL_SOURCES } from './schema';
@@ -42,7 +47,7 @@ export interface ListRefsOptions {
 const SEMANTICS: Partial<Record<SourceId, string>> = {
   zcode: 'time_updated may refresh on title sync; activity prefers messages',
   grok: 'updates.jsonl mtime:size (not summary last_active heartbeat)',
-  workbuddy: 'sqlite timestamps may lag jsonl usage',
+  workbuddy: 'sqlite ts + parent jsonl mtime:size + subagents/ fingerprint (Agent children)',
   claude: 'history.jsonl timestamp is list time, not message bounds',
   kimi: 'wire.jsonl mtime:size (+ state.json mtime floor)',
   opencode: 'session.time_updated SQL',
@@ -143,7 +148,8 @@ async function listRefsForSource(source: SourceId): Promise<SessionRef[]> {
       return list.map((s) => ({
         source,
         session_id: s.sessionId,
-        dirty_mark: String(s.updatedAt || s.lastActivityAt || 0),
+        // 旧 mark 仅 updatedAt 时，subagent 展开/用量落盘不会触发 re-sync
+        dirty_mark: workbuddyDirtyMark(s),
         time_updated: s.updatedAt || s.lastActivityAt || 0,
         title: s.title,
         dirty_semantics: sem,
@@ -168,6 +174,52 @@ async function listRefsForSource(source: SourceId): Promise<SessionRef[]> {
     default:
       return [];
   }
+}
+
+/** WorkBuddy 脏标记：DB 时间 + 主 jsonl + subagents/ 目录指纹 */
+function workbuddyDirtyMark(s: {
+  sessionId: string;
+  updatedAt?: number;
+  lastActivityAt?: number;
+  jsonlPath?: string;
+}): string {
+  const ts = s.updatedAt || s.lastActivityAt || 0;
+  let jsonlMark = '0';
+  if (s.jsonlPath) {
+    try {
+      const st = fs.statSync(s.jsonlPath);
+      jsonlMark = `${Math.floor(st.mtimeMs)}:${st.size}`;
+    } catch {
+      jsonlMark = 'missing';
+    }
+  }
+  let subMark = '0';
+  const subDir = resolveWorkbuddySubagentsDir(s.sessionId, s.jsonlPath);
+  if (subDir) {
+    try {
+      if (fs.existsSync(subDir)) {
+        let n = 0;
+        let maxM = 0;
+        let totalSize = 0;
+        for (const name of fs.readdirSync(subDir)) {
+          if (!name.endsWith('.jsonl')) continue;
+          n += 1;
+          try {
+            const st = fs.statSync(path.join(subDir, name));
+            maxM = Math.max(maxM, st.mtimeMs);
+            totalSize += st.size;
+          } catch {
+            // ignore
+          }
+        }
+        subMark = `${n}:${Math.floor(maxM)}:${totalSize}`;
+      }
+    } catch {
+      subMark = 'err';
+    }
+  }
+  // v2：含 subagent 指纹；旧缓存仅存 updatedAt 字符串，格式变化即全量脏
+  return `v2|${ts}|j:${jsonlMark}|s:${subMark}`;
 }
 
 function listOpencodeRefs(): SessionRef[] {

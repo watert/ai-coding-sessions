@@ -218,7 +218,7 @@ npm scripts: `bun run cli` · `bun run sync` · `bun run sync:reconcile`.
 | `grok` | `~/.grok/sessions/` | Real usage when present; else `usage_source=estimate` (multi-turn context accumulate) |
 | `codex` | `~/.codex/` state sqlite + rollout JSONL / `.jsonl.zst` | Compact / rollback aware; zstd may need `zstd` CLI |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | |
-| `workbuddy` | `~/.workbuddy/workbuddy.db` + project JSONL | |
+| `workbuddy` | `~/.workbuddy/workbuddy.db` + project JSONL | Virtual subagents (`Agent` tool → `projects/.../<sid>/subagents/agent-*.jsonl`) |
 | `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | See **Cursor limits** below |
 
 Missing source dirs are skipped with a warning (other sources still work).

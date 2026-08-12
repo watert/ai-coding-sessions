@@ -10,7 +10,7 @@
 | `grok` | `~/.grok/sessions/` | `grok-code.ts` + `grok-source.ts`（真实 usage；cost 优先 costUsdTicks；旧 → `usage_source=estimate`） |
 | `codex` | `~/.codex/` state sqlite + rollout JSONL/`.jsonl.zst` | `codex-code.ts` + `codex-source.ts` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
-| `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts` |
+| `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` + `.../<sid>/subagents/agent-*.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts`（`Agent` tool → 虚拟 subagent，`parent_id` / `spawn_group_id`） |
 | `cursor` | Desktop `state.vscdb`（composerHeaders + bubbleId）+ `~/.cursor/projects/*/agent-transcripts` | `cursor-code.ts` + `cursor-source.ts` |
 
 路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
@@ -53,7 +53,7 @@
 
 | 主题 | 说明 |
 |------|------|
-| subagent | kimi/opencode 有 `parent_id` + `spawn_group_id`；用 `children` / `list --parent=` |
+| subagent | kimi/opencode/workbuddy 有 `parent_id` + `spawn_group_id`；用 `children` / `list --parent=` |
 | grok usage | 新会话 real；旧 estimate；trace 时间戳可能偏序号化（见 #1 P1） |
 | 成本 | 缓存不写 pricing；detail 依赖 `configurePricing` 或源内 cost 字段 |
 | step 边界 | opencode 有 `step-start`/`step-finish`；其它多条 assistant 拼一轮 |
