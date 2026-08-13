@@ -118,6 +118,18 @@ export function filterSessionsByCwd(
   return sessions.filter((s) => matchesCwd(s, cwd, opts));
 }
 
+function titleNorm(s?: string | null): string {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** display + custom + 源标题，供 resolve 子串匹配 */
+function sessionTitleHaystack(s: UnifiedSessionInfo): string {
+  return [s.title, s.custom_title, s.source_title].map(titleNorm).filter(Boolean).join('\n');
+}
+
 function compactMatch(s: UnifiedSessionInfo) {
   return {
     id: s.id,
@@ -236,14 +248,9 @@ export function resolveSessionRef(
   const exactAll = sessions.filter((s) => s.id.toLowerCase() === raw.toLowerCase());
   if (exactAll.length === 1) return { ok: true, session: exactAll[0], match: 'id' };
 
-  // title substring
+  // title substring（display / custom / 源标题）
   const q = raw.toLowerCase().replace(/\s+/g, ' ').trim();
-  const titleHits = pool.filter((s) =>
-    String(s.title || '')
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .includes(q),
-  );
+  const titleHits = pool.filter((s) => sessionTitleHaystack(s).includes(q));
   if (titleHits.length === 1) return { ok: true, session: titleHits[0], match: 'title' };
   if (titleHits.length > 1) {
     return {

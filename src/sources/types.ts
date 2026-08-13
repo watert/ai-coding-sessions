@@ -22,6 +22,12 @@ export interface UnifiedSessionInfo {
   slug: string;
   directory: string;
   title: string;
+  /** 源侧原始标题（缓存 overlay 后保留；无 custom 时与 title 相同） */
+  source_title?: string;
+  /** 缓存层 Agent/用户覆盖标题；sync 不覆盖 */
+  custom_title?: string | null;
+  /** title 是否来自 custom_title */
+  title_is_custom?: boolean;
   version: string;
   share_url?: string | null;
   summary_additions?: number | null;

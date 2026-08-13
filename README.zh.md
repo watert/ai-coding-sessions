@@ -165,6 +165,8 @@ bun src/store/cli.ts detail --source=opencode --id=ses_xxx
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
 bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
+bun src/store/cli.ts list --untitled --days=7 --roots
+bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
 bun src/store/cli.ts stats --source=all --days=7   # 裁剪合计 + quality（issue #2）
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 bun src/store/cli.ts help
@@ -172,7 +174,7 @@ bun src/store/cli.ts help
 
 | 命令 | 数据 | 说明 |
 |---------|------|--------|
-| `list` | 默认缓存，或 `--live` | `--parent=` / `--roots` / **`--cwd=`**；默认紧凑字段 |
+| `list` | 默认缓存，或 `--live` | `--parent=` / `--roots` / **`--cwd=`** / `--untitled`；默认紧凑字段 |
 | `children` | 缓存 | 等价 `list --parent=<id>` |
 | `resolve` | 缓存 | `latest` \| id \| path \| 标题；歧义 exit 2（[#4](https://github.com/watert/ai-coding-sessions/issues/4)） |
 | `handoff` | **live** | 跨 agent 续作摘要（inert；user 500 / assistant 3000）；别名 `resume-summary`（#4） |
@@ -180,6 +182,7 @@ bun src/store/cli.ts help
 | `tool-errors` | **live** | 单 session soft/hard 工具失败行 |
 | `detail` | **live** | 完整 messages；用体量 flag 适配 Agent 上下文 |
 | `prompts` | 缓存 | 仅 user prompts |
+| `set-title` | 写缓存 | `custom_title` overlay（sync 不覆盖）；`--clear`；OpenCode `--write-source` |
 | `stats` | 缓存 | **P0** 裁剪 + split + quality（[#2](https://github.com/watert/ai-coding-sessions/issues/2)）；**P1** `by_model` · 可选成本 · `costByDay` · `tool_fail`（[#3](https://github.com/watert/ai-coding-sessions/issues/3)） |
 | `sync` | 写缓存 | `--full` / `--reconcile` |
 | `refs` | live refs | 不 convert / 不写库 |
@@ -243,7 +246,7 @@ npm scripts：`bun run cli` · `bun run sync` · `bun run sync:reconcile`。
 | 模型 | 常见 `default` / `auto`，provider `cursor` |
 | Subagent | 无 kimi/opencode 式 parent/spawn 图 |
 
-统一 session 字段（节选）：`id`、`title`、`source`、`parent_id`、`spawn_group_id`、token 合计、`avg_tps` / `avg_latency_ms`、`session_status`、`usage_by_model`、`usage_by_day`、`bashSignals`、`deliverableSignals`、可选 `pricing`。
+统一 session 字段（节选）：`id`、`title`、`source_title`、`custom_title`、`title_is_custom`、`source`、`parent_id`、`spawn_group_id`、token 合计、`avg_tps` / `avg_latency_ms`、`session_status`、`usage_by_model`、`usage_by_day`、`bashSignals`、`deliverableSignals`、可选 `pricing`。overlay 后 `title` = `custom_title || source_title`。
 
 ## 依赖
 

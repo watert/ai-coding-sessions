@@ -1,8 +1,8 @@
 ---
 name: ai-coding-sessions
-description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
+description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.7.3
+  version: 1.8.0
 ---
 
 # AI Coding Sessions
@@ -20,6 +20,7 @@ metadata:
 - 列表 / 详情 / **轨迹 trace** / **handoff 续作摘要** / prompts / stats
 - 成本、token、TPS、latency、cache、subagent
 - 缓存 sync / reconcile / 脏检
+- 弱标题 / Untitled / 生成或改 session title（`set-title`）
 - 新 source 适配或字段不对
 
 ## 数据流
@@ -55,6 +56,7 @@ skills/ai-coding-sessions/   本 skill
 - 状态：`in-progress` | `done` | `error` | `aborted` | `unknown`
 - 详情 live：`info` + `messages` + `editDiffs` + 可选 `pricing`
 - 缓存：**不存** `session.pricing`（存 `usage_by_model`，宿主可重计价）；detail/messages 不进 SQLite
+- **title overlay**：`title` = `custom_title || source_title`。`custom_title` 是缓存标注（Agent `set-title`），**sync 不覆盖**。列表/详情/resolve 都走 overlay。勿回写各 source 本地库（OpenCode 可用 `--write-source`）
 
 ## CLI（Agent 优先 JSON stdout）
 
@@ -67,7 +69,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 
 | 命令 | 用途 |
 |------|------|
-| `list` | 缓存列表（`--live` · `--parent=` · `--roots` · **`--cwd=`**） |
+| `list` | 缓存列表（`--live` · `--parent=` · `--roots` · **`--cwd=`** · `--untitled`） |
 | `children` | 子 session |
 | `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O；`--format=md --out=`） |
 | `tool-errors` | 单 session soft/hard 工具失败 |
@@ -75,6 +77,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `resolve` | 解析 `latest` / id / path / 标题（歧义 exit 2） |
 | `detail` | 详情 live + 体量控制 + `timing` |
 | `prompts` | 缓存 user prompts |
+| `set-title` | 缓存 `custom_title`（`--clear` · OpenCode `--write-source`） |
 | `stats` | token / bySource 聚合 |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |
@@ -106,7 +109,18 @@ bun src/store/cli.ts handoff --source=kimi --id=<id> --text-preview=8000   # 超
 bun src/store/cli.ts detail --source=kimi --id=<id> --no-reasoning --max-output-chars=8000
 ```
 
-标志速查：`--cwd=` · `--ref=` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
+**改标题**（读 prompts → 生成 → 写缓存 overlay）：
+
+```bash
+bun src/store/cli.ts list --untitled --days=7 --roots
+bun src/store/cli.ts prompts --source=kimi --id=<id>
+bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
+bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --write-source
+```
+
+弱标题：空 / `Untitled` / `New Session` / `New session - <ISO>`。一次最多改约 5 条。标题短、可检索，不要整段 prompt。
+
+标志速查：`--cwd=` · `--ref=` · `--untitled` · `--title=` · `--clear` · `--write-source` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
 完整说明 → [references/cli.md](./references/cli.md)
 
 ## 库 API 摘要
@@ -119,6 +133,7 @@ import {
   formatTraceMarkdown, configurePricing,
   buildHandoff, formatHandoffMarkdown,
   resolveSessionRef, filterSessionsByCwd, matchesCwd,
+  setSessionTitle, isWeakTitle,
 } from 'ai-coding-sessions';
 ```
 
@@ -138,6 +153,6 @@ import {
 | REST `/api/ai-coding/*` | 宿主 router + `listSessionsCached` / `fillSessionPricing` |
 | Web Sessions / TokenStats | 宿主前端 + **token-stats** skill |
 | 周报导出 / tool-errors / prompt-perf | 宿主 `opencode` CLI（见 [cli.md 宿主节](./references/cli.md)） |
-| 改 title | 宿主 `update-session-title`（OpenCode 元数据） |
+| 改 title | 包 CLI `set-title`（缓存 overlay）；宿主 `PATCH /api/ai-coding/session-title`；OpenCode 源库用 `--write-source` 或旧 `update-session-title` |
 
 跨 session 看板 → **token-stats**；单价表 → **ai-model-pricing**。

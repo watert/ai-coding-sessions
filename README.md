@@ -165,6 +165,8 @@ bun src/store/cli.ts detail --source=opencode --id=ses_xxx
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
 bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
+bun src/store/cli.ts list --untitled --days=7 --roots
+bun src/store/cli.ts set-title --source=kimi --id=<id> --title="Review zhihu crawler"
 bun src/store/cli.ts stats --source=all --days=7   # clipped totals + quality (issue #2)
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 bun src/store/cli.ts help
@@ -172,7 +174,7 @@ bun src/store/cli.ts help
 
 | Command | Data | Notes |
 |---------|------|--------|
-| `list` | cache (default) or `--live` | `--parent=` / `--roots` / **`--cwd=`**; compact by default |
+| `list` | cache (default) or `--live` | `--parent=` / `--roots` / **`--cwd=`** / `--untitled`; compact by default |
 | `children` | cache | `list --parent=<id>` |
 | `resolve` | cache | `latest` \| id \| path \| title; ambiguous → exit 2 ([#4](https://github.com/watert/ai-coding-sessions/issues/4)) |
 | `handoff` | **live** | cross-agent resume brief (inert; user 500 / assistant 3000); alias `resume-summary` (#4) |
@@ -180,6 +182,7 @@ bun src/store/cli.ts help
 | `tool-errors` | **live** | soft/hard tool failure rows for one session |
 | `detail` | **live** | full messages; use size flags to fit Agent context |
 | `prompts` | cache | user prompts only |
+| `set-title` | cache write | `custom_title` overlay (sync-safe); `--clear`; OpenCode `--write-source` |
 | `stats` | cache | **P0** clip + split + quality ([#2](https://github.com/watert/ai-coding-sessions/issues/2)); **P1** `by_model` · optional cost · `costByDay` · `tool_fail` ([#3](https://github.com/watert/ai-coding-sessions/issues/3)) |
 | `sync` | write cache | `--full` / `--reconcile` |
 | `refs` | live refs | no convert/write |
@@ -241,7 +244,7 @@ Cursor is **Desktop-only** (local `state.vscdb` + agent-transcripts). Not cloud 
 | Models | Often `default` / `auto` under provider `cursor` |
 | Subagents | No parent/spawn graph equivalent to kimi/opencode |
 
-Unified session fields (subset): `id`, `title`, `source`, `parent_id`, `spawn_group_id`, token totals, `avg_tps` / `avg_latency_ms`, `session_status`, `usage_by_model`, `usage_by_day`, `bashSignals`, `deliverableSignals`, optional `pricing`.
+Unified session fields (subset): `id`, `title`, `source_title`, `custom_title`, `title_is_custom`, `source`, `parent_id`, `spawn_group_id`, token totals, `avg_tps` / `avg_latency_ms`, `session_status`, `usage_by_model`, `usage_by_day`, `bashSignals`, `deliverableSignals`, optional `pricing`. `title` is `custom_title || source_title` after cache overlay.
 
 ## Dependencies
 

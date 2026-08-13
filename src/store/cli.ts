@@ -16,6 +16,8 @@
  *   bun src/store/cli.ts resolve --source=all --cwd=. --ref="partial title"
  *   bun src/store/cli.ts list --cwd=. --days=7 --limit=20
  *   bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
+ *   bun src/store/cli.ts list --untitled --days=7
+ *   bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
  *   bun src/store/cli.ts stats --source=all --days=7
  *   bun src/store/cli.ts sync --days=7 --source=all --reconcile
  *
@@ -65,6 +67,13 @@ import { computeCliStats } from './session-stats';
 import { countStats } from './upsert';
 import { loadMeta } from './meta';
 import { resolveStorePaths } from './paths';
+import {
+  applyCustomTitles,
+  isWeakTitle,
+  overlaySessionDetail,
+  setSessionTitle,
+} from './session-title';
+import { initOpencodeDb, updateSessionTitle } from '../sources/opencode';
 import type { UnifiedSessionInfo } from '../sources/types';
 
 const COMMANDS = [
@@ -78,6 +87,7 @@ const COMMANDS = [
   'resolve',
   'children',
   'prompts',
+  'set-title',
   'stats',
   'sync',
   'refs',
@@ -137,6 +147,12 @@ interface CliArgs {
    * (--id= still wins when set)
    */
   ref?: string;
+  /** list: 仅弱标题且无 custom_title */
+  untitledOnly: boolean;
+  /** set-title */
+  title?: string;
+  clearTitle: boolean;
+  writeSource: boolean;
 }
 
 function parseSource(s: string): SourceId | 'all' {
@@ -163,6 +179,9 @@ function parseArgs(argv: string[]): CliArgs {
     includeReasoning: false,
     jsonl: false,
     withChildren: false,
+    untitledOnly: false,
+    clearTitle: false,
+    writeSource: false,
   };
 
   let i = 0;
@@ -194,6 +213,9 @@ function parseArgs(argv: string[]): CliArgs {
       out.format = out.format || 'jsonl';
     } else if (a === '--with-children' || a === '--children') out.withChildren = true;
     else if (a === '--roots' || a === '--roots-only') out.rootsOnly = true;
+    else if (a === '--untitled' || a === '--untitled-only') out.untitledOnly = true;
+    else if (a === '--clear') out.clearTitle = true;
+    else if (a === '--write-source') out.writeSource = true;
     else if (a.startsWith('--days=')) out.days = Number(a.slice('--days='.length));
     else if (a.startsWith('--start=')) out.startDate = a.slice('--start='.length);
     else if (a.startsWith('--end=')) out.endDate = a.slice('--end='.length);
@@ -209,6 +231,7 @@ function parseArgs(argv: string[]): CliArgs {
         ? a.slice('--session_id='.length)
         : a.slice('--session='.length);
     } else if (a.startsWith('--ref=')) out.ref = a.slice('--ref='.length);
+    else if (a.startsWith('--title=')) out.title = a.slice('--title='.length);
     else if (a.startsWith('--cwd=')) out.cwd = a.slice('--cwd='.length);
     else if (a.startsWith('--parent=')) out.parentId = a.slice('--parent='.length);
     else if (a.startsWith('--limit=')) out.limit = Number(a.slice('--limit='.length));
@@ -263,6 +286,7 @@ Commands:
   handoff      Cross-agent resume summary (inert)  [alias: resume-summary]
   resolve      Resolve --ref= / --id= under filters (cwd/source/window)
   prompts      Cached user prompts
+  set-title    Cache overlay title (Agent/user; sync-safe)
   stats        Aggregate counts / tokens (cache; P0 window clip + quality)
   sync         Incremental sync → SQLite
   refs         listRefs only
@@ -290,6 +314,13 @@ Cross-agent handoff (issue #4):
   handoff --source=kimi --id=<id> --text-preview=8000   # override both caps
   # need tool I/O / full messages → detail (not handoff)
 
+Custom title (cache overlay; sync-safe):
+  list --untitled --days=7 --roots
+  prompts --source=kimi --id=<id>
+  set-title --source=kimi --id=<id> --title="知乎爬虫评审"
+  set-title --source=opencode --id=ses_xxx --title="..." --write-source
+  set-title --source=kimi --id=<id> --clear
+
 Options:
   --source=NAME       all|${ALL_SOURCES.join('|')}
   --days=N --start= --end=
@@ -298,6 +329,10 @@ Options:
   --cwd=PATH          list/handoff/resolve: filter by project path
   --parent=SESSION    list children of parent
   --roots             list top-level only (no parent_id)
+  --untitled          list: weak source title and no custom_title
+  --title=TEXT        set-title
+  --clear             set-title: remove custom_title
+  --write-source      set-title: also write OpenCode source DB
   --limit=N --offset=N
   --live              list: live convert
   --full-fields       list/detail info: full objects
@@ -379,6 +414,8 @@ function compactSession(s: UnifiedSessionInfo) {
     id: s.id,
     source: s.source,
     title: s.title,
+    source_title: s.source_title ?? null,
+    title_is_custom: s.title_is_custom ?? null,
     project_name: s.project_name ?? s.project_id ?? null,
     directory: s.directory || null,
     parent_id: s.parent_id ?? null,
@@ -426,6 +463,19 @@ function requireId(args: CliArgs, cmd: string): string {
   return args.id;
 }
 
+async function overlayLiveDetail<T extends { info: UnifiedSessionInfo } | null>(
+  args: CliArgs,
+  detail: T,
+): Promise<T> {
+  if (!detail) return detail;
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  try {
+    return await overlaySessionDetail(detail);
+  } finally {
+    closeStoreDb();
+  }
+}
+
 function loadChildrenFromCache(
   source: SourceId | 'all',
   parentId: string,
@@ -451,12 +501,21 @@ async function cmdList(args: CliArgs) {
         endDate,
       });
       let sessions = result.sessions;
+      await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+      try {
+        sessions = applyCustomTitles(sessions);
+      } finally {
+        closeStoreDb();
+      }
       if (parentId) {
         sessions = sessions.filter((s) => (s.parent_id ?? null) === parentId);
       } else if (args.rootsOnly) {
         sessions = sessions.filter((s) => s.parent_id == null || s.parent_id === '');
       }
       if (cwd) sessions = filterSessionsByCwd(sessions, cwd);
+      if (args.untitledOnly) {
+        sessions = sessions.filter((s) => !s.title_is_custom && isWeakTitle(s.source_title ?? s.title));
+      }
       const total = sessions.length;
       if (offset) sessions = sessions.slice(offset);
       if (limit != null) sessions = sessions.slice(0, limit);
@@ -490,6 +549,7 @@ async function cmdList(args: CliArgs) {
       parentId,
       rootsOnly: args.rootsOnly,
       cwd,
+      untitledOnly: args.untitledOnly,
       limit,
       offset,
     });
@@ -620,7 +680,10 @@ async function cmdHandoff(args: CliArgs) {
 
   await initAiCodingStats();
   try {
-    const detail = await getSessionDetail({ sessionId: id, source });
+    const detail = await overlayLiveDetail(
+      args,
+      await getSessionDetail({ sessionId: id, source }),
+    );
     if (!detail) {
       printJson({ ok: false, error: 'not_found', source, id }, args.pretty);
       process.exitCode = 1;
@@ -684,7 +747,10 @@ async function cmdDetail(args: CliArgs) {
 
   await initAiCodingStats();
   try {
-    const detail = await getSessionDetail({ sessionId: id, source });
+    const detail = await overlayLiveDetail(
+      args,
+      await getSessionDetail({ sessionId: id, source }),
+    );
     if (!detail) {
       printJson({ ok: false, error: 'not_found', source, id }, args.pretty);
       process.exitCode = 1;
@@ -765,7 +831,10 @@ async function cmdTrace(args: CliArgs) {
 
   await initAiCodingStats();
   try {
-    const detail = await getSessionDetail({ sessionId: id, source });
+    const detail = await overlayLiveDetail(
+      args,
+      await getSessionDetail({ sessionId: id, source }),
+    );
     if (!detail) {
       printJson({ ok: false, error: 'not_found', source, id }, args.pretty);
       process.exitCode = 1;
@@ -874,7 +943,10 @@ async function cmdToolErrors(args: CliArgs) {
 
   await initAiCodingStats();
   try {
-    const detail = await getSessionDetail({ sessionId: id, source });
+    const detail = await overlayLiveDetail(
+      args,
+      await getSessionDetail({ sessionId: id, source }),
+    );
     if (!detail) {
       printJson({ ok: false, error: 'not_found', source, id }, args.pretty);
       process.exitCode = 1;
@@ -950,6 +1022,47 @@ async function cmdToolErrors(args: CliArgs) {
     printJson(payload, args.pretty);
   } finally {
     closeAiCodingStats();
+  }
+}
+
+async function cmdSetTitle(args: CliArgs) {
+  const source = requireOneSource(args, 'set-title');
+  const id = requireId(args, 'set-title');
+  if (args.clearTitle && args.title) {
+    throw new Error('set-title: use either --title= or --clear, not both');
+  }
+  if (!args.clearTitle && args.title == null) {
+    throw new Error('set-title requires --title=... or --clear');
+  }
+
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  try {
+    const result = setSessionTitle(source, id, args.clearTitle ? null : args.title ?? null);
+    const body: Record<string, unknown> = { ...result };
+
+    if (args.writeSource) {
+      if (args.clearTitle) {
+        body.write_source = { ok: false, skipped: true, reason: 'clear does not write source' };
+      } else if (source !== 'opencode') {
+        body.write_source = {
+          ok: false,
+          skipped: true,
+          reason: `write-source only supports opencode (got ${source})`,
+        };
+      } else if (!result.ok || !result.custom_title) {
+        body.write_source = { ok: false, skipped: true, reason: 'cache write failed' };
+      } else {
+        await initOpencodeDb();
+        const ok = updateSessionTitle(id, result.custom_title);
+        body.write_source = { ok, source: 'opencode', id };
+        if (!ok) process.exitCode = 1;
+      }
+    }
+
+    if (!result.ok) process.exitCode = 1;
+    printJson(body, args.pretty);
+  } finally {
+    closeStoreDb();
   }
 }
 
@@ -1156,6 +1269,9 @@ async function main() {
       break;
     case 'prompts':
       await cmdPrompts(args);
+      break;
+    case 'set-title':
+      await cmdSetTitle(args);
       break;
     case 'stats':
       await cmdStats(args);

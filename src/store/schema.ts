@@ -4,7 +4,7 @@
  * - detail/messages 不缓存；prompts 完整落库
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** sessions / prompts / usage_by_day / schema_meta */
 export const SCHEMA_SQL = `
@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   source TEXT NOT NULL,
   session_id TEXT NOT NULL,
   title TEXT,
+  custom_title TEXT,
+  custom_title_at INTEGER,
   project TEXT,
   cwd TEXT,
   time_created INTEGER,
@@ -118,6 +120,8 @@ export interface CachedSessionRow {
   source: SourceId;
   session_id: string;
   title: string | null;
+  custom_title: string | null;
+  custom_title_at: number | null;
   project: string | null;
   cwd: string | null;
   time_created: number | null;

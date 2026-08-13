@@ -39,11 +39,34 @@ export {
   initAiCodingStats,
   closeAiCodingStats,
   listSessions,
-  getSessionDetail,
+  getSessionDetail as getSessionDetailLive,
   OpenCodeSessionInfoSchema,
   OpenCodeMessageSchema,
   OpenCodeSessionExportSchema,
 } from './sources/index';
+
+import {
+  getSessionDetail as getSessionDetailLiveFn,
+} from './sources/index';
+import type { GetSessionDetailOptions, UnifiedSessionDetail } from './sources/types';
+import { overlaySessionDetail } from './store/session-title';
+import { initStoreDb, isStoreDbReady } from './store/db';
+
+/** live detail + 缓存 custom_title overlay（显式 init，避免误开默认库） */
+export async function getSessionDetail(
+  options: GetSessionDetailOptions,
+): Promise<UnifiedSessionDetail | null> {
+  const detail = await getSessionDetailLiveFn(options);
+  if (!detail) return null;
+  if (!isStoreDbReady()) {
+    try {
+      await initStoreDb();
+    } catch {
+      return detail;
+    }
+  }
+  return overlaySessionDetail(detail);
+}
 
 // M3 store：sync / queryCached / meta / listRefs
 export {
@@ -97,6 +120,15 @@ export {
   normalizeCwd,
   sessionIdFromPath,
   sessionPathCandidates,
+  isWeakTitle,
+  normalizeCustomTitle,
+  overlaySessionFields,
+  getCustomTitle,
+  applyCustomTitle,
+  applyCustomTitles,
+  overlaySessionDetail,
+  setSessionTitle,
+  isStoreDbReady,
 } from './store';
 
 export type {
@@ -135,4 +167,5 @@ export type {
   BuildHandoffOptions,
   ResolveResult,
   ResolveMatchKind,
+  SetSessionTitleResult,
 } from './store';

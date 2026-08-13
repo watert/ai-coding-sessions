@@ -83,6 +83,10 @@ export async function initSqliteDb(
  * 获取数据库实例
  * @param instanceId 实例唯一标识
  */
+export function hasSqliteDb(instanceId: string): boolean {
+  return Boolean(instances.get(instanceId)?.db);
+}
+
 export function getSqliteDb(instanceId: string): SqliteDatabase {
   const instance = instances.get(instanceId);
   if (!instance?.db) throw new Error(`数据库 ${instanceId} 未初始化，请先调用 initSqliteDb()`);

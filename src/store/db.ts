@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { initSqliteDb, getSqliteDb, closeSqliteDb } from '../lib/sqlite';
+import { initSqliteDb, getSqliteDb, closeSqliteDb, hasSqliteDb } from '../lib/sqlite';
 import { SCHEMA_SQL, SCHEMA_VERSION } from './schema';
 import { resolveStorePaths, type StorePaths } from './paths';
 
@@ -45,18 +45,38 @@ export async function initStoreDb(opts?: {
   return paths;
 }
 
+function tableColumns(db: any, table: string): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((r) => r.name));
+}
+
 function migrateIfNeeded(db: any): void {
   const row = db.prepare('SELECT value FROM schema_meta WHERE key = ?').get('schema_version') as
     | { value: string }
     | undefined;
   const cur = row ? Number(row.value) : 0;
+
+  // v1 → v2：Agent/用户覆盖标题（sync 不碰）
+  if (cur < 2) {
+    const cols = tableColumns(db, 'sessions');
+    if (!cols.has('custom_title')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN custom_title TEXT');
+    }
+    if (!cols.has('custom_title_at')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN custom_title_at INTEGER');
+    }
+  }
+
   if (cur >= SCHEMA_VERSION) return;
 
-  // v0 → v1：仅建表（SCHEMA_SQL 已 IF NOT EXISTS）
   db.prepare(
     `INSERT INTO schema_meta (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).run('schema_version', String(SCHEMA_VERSION));
+}
+
+export function isStoreDbReady(): boolean {
+  return hasSqliteDb(STORE_INSTANCE_ID);
 }
 
 export function getStoreDb(): any {

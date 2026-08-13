@@ -21,6 +21,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `resolve` | 解析 session 引用：`latest` \| id \| path \| 标题子串（歧义 exit 2） |
 | `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children`；含 `timing` |
 | `prompts` | 缓存 user prompts |
+| `set-title` | 缓存 `custom_title` overlay（`--title=` / `--clear`；OpenCode `--write-source`） |
 | `stats` | 聚合 token（P0 裁剪/split/quality · P1 `by_model`/cost/`tool_fail`） |
 | `sync` | 增量同步缓存（`--reconcile` / `--full`） |
 | `refs` | listRefs（无 convert/write） |
@@ -90,6 +91,22 @@ bun src/store/cli.ts sync --full --source=opencode
 bun src/store/cli.ts --prompts=kimi:<id>    # legacy
 ```
 
+### 改标题（缓存 overlay）
+
+`title` 列是源投影，sync 会覆盖。Agent 写 **`custom_title`**，展示 `custom_title || source_title`。列表 / 详情 / resolve 都 overlay。
+
+弱标题：空、`Untitled`、`New Session`、`New session - <ISO>`。
+
+```bash
+bun src/store/cli.ts list --untitled --days=7 --roots
+bun src/store/cli.ts prompts --source=kimi --id=<id>
+bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
+bun src/store/cli.ts set-title --source=kimi --id=<id> --clear
+bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --write-source
+```
+
+包内不调 LLM：读 `prompts` → 自己生成短标题 → `set-title`。一次最多约 5 条。`--write-source` 仅 OpenCode 源库。
+
 Env：`AI_CODING_SESSIONS_DB` · `AI_CODING_SESSIONS_META`
 
 ### 导出相关信号（列表/详情字段，非 LLM）
@@ -110,7 +127,7 @@ bun opencode get-session-prompts --session_id=ses_xxxxx [--json]
 bun opencode get-user-messages --startDate=… --endDate=… --source=all [--json]
 bun opencode export-weekly-prompts --weeks=8 --source=kimi
 bun opencode export-monthly-prompts --months=3
-bun opencode update-session-title --session_id=ses_xxxxx --title="…"
+bun opencode update-session-title --session_id=ses_xxxxx --title="…"   # OpenCode 源库；全 source 用包 set-title
 bun opencode fix-session-update-time [--exec]
 bun opencode analyze-tool-errors --days=14 --source=all --top=20
 bun opencode analyze-tool-calls --days=30 --source=all [--json]

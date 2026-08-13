@@ -13,6 +13,7 @@ import {
   isTimestamp,
 } from '../lib/date-utils';
 import { matchesCwd } from './session-resolve';
+import { isWeakTitle, overlaySessionFields } from './session-title';
 import dayjs from 'dayjs';
 
 export interface QueryCachedOptions {
@@ -33,6 +34,8 @@ export interface QueryCachedOptions {
    * directory 仅 exact）。见 matchesCwd
    */
   cwd?: string;
+  /** 仅弱标题且无 custom_title（Untitled / New Session / 空） */
+  untitledOnly?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -62,6 +65,7 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     parentId,
     rootsOnly = false,
     cwd,
+    untitledOnly = false,
     limit,
     offset,
   } = options || {};
@@ -92,7 +96,7 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     params.push(projectId);
   }
 
-  let sql = `SELECT payload, source, session_id, orphaned_at FROM sessions`;
+  let sql = `SELECT payload, source, session_id, orphaned_at, custom_title FROM sessions`;
   if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
   sql += ` ORDER BY COALESCE(last_active_at, time_updated, 0) DESC`;
   // 日期精确过滤在 JS；limit 在过滤后再切（避免少结果）
@@ -101,6 +105,7 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     source: string;
     session_id: string;
     orphaned_at: number | null;
+    custom_title: string | null;
   }>;
 
   const targetModels = models && models.length ? new Set(models) : null;
@@ -127,6 +132,11 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     }
     if (!s.source) s.source = row.source as any;
     if (!s.id) s.id = row.session_id;
+    s = overlaySessionFields(s, row.custom_title);
+
+    if (untitledOnly) {
+      if (s.title_is_custom || !isWeakTitle(s.source_title)) continue;
+    }
 
     if (targetModels) {
       const used = (s.models_used || '').split(',').map((m) => m.trim()).filter(Boolean);
@@ -172,11 +182,14 @@ export function getCachedSession(
 ): UnifiedSessionInfo | null {
   const db = getStoreDb();
   const row = db
-    .prepare(`SELECT payload FROM sessions WHERE source = ? AND session_id = ?`)
-    .get(source, sessionId) as { payload: string } | undefined;
+    .prepare(`SELECT payload, custom_title FROM sessions WHERE source = ? AND session_id = ?`)
+    .get(source, sessionId) as { payload: string; custom_title: string | null } | undefined;
   if (!row) return null;
   try {
-    return JSON.parse(row.payload) as UnifiedSessionInfo;
+    const s = JSON.parse(row.payload) as UnifiedSessionInfo;
+    if (!s.source) s.source = source;
+    if (!s.id) s.id = sessionId;
+    return overlaySessionFields(s, row.custom_title);
   } catch {
     return null;
   }
