@@ -20,7 +20,7 @@ metadata:
 - 列表 / 详情 / **轨迹 trace** / **handoff 续作摘要** / prompts / stats
 - 成本、token、TPS、latency、cache、subagent
 - 缓存 sync / reconcile / 脏检
-- 弱标题 / Untitled / 生成或改 session title（`set-title`）
+- 弱标题 / Untitled / 生成或改 session title（`set-title`）/ 批量标题审查（`title-review`）
 - 新 source 适配或字段不对
 
 ## 数据流
@@ -78,6 +78,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `detail` | 详情 live + 体量控制 + `timing` |
 | `prompts` | 缓存 user prompts |
 | `set-title` | 缓存 `custom_title`（`--clear` · OpenCode `--write-source`） |
+| `title-review` | 标题审查候选：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
 | `stats` | token / bySource 聚合 |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |
@@ -112,15 +113,18 @@ bun src/store/cli.ts detail --source=kimi --id=<id> --no-reasoning --max-output-
 **改标题**（读 prompts → 生成 → 写缓存 overlay）：
 
 ```bash
-bun src/store/cli.ts list --untitled --days=7 --roots
+bun src/store/cli.ts list --untitled --days=7 --roots          # 机械弱标题
+bun src/store/cli.ts title-review --days=7 --roots             # Agent 审查: title + prompt count + truncated prompts
 bun src/store/cli.ts prompts --source=kimi --id=<id>
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
 bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --write-source
 ```
 
-弱标题：空 / `Untitled` / `New Session` / `New session - <ISO>`。一次最多改约 5 条。标题短、可检索，不要整段 prompt。
+- **机械弱标题**（`isWeakTitle`，`list --untitled` 过滤）：空 / `Untitled` / `New Session` / `New session - <ISO>` 前缀
+- **Agent 审查**（`title-review`）：非弱标题也可疑——源自动标题可能是整段 prompt、英文占位、词不达意。候选输出 `title + prompt_count + prompts_preview`（默认前 3 条 × 300 字符，`--prompt-count=` / `--prompt-chars=` 可调），由 Agent 依据 prompts 判断是否重写
+- 一次最多改约 5 条。标题短、可检索，不要整段 prompt。
 
-标志速查：`--cwd=` · `--ref=` · `--untitled` · `--title=` · `--clear` · `--write-source` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
+标志速查：`--cwd=` · `--ref=` · `--untitled` · `--title=` · `--clear` · `--write-source` · `--prompt-count=` · `--prompt-chars=` · `--include-empty` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
 完整说明 → [references/cli.md](./references/cli.md)
 
 ## 库 API 摘要

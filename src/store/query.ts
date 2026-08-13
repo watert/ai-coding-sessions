@@ -209,6 +209,87 @@ export function getSessionPrompts(
     .all(source, sessionId) as SessionPromptRow[];
 }
 
+/** 标题审查候选：当前标题 + prompt count + truncated prompts（供 Agent 判断是否需重写） */
+export interface TitleReviewEntry {
+  source: SourceId;
+  id: string;
+  /** 当前展示标题（custom || source） */
+  title: string | null;
+  source_title: string | null;
+  /** 源标题是否为机械弱标题（Untitled / New Session / 空） */
+  is_weak: boolean;
+  prompt_count: number;
+  /** 截断后的 user prompt 预览（前 N 条） */
+  prompts_preview: string[];
+  last_active_at_iso: string | null;
+  project_name: string | null;
+}
+
+export interface TitleReviewOptions {
+  source?: SourceId | 'all';
+  startDate?: string;
+  endDate?: string;
+  rootsOnly?: boolean;
+  /** 每条 session 预览的 prompt 条数（默认 3） */
+  promptPreviewCount?: number;
+  /** 每条 prompt 预览字符上限（默认 300） */
+  promptPreviewChars?: number;
+  /** 无 prompt 的 session 也列出（默认跳过，无法判断） */
+  includeEmpty?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+function truncatePromptText(text: string, maxChars: number): string {
+  const t = String(text).replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  return t.length > maxChars ? `${t.slice(0, maxChars)}…` : t;
+}
+
+/** 排除已有 custom_title；is_weak 仅标记源标题，非弱标题同样列为候选供 Agent 人工判断 */
+export function listTitleReview(options: TitleReviewOptions = {}): {
+  sessions: TitleReviewEntry[];
+  total: number;
+} {
+  const { promptPreviewCount = 3, promptPreviewChars = 300, includeEmpty = false } = options;
+  const listed = queryCached({
+    source: options.source,
+    startDate: options.startDate,
+    endDate: options.endDate,
+    rootsOnly: options.rootsOnly,
+  });
+
+  const sessions: TitleReviewEntry[] = [];
+  for (const s of listed.sessions) {
+    if (s.title_is_custom) continue;
+    const rows = getSessionPrompts(s.source, s.id);
+    if (!includeEmpty && rows.length === 0) continue;
+    sessions.push({
+      source: s.source,
+      id: s.id,
+      title: s.title ?? null,
+      source_title: s.source_title ?? null,
+      is_weak: isWeakTitle(s.source_title),
+      prompt_count: rows.length,
+      prompts_preview: rows
+        .slice(0, promptPreviewCount)
+        .map((p) => truncatePromptText(p.text, promptPreviewChars))
+        .filter(Boolean),
+      last_active_at_iso: s.last_active_at_iso ?? null,
+      project_name: s.project_name ?? null,
+    });
+  }
+
+  const off = options.offset || 0;
+  const sliced =
+    options.limit != null
+      ? sessions.slice(off, off + options.limit)
+      : off
+        ? sessions.slice(off)
+        : sessions;
+  return { sessions: sliced, total: sessions.length };
+}
+
 export function queryUsageByDay(opts?: {
   source?: SourceId | 'all';
   startDay?: string;

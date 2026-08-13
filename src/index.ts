@@ -145,6 +145,8 @@ export type {
   SyncResult,
   SyncSourceResult,
   QueryCachedOptions,
+  TitleReviewEntry,
+  TitleReviewOptions,
   TraceBuildOptions,
   TraceStep,
   TraceTurn,

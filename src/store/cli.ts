@@ -44,6 +44,7 @@ import {
   queryCached,
   getCachedSession,
   getSessionPrompts,
+  listTitleReview,
 } from './query';
 import {
   buildTraceSteps,
@@ -88,6 +89,7 @@ const COMMANDS = [
   'children',
   'prompts',
   'set-title',
+  'title-review',
   'stats',
   'sync',
   'refs',
@@ -153,6 +155,12 @@ interface CliArgs {
   title?: string;
   clearTitle: boolean;
   writeSource: boolean;
+  /** title-review: 每条 session 预览 prompt 条数 */
+  promptPreviewCount: number;
+  /** title-review: 每条 prompt 预览字符上限 */
+  promptPreviewChars: number;
+  /** title-review: 无 prompt 的 session 也列出 */
+  includeEmptyReview: boolean;
 }
 
 function parseSource(s: string): SourceId | 'all' {
@@ -182,6 +190,9 @@ function parseArgs(argv: string[]): CliArgs {
     untitledOnly: false,
     clearTitle: false,
     writeSource: false,
+    promptPreviewCount: 3,
+    promptPreviewChars: 300,
+    includeEmptyReview: false,
   };
 
   let i = 0;
@@ -216,6 +227,12 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--untitled' || a === '--untitled-only') out.untitledOnly = true;
     else if (a === '--clear') out.clearTitle = true;
     else if (a === '--write-source') out.writeSource = true;
+    else if (a === '--include-empty') out.includeEmptyReview = true;
+    else if (a.startsWith('--prompt-count=')) {
+      out.promptPreviewCount = Number(a.slice('--prompt-count='.length));
+    } else if (a.startsWith('--prompt-chars=')) {
+      out.promptPreviewChars = Number(a.slice('--prompt-chars='.length));
+    }
     else if (a.startsWith('--days=')) out.days = Number(a.slice('--days='.length));
     else if (a.startsWith('--start=')) out.startDate = a.slice('--start='.length);
     else if (a.startsWith('--end=')) out.endDate = a.slice('--end='.length);
@@ -287,6 +304,7 @@ Commands:
   resolve      Resolve --ref= / --id= under filters (cwd/source/window)
   prompts      Cached user prompts
   set-title    Cache overlay title (Agent/user; sync-safe)
+  title-review Review title candidates: title + prompt count + truncated prompts
   stats        Aggregate counts / tokens (cache; P0 window clip + quality)
   sync         Incremental sync → SQLite
   refs         listRefs only
@@ -316,6 +334,7 @@ Cross-agent handoff (issue #4):
 
 Custom title (cache overlay; sync-safe):
   list --untitled --days=7 --roots
+  title-review --days=7 --roots            # Agent 判断依据: title + prompts
   prompts --source=kimi --id=<id>
   set-title --source=kimi --id=<id> --title="知乎爬虫评审"
   set-title --source=opencode --id=ses_xxx --title="..." --write-source
@@ -333,6 +352,9 @@ Options:
   --title=TEXT        set-title
   --clear             set-title: remove custom_title
   --write-source      set-title: also write OpenCode source DB
+  --prompt-count=N    title-review: preview prompt count per session (default 3)
+  --prompt-chars=N    title-review: preview chars per prompt (default 300)
+  --include-empty     title-review: also list sessions with no prompts
   --limit=N --offset=N
   --live              list: live convert
   --full-fields       list/detail info: full objects
@@ -1097,6 +1119,39 @@ async function cmdPrompts(args: CliArgs) {
   }
 }
 
+/** 标题审查候选：当前标题 + prompt count + truncated prompts（Agent 判断是否需重写标题） */
+async function cmdTitleReview(args: CliArgs) {
+  const { startDate, endDate } = resolveWindow(args);
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  try {
+    const result = listTitleReview({
+      source: args.source,
+      startDate,
+      endDate,
+      rootsOnly: args.rootsOnly,
+      promptPreviewCount: args.promptPreviewCount,
+      promptPreviewChars: args.promptPreviewChars,
+      includeEmpty: args.includeEmptyReview,
+      limit: args.limit,
+      offset: args.offset,
+    });
+    printJson(
+      {
+        mode: 'cache',
+        total: result.total,
+        returned: result.sessions.length,
+        startDate: startDate ?? null,
+        endDate: endDate ?? null,
+        sessions: result.sessions,
+        note: 'Agent 依据 title + prompt_count + prompts_preview 判断是否需重写;需改则 set-title --source=<s> --id=<id> --title=...',
+      },
+      args.pretty,
+    );
+  } finally {
+    closeStoreDb();
+  }
+}
+
 async function cmdStats(args: CliArgs) {
   const { startDate, endDate } = resolveWindow(args);
   const paths = resolveStorePaths({ dbPath: args.dbPath, metaPath: args.metaPath });
@@ -1272,6 +1327,9 @@ async function main() {
       break;
     case 'set-title':
       await cmdSetTitle(args);
+      break;
+    case 'title-review':
+      await cmdTitleReview(args);
       break;
     case 'stats':
       await cmdStats(args);

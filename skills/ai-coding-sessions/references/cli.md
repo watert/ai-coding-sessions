@@ -22,6 +22,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children`；含 `timing` |
 | `prompts` | 缓存 user prompts |
 | `set-title` | 缓存 `custom_title` overlay（`--title=` / `--clear`；OpenCode `--write-source`） |
+| `title-review` | **标题审查候选**：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
 | `stats` | 聚合 token（P0 裁剪/split/quality · P1 `by_model`/cost/`tool_fail`） |
 | `sync` | 增量同步缓存（`--reconcile` / `--full`） |
 | `refs` | listRefs（无 convert/write） |
@@ -95,17 +96,25 @@ bun src/store/cli.ts --prompts=kimi:<id>    # legacy
 
 `title` 列是源投影，sync 会覆盖。Agent 写 **`custom_title`**，展示 `custom_title || source_title`。列表 / 详情 / resolve 都 overlay。
 
-弱标题：空、`Untitled`、`New Session`、`New session - <ISO>`。
+**两层标题处理**：
+
+1. **机械弱标题**（`isWeakTitle`；`list --untitled` 过滤）：空、`Untitled`、`New Session`、`New session - <ISO>`。
+2. **Agent 审查**（`title-review`）：源自动标题未必可信——可能整段 prompt、英文占位、词不达意。候选 = 当前标题 + prompt count + 前 N 条 truncated prompts，Agent 据此判断是否重写。
 
 ```bash
 bun src/store/cli.ts list --untitled --days=7 --roots
+bun src/store/cli.ts title-review --days=7 --roots                 # 默认排除无 prompt 的 session
+bun src/store/cli.ts title-review --days=30 --prompt-count=5 --prompt-chars=400
+bun src/store/cli.ts title-review --days=7 --include-empty         # 空 session 也列出
 bun src/store/cli.ts prompts --source=kimi --id=<id>
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
 bun src/store/cli.ts set-title --source=kimi --id=<id> --clear
 bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --write-source
 ```
 
-包内不调 LLM：读 `prompts` → 自己生成短标题 → `set-title`。一次最多约 5 条。`--write-source` 仅 OpenCode 源库。
+- `title-review` 输出字段：`source` / `id` / `title`（当前展示）/ `source_title` / `is_weak`（机械弱标记，仅参考）/ `prompt_count` / `prompts_preview`（截断）/ `last_active_at_iso` / `project_name`
+- 已设 `custom_title` 的 session 自动排除；`is_weak=false` 的同样列为候选，交 Agent 判断
+- 包内不调 LLM：读 `title-review` / `prompts` → 自己生成短标题 → `set-title`。一次最多约 5 条。`--write-source` 仅 OpenCode 源库。
 
 Env：`AI_CODING_SESSIONS_DB` · `AI_CODING_SESSIONS_META`
 
