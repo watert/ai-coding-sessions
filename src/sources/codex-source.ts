@@ -102,11 +102,12 @@ function convertCodexMessage(
 
   const parts: any[] = [];
   if (msg.parts && msg.parts.length > 0) {
-    for (const p of msg.parts) {
+    // part id 确定性生成（messageID + 下标 / callID），轮询重拉不漂移
+    msg.parts.forEach((p, i) => {
       if (p.type === 'text') {
         parts.push({
           type: 'text',
-          id: crypto.randomUUID(),
+          id: `${msg.uuid}-p${i}`,
           sessionID: sessionId,
           messageID: msg.uuid,
           text: p.text,
@@ -114,7 +115,7 @@ function convertCodexMessage(
       } else if (p.type === 'reasoning') {
         parts.push({
           type: 'reasoning',
-          id: crypto.randomUUID(),
+          id: `${msg.uuid}-p${i}`,
           sessionID: sessionId,
           messageID: msg.uuid,
           text: p.text,
@@ -123,7 +124,7 @@ function convertCodexMessage(
       } else if (p.type === 'tool') {
         parts.push({
           type: 'tool',
-          id: crypto.randomUUID(),
+          id: `${msg.uuid}-tool-${p.callID || i}`,
           sessionID: sessionId,
           messageID: msg.uuid,
           tool: p.tool,
@@ -136,12 +137,12 @@ function convertCodexMessage(
           },
         });
       }
-    }
+    });
   } else {
     if (msg.text) {
       parts.push({
         type: 'text',
-        id: crypto.randomUUID(),
+        id: `${msg.uuid}-text`,
         sessionID: sessionId,
         messageID: msg.uuid,
         text: msg.text,
@@ -150,7 +151,7 @@ function convertCodexMessage(
     if (msg.thinking) {
       parts.push({
         type: 'reasoning',
-        id: crypto.randomUUID(),
+        id: `${msg.uuid}-reasoning`,
         sessionID: sessionId,
         messageID: msg.uuid,
         text: msg.thinking,
@@ -160,7 +161,7 @@ function convertCodexMessage(
     for (const tc of msg.toolCalls) {
       parts.push({
         type: 'tool',
-        id: crypto.randomUUID(),
+        id: `${msg.uuid}-tool-${tc.toolCallId}`,
         sessionID: sessionId,
         messageID: msg.uuid,
         tool: tc.name,

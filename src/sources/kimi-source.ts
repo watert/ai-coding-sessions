@@ -95,7 +95,8 @@ function convertKimiToolCallToPart(
   };
   return {
     type: 'tool',
-    id: crypto.randomUUID(),
+    // 稳定 id：同一 toolCallId 轮询重拉保持一致
+    id: `${messageId}-tool-${toolCall.toolCallId}`,
     sessionID: sessionId,
     messageID: messageId,
     tool: toolCall.name,
@@ -204,11 +205,12 @@ function convertKimiMessage(
   const parts: UnifiedMessage['parts'] = [];
   if (msg.parts && msg.parts.length > 0) {
     // 使用按原始顺序重建的 parts，对齐 OpenCode 协议
-    for (const p of msg.parts) {
+    // part id 确定性生成（messageID + 下标 / callID），避免轮询重拉导致 React key 漂移
+    msg.parts.forEach((p, i) => {
       if (p.type === 'text') {
         parts.push({
           type: 'text',
-          id: crypto.randomUUID(),
+          id: `${msg.uuid}-p${i}`,
           sessionID: sessionId,
           messageID: msg.uuid,
           text: p.text,
@@ -216,7 +218,7 @@ function convertKimiMessage(
       } else if (p.type === 'reasoning') {
         parts.push({
           type: 'reasoning',
-          id: crypto.randomUUID(),
+          id: `${msg.uuid}-p${i}`,
           sessionID: sessionId,
           messageID: msg.uuid,
           text: p.text,
@@ -233,7 +235,7 @@ function convertKimiMessage(
         });
         parts.push({
           type: 'tool',
-          id: crypto.randomUUID(),
+          id: `${msg.uuid}-tool-${p.callID || i}`,
           sessionID: sessionId,
           messageID: msg.uuid,
           tool: p.tool,
@@ -247,13 +249,13 @@ function convertKimiMessage(
           },
         });
       }
-    }
+    });
   } else {
     // fallback：旧式聚合字段
     if (msg.text) {
       parts.push({
         type: 'text',
-        id: crypto.randomUUID(),
+        id: `${msg.uuid}-text`,
         sessionID: sessionId,
         messageID: msg.uuid,
         text: msg.text,
@@ -262,7 +264,7 @@ function convertKimiMessage(
     if (msg.thinking) {
       parts.push({
         type: 'reasoning',
-        id: crypto.randomUUID(),
+        id: `${msg.uuid}-reasoning`,
         sessionID: sessionId,
         messageID: msg.uuid,
         text: msg.thinking,

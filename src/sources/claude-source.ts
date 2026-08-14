@@ -346,7 +346,8 @@ function convertContentToParts(content: any, messageRole: string): any[] {
     // 纯文本内容
     return [{
       type: 'text',
-      id: crypto.randomUUID(),
+      // 稳定 id：轮询重拉保持一致
+      id: 'p0',
       sessionID: '', // 需要在外部设置
       messageID: '', // 需要在外部设置
       text: content,
@@ -359,19 +360,19 @@ function convertContentToParts(content: any, messageRole: string): any[] {
 
   const parts: any[] = [];
 
-  // 直接处理所有 content 项，不尝试跨消息配对
-  for (const item of content) {
+  // 直接处理所有 content 项，不尝试跨消息配对（part id 用下标 / 原生 id 稳定化）
+  content.forEach((item, i) => {
     if (item.type === 'text') {
       parts.push({
         type: 'text',
-        id: crypto.randomUUID(),
+        id: `p${i}`,
         sessionID: '',
         messageID: '',
         text: item.text,
       });
     } else if (item.type === 'tool_use') {
       parts.push({
-        id: crypto.randomUUID(),
+        id: item.id || `p${i}`, // 原生 tool_use id 稳定；兜底用下标
         toolUseId: item.id, // 保存原始 tool_use id 用于配对
         sessionID: '',
         messageID: '',
@@ -396,7 +397,7 @@ function convertContentToParts(content: any, messageRole: string): any[] {
         // 找不到配对，还是作为独立 part 处理
         parts.push({
           type: 'tool',
-          id: crypto.randomUUID(),
+          id: `tool_result-${item.tool_use_id || i}`,
           sessionID: '',
           messageID: '',
           tool: 'tool_result',
@@ -413,13 +414,13 @@ function convertContentToParts(content: any, messageRole: string): any[] {
     } else if (item.type === 'thinking') {
       parts.push({
         type: 'text',
-        id: crypto.randomUUID(),
+        id: `p${i}`,
         sessionID: '',
         messageID: '',
         text: `<thinking>${item.thinking}</thinking>`,
       });
     }
-  }
+  });
 
   // 为所有 parts 设置 sessionID 和 messageID
   for (const part of parts) {

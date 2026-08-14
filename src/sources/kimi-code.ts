@@ -816,7 +816,8 @@ export async function listKimiCodeMessages(params: {
       );
       if (okUser) {
         messages.push({
-          uuid: crypto.randomUUID(),
+          // 稳定 uuid：轮询重拉 detail 时保持一致，避免前端消息 id 漂移
+          uuid: `kimi-user-${(event as any).time || 'append'}`,
           sessionId: messageSessionId,
           role: 'user',
           timestamp: (event as any).time || Date.now(),
@@ -838,7 +839,8 @@ export async function listKimiCodeMessages(params: {
           || (isSubagentWire && (e.origin?.kind === 'system_trigger' || e.origin?.name === 'subagent'));
         if (okPrompt) {
           messages.push({
-            uuid: crypto.randomUUID(),
+            // 稳定 uuid：轮询重拉 detail 时保持一致
+            uuid: `kimi-user-${e.time || 'prompt'}`,
             sessionId: messageSessionId,
             role: 'user',
             timestamp: e.time || Date.now(),
@@ -1179,7 +1181,8 @@ export async function listKimiCodeMessages(params: {
       if (isModelAlias(model)) model = undefined;
 
       assistantMessages.push({
-        uuid: crypto.randomUUID(),
+        // 稳定 uuid：stepUuid 来自 wire 事件，轮询重拉保持一致
+        uuid: `kimi-step-${step.uuid}`,
         sessionId: messageSessionId,
         role: 'assistant',
         timestamp: lastStepEndTime || step.beginTime || Date.now(),
@@ -1317,7 +1320,8 @@ function buildKimiCompactMessages(
     const parentMsg = prevUserMsg;
 
     messages.push({
-      uuid: crypto.randomUUID(),
+      // 稳定 uuid：compact apply 时间确定，轮询重拉保持一致
+      uuid: `kimi-compact-${range.applyTime}`,
       sessionId,
       role: 'assistant',
       timestamp: range.applyTime,
