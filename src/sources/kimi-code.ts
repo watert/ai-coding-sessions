@@ -50,9 +50,12 @@ const KimiSessionIndexItemSchema = z.object({
   workDir: z.string(),
 });
 
+// createdAt/updatedAt 存在新旧两种格式: 旧为 ISO string, 新为 epoch 毫秒数字
+const KimiEpochSchema = z.union([z.string(), z.number()]);
+
 const KimiSessionStateSchema = z.object({
-  createdAt: z.string(),
-  updatedAt: z.string(),
+  createdAt: KimiEpochSchema,
+  updatedAt: KimiEpochSchema,
   title: z.string().default('Untitled'),
   isCustomTitle: z.boolean().optional(),
   lastPrompt: z.string().optional(),

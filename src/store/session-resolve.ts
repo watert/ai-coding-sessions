@@ -200,7 +200,8 @@ export function resolveSessionRef(
   }
   pool.sort((a, b) => activityMs(b) - activityMs(a));
 
-  const raw = (ref ?? '').trim();
+  // 支持从 URL 复制的 ref: session_xxx?source=kimi → 剥掉查询串
+  const raw = (ref ?? '').trim().split('?')[0].trim();
   if (!raw || raw.toLowerCase() === 'latest') {
     if (!pool.length) {
       return {

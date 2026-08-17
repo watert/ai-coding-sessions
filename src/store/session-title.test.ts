@@ -139,6 +139,13 @@ describe('set + overlay + sync', () => {
     expect(hit.ok && hit.session.id).toBe('sess-res');
   });
 
+  test('resolve strips URL query string', () => {
+    upsertSession(makeSession({ id: 'sess-res', title: 'Untitled' }));
+    const listed = queryCached({ source: 'kimi' }).sessions;
+    const hit = resolveSessionRef(listed, 'sess-res?source=kimi');
+    expect(hit.ok && hit.session.id).toBe('sess-res');
+  });
+
   test('overlaySessionDetail', async () => {
     upsertSession(makeSession({ id: 'sess-detail', title: 'Untitled' }));
     setSessionTitle('kimi', 'sess-detail', '详情标题');
