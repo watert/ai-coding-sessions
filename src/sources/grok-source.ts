@@ -41,6 +41,7 @@ import type { TokenTrendPoint } from '../core';
 import { groupMessagesByUser } from '../core';
 import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from './types';
 import { inferDeliverableSignals } from './deliverable-signals';
+import { classifyBashCommands, extractBashCommands } from './bash-signals';
 import { maxContextFromUnifiedMessages, sanitizeUserTextParts, buildLastTokenInfo } from './utils';
 import { buildActivitySpanFromUnifiedMessages, type UsageByDay } from './usage-by-day';
 import {
@@ -917,6 +918,7 @@ export async function convertGrokSession(session: GrokSessionItem): Promise<Unif
     time_updated: lastActivityMs,
     span_days,
     usage_by_day,
+    bashSignals: classifyBashCommands(extractBashCommands(unifiedMessages)),
     deliverableSignals: inferDeliverableSignals({ messages: unifiedMessages }),
   };
 }
@@ -990,6 +992,7 @@ export async function getGrokSessionDetail(sessionId: string): Promise<UnifiedSe
   const info: UnifiedSessionInfo = {
     ...grokSessionInfoWithMessages(session, messages, usage),
     session_status,
+    bashSignals: classifyBashCommands(extractBashCommands(unifiedMessages)),
     deliverableSignals: inferDeliverableSignals({ messages: unifiedMessages }),
     usage_is_incomplete: session_status === 'aborted' || session_status === 'error' || session_status === 'in-progress',
   };
