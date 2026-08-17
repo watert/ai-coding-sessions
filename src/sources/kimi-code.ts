@@ -359,6 +359,64 @@ const KIMI_SUBAGENT_ID_SEP = '__';
 /** 判断是否为模型别名占位 (如 subagent 的 __secondary__)，真实 model 在 llm.request.model */
 const isModelAlias = (m?: string) => !!m && /^__.+__$/.test(m);
 
+/** 裸 model id：`opencode-go/deepseek-v4-flash` → `deepseek-v4-flash` */
+export function bareKimiModelId(m: string): string {
+  const i = m.lastIndexOf('/');
+  return i >= 0 ? m.slice(i + 1) : m;
+}
+
+/**
+ * 同一槽位的两种记法合并：usage.record 常带 provider（`opencode-go/foo`），
+ * llm.request 常是裸 id（`foo`）。别名视为空；同模型优先带 provider 的形式。
+ */
+export function preferKimiModel(a?: string, b?: string): string | undefined {
+  const aa = a && !isModelAlias(a) ? a : undefined;
+  const bb = b && !isModelAlias(b) ? b : undefined;
+  if (!aa) return bb;
+  if (!bb) return aa;
+  if (aa === bb) return aa;
+  if (aa.includes('/') && !bb.includes('/') && aa.endsWith(`/${bb}`)) return aa;
+  if (bb.includes('/') && !aa.includes('/') && bb.endsWith(`/${aa}`)) return bb;
+  return aa;
+}
+
+/** 会话内：裸 id 仅在存在唯一 `provider/id` 时提升 */
+export function buildKimiPreferredModelMap(models: Iterable<string | undefined>): Map<string, string> {
+  const byBare = new Map<string, Set<string>>();
+  for (const raw of models) {
+    if (!raw || isModelAlias(raw)) continue;
+    const bare = bareKimiModelId(raw);
+    let set = byBare.get(bare);
+    if (!set) {
+      set = new Set();
+      byBare.set(bare, set);
+    }
+    set.add(raw);
+  }
+  const map = new Map<string, string>();
+  for (const [bare, forms] of byBare) {
+    const prefixed = [...forms].filter(f => f.includes('/'));
+    if (prefixed.length === 1) map.set(bare, prefixed[0]);
+  }
+  return map;
+}
+
+export function unifyKimiModelId(m: string | undefined, preferred: Map<string, string>): string | undefined {
+  if (!m || isModelAlias(m)) return undefined;
+  return preferred.get(bareKimiModelId(m)) || m;
+}
+
+/** models_used：去重并把裸 id 并入唯一的 provider/id */
+export function collectKimiModelsUsed(models: Iterable<string | undefined>): string {
+  const preferred = buildKimiPreferredModelMap(models);
+  const set = new Set<string>();
+  for (const raw of models) {
+    const u = unifyKimiModelId(raw, preferred);
+    if (u) set.add(u);
+  }
+  return Array.from(set).join(',');
+}
+
 export function parseKimiVirtualSessionId(sessionId: string): { rootSessionId: string; agentDir?: string } {
   const idx = sessionId.indexOf(KIMI_SUBAGENT_ID_SEP);
   if (idx === -1) return { rootSessionId: sessionId };
@@ -1031,22 +1089,20 @@ export async function listKimiCodeMessages(params: {
   }
   Array.from(stepsByTurn.entries()).forEach(([turnId, steps]) => {
     steps.forEach((step, idx) => {
-      // model 别名 (__xxx__) 修正：优先 turnStep 精确匹配，其次时间最近的 llm.request
-      if (!step.model || isModelAlias(step.model)) {
-        let realModel = modelByTurnStep.get(`${turnId}.${idx + 1}`);
-        if (!realModel) {
-          const mEnd = step.endTime ?? step.beginTime + 60_000;
-          let mBest: { model: string; diff: number } | null = null;
-          for (const r of llmRequestModels) {
-            if (r.time < step.beginTime - 50) continue;
-            if (r.time > mEnd + 2_000) break;
-            const diff = Math.abs(r.time - step.beginTime);
-            if (!mBest || diff < mBest.diff) mBest = { model: r.model, diff };
-          }
-          realModel = mBest?.model;
+      // model：usage.record 可能是别名；llm.request 常是裸 id。同模型优先带 provider
+      let realModel = modelByTurnStep.get(`${turnId}.${idx + 1}`);
+      if (!realModel) {
+        const mEnd = step.endTime ?? step.beginTime + 60_000;
+        let mBest: { model: string; diff: number } | null = null;
+        for (const r of llmRequestModels) {
+          if (r.time < step.beginTime - 50) continue;
+          if (r.time > mEnd + 2_000) break;
+          const diff = Math.abs(r.time - step.beginTime);
+          if (!mBest || diff < mBest.diff) mBest = { model: r.model, diff };
         }
-        if (realModel) step.model = realModel;
+        realModel = mBest?.model;
       }
+      step.model = preferKimiModel(step.model, realModel);
 
       const byKey = effortByTurnStep.get(`${turnId}.${idx + 1}`);
       if (byKey) {
@@ -1065,6 +1121,16 @@ export async function listKimiCodeMessages(params: {
       step.thinkingEffort = best?.effort || lastConfigEffort;
     });
   });
+
+  // 无 usage.record 的 step 只拿到 llm.request 裸 id；会话内提升为唯一 provider/id
+  const preferredModels = buildKimiPreferredModelMap([
+    ...sortedSteps.map(s => s.model),
+    ...llmRequestModels.map(r => r.model),
+    ...modelByTurnStep.values(),
+  ]);
+  for (const step of sortedSteps) {
+    step.model = unifyKimiModelId(step.model, preferredModels);
+  }
 
   // kimi 的 turnId 从 0 开始，对应第 1 条用户消息后的 assistant 回复
   // 每个 step 生成一条独立的 assistant message，与 opencode 多 step 消息语义对齐
@@ -1180,8 +1246,7 @@ export async function listKimiCodeMessages(params: {
 
       // 使用已匹配的 usage.record；若 step.end 里带 model 也保留
       const stepUsage = step.stepUsage;
-      if (!model && step.model) model = step.model;
-      if (isModelAlias(model)) model = undefined;
+      model = unifyKimiModelId(preferKimiModel(model, step.model), preferredModels);
 
       assistantMessages.push({
         // 稳定 uuid：stepUuid 来自 wire 事件，轮询重拉保持一致
@@ -1393,15 +1458,11 @@ export async function getKimiSessionUsageSummary(
       summary.inputCacheRead += u.inputCacheRead || 0;
       summary.inputCacheCreation += u.inputCacheCreation || 0;
       const m = (event as any).model;
-      if (m && !summary.model && !isModelAlias(m)) {
-        summary.model = m;
-      }
+      summary.model = preferKimiModel(summary.model, m);
     } else if (event.type === 'llm.request') {
-      // llm.request.model 为真实 model (usage.record 可能是 __secondary__ 别名)，优先采用
+      // llm.request 可解开 usage.record 别名；同模型优先带 provider 的形式
       const m = (event as any).model;
-      if (m && !isModelAlias(m)) {
-        summary.model = m;
-      }
+      summary.model = preferKimiModel(summary.model, m);
     }
   }
 

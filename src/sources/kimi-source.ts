@@ -12,6 +12,7 @@ import {
   listKimiSubagentsFromMainWire,
   parseKimiVirtualSessionId,
   buildKimiSubagentToolMetadata,
+  collectKimiModelsUsed,
   type KimiSessionItem,
   type KimiMessageItem,
   type KimiSubagentMeta,
@@ -479,10 +480,7 @@ async function getKimiSessionStats(
     }
 
     stats.total_tokens = stats.total_input + stats.total_cache_read + stats.total_output;
-    stats.models_used = Array.from(models).join(',');
-    if (firstModel && !stats.models_used) {
-      stats.models_used = firstModel;
-    }
+    stats.models_used = collectKimiModelsUsed(models) || firstModel || '';
 
     const timingSummary = summarizeTimingLists(timingLists);
 
