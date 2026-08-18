@@ -108,18 +108,20 @@ export const AI_MODEL_PRICING_TABLE: ModelPricing[] = [
   },
   {
     id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", totalContext: "1M", maxOutput: "384K",
-    priceCurrency: 'CNY', inputPrice: 1, outputPrice: 2, cacheReadPrice: 0.02,
+    // 2026-08-17 起峰谷计价，此处按高峰时段价（输入未命中 3.0 / 输出 9.0 / 缓存命中 0.10）
+    priceCurrency: 'CNY', inputPrice: 3, outputPrice: 9, cacheReadPrice: 0.10,
   },
   {
     id: "deepseek-v4-pro", name: "DeepSeek V4 Pro（原价）", totalContext: "1M", maxOutput: "384K",
-    priceCurrency: 'CNY', inputPrice: 3, outputPrice: 6, cacheReadPrice: 0.025,
+    // 高峰时段价（输入未命中 9.0 / 输出 27.0 / 缓存命中 0.30）
+    priceCurrency: 'CNY', inputPrice: 9, outputPrice: 27, cacheReadPrice: 0.30,
   },
   {
     id: "deepseek-v4-pro-discount", name: "DeepSeek V4 Pro（2.5折）", totalContext: "1M", maxOutput: "384K",
     priceCurrency: 'CNY', inputPrice: 3, outputPrice: 6, cacheReadPrice: 0.025,
   },
   {
-    // 与 deepseek-v4-flash 同档：cache:input:output = 0.02:1:2（CNY /M）
+    // mimo-v2.5 自身 CNY 价：cache:input:output = 0.02:1:2
     id: "mimo-v2.5", name: "MiMo V2.5", totalContext: "1M", maxOutput: "65.5K",
     priceCurrency: 'CNY', inputPrice: 1, outputPrice: 2, cacheReadPrice: 0.02, cacheWritePrice: 0,
   },
