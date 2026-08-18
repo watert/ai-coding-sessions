@@ -259,6 +259,118 @@ describe('listGrokCodeMessages tool status', () => {
     expect(tools).toHaveLength(1);
     expect(tools[0].status).toBe('failed');
   });
+
+  it('后台任务: chat_history <status>running</status> → running（非 completed）', async () => {
+    const callId = 'call-bg-1';
+    const dir = writeSession('bg-running-only', [
+      { type: 'user', content: '<user_query>start</user_query>' },
+      {
+        type: 'assistant',
+        content: '',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: callId, name: 'run_terminal_command', arguments: '{"command":"sleep 999"}' }],
+      },
+      {
+        type: 'tool_result',
+        tool_call_id: callId,
+        content: [
+          `<task-id>${callId}</task-id>`,
+          '<task-type>bash</task-type>',
+          '<output-file>/tmp/bg-1.log</output-file>',
+          '<status>running</status>',
+          '<summary>Command "sleep 999" is running in the background</summary>',
+        ].join('\n'),
+      },
+    ], []);
+
+    const tools = (await listGrokCodeMessages({ sessionId: 'bg-running-only', sessionDir: dir }))
+      .flatMap((m) => m.toolCalls || []);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe('running');
+  });
+
+  it('后台任务: updates [bg] completed 与 chat running 合并后仍 running', async () => {
+    const callId = 'call-bg-2';
+    const dir = writeSession('bg-running-with-update', [
+      { type: 'user', content: '<user_query>start</user_query>' },
+      {
+        type: 'assistant',
+        content: '',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: callId, name: 'run_terminal_command', arguments: '{"command":"sleep 999"}' }],
+      },
+      {
+        type: 'tool_result',
+        tool_call_id: callId,
+        content: [
+          `<task-id>${callId}</task-id>`,
+          '<task-type>bash</task-type>',
+          '<status>running</status>',
+        ].join('\n'),
+      },
+    ], [
+      {
+        method: 'session/update',
+        params: {
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: callId,
+            status: 'completed',
+            title: '[bg] sleep 999',
+          },
+        },
+      },
+    ]);
+
+    const tools = (await listGrokCodeMessages({ sessionId: 'bg-running-with-update', sessionDir: dir }))
+      .flatMap((m) => m.toolCalls || []);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe('running');
+  });
+
+  it('后台任务完成: 后续普通 completed（非 [bg]）→ completed', async () => {
+    const callId = 'call-bg-3';
+    const dir = writeSession('bg-finished', [
+      { type: 'user', content: '<user_query>start</user_query>' },
+      {
+        type: 'assistant',
+        content: '',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: callId, name: 'run_terminal_command', arguments: '{"command":"sleep 1"}' }],
+      },
+      {
+        type: 'tool_result',
+        tool_call_id: callId,
+        content: [
+          `<task-id>${callId}</task-id>`,
+          '<task-type>bash</task-type>',
+          '<status>running</status>',
+        ].join('\n'),
+      },
+      {
+        type: 'tool_result',
+        tool_call_id: callId,
+        content: 'exit: 0\nsleep 1 done',
+      },
+    ], [
+      {
+        method: 'session/update',
+        params: {
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: callId,
+            status: 'completed',
+            title: '[bg] sleep 1',
+          },
+        },
+      },
+    ]);
+
+    const tools = (await listGrokCodeMessages({ sessionId: 'bg-finished', sessionDir: dir }))
+      .flatMap((m) => m.toolCalls || []);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe('completed');
+  });
 });
 
 describe('classifyGrokToolFailure rawOutput', () => {

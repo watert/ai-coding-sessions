@@ -395,11 +395,15 @@ export function checkSessionStatus(messages: OpenCodeMessage[]): 'in-progress' |
   if (isMessageAbortedError(lastError)) return 'aborted';
   if (lastError && !isMessageAbortedError(lastError)) return 'error';
 
-  // tool 仍在执行 → 进行中（含 zcode 的 running）
-  const hasCallingTools = lastMsg.parts?.some(
-    (p: any) => p.type === 'tool' && isToolInProgressStatus(p.state?.status),
+  // tool 仍在执行 → 进行中（含 zcode 的 running）。
+  // 全局扫描而非只看最后一条：后台任务（grok [bg]/<status>running</status>）启动后
+  // agent 可继续输出文本结束本轮，未终态 tool 散落在历史消息里，仍算 in-progress。
+  const hasInProgressTools = messages.some(
+    (m) => m.parts?.some(
+      (p: any) => p.type === 'tool' && isToolInProgressStatus(p.state?.status),
+    ),
   );
-  if (hasCallingTools) return 'in-progress';
+  if (hasInProgressTools) return 'in-progress';
 
   // 明确结束 / 未结束
   if (isFinishDone(lastMsg.info.finish)) return 'done';

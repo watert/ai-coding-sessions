@@ -1934,6 +1934,30 @@ function normalizeGrokToolResult(u: any): unknown {
   return raw;
 }
 
+/**
+ * chat_history tool_result content 内嵌的后台任务状态：
+ * `<task-id>…</task-id>\n<status>running</status>` → running（任务已后台化、仍在跑）；
+ * 无 `<status>` 标记（普通 exit/workspace_result）→ undefined，调用方回落 completed。
+ */
+function grokToolResultStatusFromContent(content: unknown): string | undefined {
+  if (typeof content !== 'string') return undefined;
+  const m = content.match(/<status>\s*([^<\s]+)\s*<\/status>/i);
+  if (!m) return undefined;
+  const s = m[1].toLowerCase();
+  if (['in_progress', 'pending', 'running'].includes(s)) return 'running';
+  if (['completed', 'success', 'done'].includes(s)) return 'completed';
+  return s; // failed/error 等原样保留
+}
+
+/** updates tool_call_update：`[bg]` 前缀的 completed 表示「已后台化」而非任务完成 */
+function grokUpdatesToolStatus(u: any): string | undefined {
+  let status = typeof u.status === 'string' && u.status ? u.status : undefined;
+  if (status === 'completed' && String(u.title || '').startsWith('[bg]')) {
+    return 'running';
+  }
+  return status;
+}
+
 /** tool 结果 + wire status（in_progress 时仍可有 partial result 供展示） */
 type GrokToolResultEntry = {
   result?: unknown;
@@ -2018,7 +2042,7 @@ function collectToolResultsFromUpdates(sessionDir: string): Map<string, GrokTool
     const id = u.toolCallId;
     if (!id) continue;
     const result = normalizeGrokToolResult(u);
-    const status = typeof u.status === 'string' && u.status ? u.status : undefined;
+    const status = grokUpdatesToolStatus(u);
     if (status === 'failed' || status === 'error') {
       const cls = classifyGrokToolFailure({
         result,
@@ -2185,7 +2209,8 @@ export async function listGrokCodeMessages(params: {
     return lastSeenModelId || sessionDefaultModel;
   };
 
-  // pass1: 预扫 tool_result（chat_history 有 content 即视为 completed，但 updates.failed 可盖掉）
+  // pass1: 预扫 tool_result（chat_history 有 content 即视为 completed，但 updates.failed 可盖掉；
+  // 后台任务内嵌 `<status>running</status>` → running，勿当完成）
   const toolResultsByCallId = new Map<string, GrokToolResultEntry>();
   for (const e of entries) {
     if (e.type === 'tool_result' && e.tool_call_id) {
@@ -2193,7 +2218,7 @@ export async function listGrokCodeMessages(params: {
         e.tool_call_id,
         mergeGrokToolResultEntry(toolResultsByCallId.get(e.tool_call_id), {
           result: e.content,
-          status: 'completed',
+          status: grokToolResultStatusFromContent(e.content) ?? 'completed',
         }),
       );
     }
@@ -2252,7 +2277,7 @@ export async function listGrokCodeMessages(params: {
       if (e.tool_call_id) {
         const merged = mergeGrokToolResultEntry(toolResultsByCallId.get(e.tool_call_id), {
           result: e.content,
-          status: 'completed',
+          status: grokToolResultStatusFromContent(e.content) ?? 'completed',
         });
         toolResultsByCallId.set(e.tool_call_id, merged);
         backfillToolResult(

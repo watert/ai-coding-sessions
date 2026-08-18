@@ -131,4 +131,15 @@ describe('checkSessionStatus', () => {
       }),
     ])).toBe('done');
   });
+
+  it('历史消息有 running 后台 tool + 最后是 stop 文本 → in-progress', () => {
+    expect(checkSessionStatus([
+      msg({
+        role: 'assistant',
+        finish: 'tool-calls',
+        parts: [{ type: 'tool', tool: 'Bash', state: { status: 'running' } }],
+      }),
+      msg({ role: 'assistant', finish: 'stop', completed: 3000 }),
+    ])).toBe('in-progress');
+  });
 });
