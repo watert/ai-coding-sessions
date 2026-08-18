@@ -870,6 +870,23 @@ export function buildUsageByDayFromGrokRealUsage(
     }));
 }
 
+/**
+ * first_active 基准：Grok summary.created_at 可能是会话目录预创建/隔天使用的时间，
+ * 早于真实活动（示例：created 08-17、全部消息 08-18，导致列表虚报「跨 2 天」）。
+ * 有消息时优先首条消息墙钟；空会话/无有效消息时间才回退 createdAt。
+ */
+function resolveGrokFirstActiveMs(
+  unifiedMessages: UnifiedMessage[],
+  createdMs: number,
+): number {
+  let first = 0;
+  for (const m of unifiedMessages) {
+    const t = m.info?.time?.created;
+    if (Number.isFinite(t) && t > 0 && (first === 0 || t < first)) first = t;
+  }
+  return first || createdMs;
+}
+
 export async function convertGrokSession(session: GrokSessionItem): Promise<UnifiedSessionInfo> {
   const messages = await listGrokCodeMessages({ sessionId: session.sessionId, sessionDir: session.sessionDir });
   const usage = await getGrokSessionStats(session, messages);
@@ -902,10 +919,11 @@ export async function convertGrokSession(session: GrokSessionItem): Promise<Unif
     : null;
   const usage_by_day = realByDay && realByDay.length > 0 ? realByDay : activity.usage_by_day;
 
-  const first_active_at_iso = createdMs ? new Date(createdMs).toISOString() : activity.first_active_at_iso;
+  const firstActivityMs = resolveGrokFirstActiveMs(unifiedMessages, createdMs);
+  const first_active_at_iso = firstActivityMs ? new Date(firstActivityMs).toISOString() : activity.first_active_at_iso;
   const last_active_at_iso = new Date(lastActivityMs).toISOString();
-  const span_days = createdMs && lastActivityMs
-    ? Math.max(1, dayjs(lastActivityMs).startOf('day').diff(dayjs(createdMs).startOf('day'), 'day') + 1)
+  const span_days = firstActivityMs && lastActivityMs
+    ? Math.max(1, dayjs(lastActivityMs).startOf('day').diff(dayjs(firstActivityMs).startOf('day'), 'day') + 1)
     : activity.span_days;
 
   return {
@@ -996,10 +1014,12 @@ export async function getGrokSessionDetail(sessionId: string): Promise<UnifiedSe
     deliverableSignals: inferDeliverableSignals({ messages: unifiedMessages }),
     usage_is_incomplete: session_status === 'aborted' || session_status === 'error' || session_status === 'in-progress',
   };
-  info.first_active_at_iso = new Date(createdMs).toISOString();
+  // first_active：createdAt 可能为预创建，有消息时优先首条消息墙钟（与 convertGrokSession 同策略）
+  const firstActivityMs = resolveGrokFirstActiveMs(unifiedMessages, createdMs);
+  info.first_active_at_iso = new Date(firstActivityMs).toISOString();
   info.last_active_at_iso = new Date(lastActivityMs).toISOString();
   info.last_active_at = info.last_active_at_iso;
-  info.span_days = Math.max(1, dayjs(lastActivityMs).startOf('day').diff(dayjs(createdMs).startOf('day'), 'day') + 1);
+  info.span_days = Math.max(1, dayjs(lastActivityMs).startOf('day').diff(dayjs(firstActivityMs).startOf('day'), 'day') + 1);
 
   // 完整 turn 趋势（compact 前后，不依赖 chat_history prompt 桶）
   const trends = enrichGrokTurnTrendsWithCost(
