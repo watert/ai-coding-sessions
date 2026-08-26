@@ -65,6 +65,7 @@ import {
   type ResolveResult,
 } from './session-resolve';
 import { computeCliStats } from './session-stats';
+import { collectSessionFailures } from './failure-stats';
 import { countStats } from './upsert';
 import { loadMeta } from './meta';
 import { resolveStorePaths } from './paths';
@@ -83,6 +84,7 @@ const COMMANDS = [
   'trace',
   'timeline', // alias → trace
   'tool-errors',
+  'failures',
   'handoff',
   'resume-summary', // alias → handoff
   'resolve',
@@ -300,6 +302,7 @@ Commands:
   detail       Session detail live (size flags for Agent context)
   trace        Trajectory skeleton (default no tool I/O)  [alias: timeline]
   tool-errors  Tool error/soft rows for one session
+  failures     跨 source 失败汇总 (API 异常 + Tool fail; --days/--start/--end/--source)
   handoff      Cross-agent resume summary (inert)  [alias: resume-summary]
   resolve      Resolve --ref= / --id= under filters (cwd/source/window)
   prompts      Cached user prompts
@@ -1047,6 +1050,54 @@ async function cmdToolErrors(args: CliArgs) {
   }
 }
 
+/** failures: 跨 source 失败事件汇总（API 异常 + Tool Call Fail） */
+async function cmdFailures(args: CliArgs) {
+  const source = (args.source ?? 'all') as 'all' | 'grok' | 'opencode' | 'kimi';
+  const result = await collectSessionFailures({
+    days: args.days ?? 14,
+    source,
+    startDate: args.startDate,
+    endDate: args.endDate,
+    top: 20,
+  });
+
+  const fmtTs = (ts: number) => {
+    const d = new Date(ts);
+    return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+
+  const format = resolveExportFormat(args, 'json');
+  if (format === 'md') {
+    const lines = [
+      `# Session Failures (${result.range.start} ~ ${result.range.end}, ${result.range.days}d)`,
+      '',
+      `- total: ${result.total} (api=${result.apiCount} tool=${result.toolCount} soft=${result.softCount}) · sessions: ${result.sessions}`,
+      '',
+      '## By Source',
+      ...(result.bySource.length ? result.bySource.map((r) => `- ${r.key}: ${r.count} (${r.pct.toFixed(1)}%)`) : ['- (empty)']),
+      '',
+      '## By Tool',
+      ...(result.byTool.length ? result.byTool.map((r) => `- ${r.key}: ${r.count} (${r.pct.toFixed(1)}%)`) : ['- (empty)']),
+      '',
+      '## API Failures',
+      ...(result.apiFailures.length
+        ? result.apiFailures.slice(0, 15).map((e) =>
+          `- [${fmtTs(e.ts)}] ${e.source} ${e.model ?? '?'} stop=${e.stopReason ?? '?'}${e.statusCode ? ` http=${e.statusCode}` : ''} \`${e.error}\``)
+        : ['- (none)']),
+      '',
+      '## Samples',
+      ...(result.samples.length
+        ? result.samples.slice(0, 10).map((e) =>
+          `- [${fmtTs(e.ts)}] ${e.source} ${e.kind === 'tool' ? `tool \`${e.toolName}\`` : 'API'} ${e.sessionId.slice(0, 8)} \`${e.error}\``)
+        : ['- (none)']),
+      '',
+    ];
+    emitExport(lines.join('\n'), args, 'md', { total: result.total, source });
+    return;
+  }
+  printJson(result, args.pretty);
+}
+
 async function cmdSetTitle(args: CliArgs) {
   const source = requireOneSource(args, 'set-title');
   const id = requireId(args, 'set-title');
@@ -1314,6 +1365,9 @@ async function main() {
       break;
     case 'tool-errors':
       await cmdToolErrors(args);
+      break;
+    case 'failures':
+      await cmdFailures(args);
       break;
     case 'handoff':
     case 'resume-summary':

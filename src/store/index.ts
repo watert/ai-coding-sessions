@@ -15,4 +15,5 @@ export * from './session-stats';
 export * from './session-resolve';
 export * from './session-handoff';
 export * from './session-title';
+export * from './failure-stats';
 export * from './sync';

@@ -73,6 +73,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `children` | 子 session |
 | `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O；`--format=md --out=`） |
 | `tool-errors` | 单 session soft/hard 工具失败 |
+| `failures` | **跨 source 失败汇总**（API 异常 + Tool fail；`--days=`/`--start=`/`--end=`/`--source=grok|opencode|kimi`；`--format=md --out=`） |
 | `handoff` / `resume-summary` | **跨 agent 续作摘要**（inert；`--ref=` / `--cwd=`） |
 | `resolve` | 解析 `latest` / id / path / 标题（歧义 exit 2） |
 | `detail` | 详情 live + 体量控制 + `timing` |
@@ -90,6 +91,8 @@ bun src/store/cli.ts list --source=kimi --days=3 --roots --limit=20
 bun src/store/cli.ts children --source=kimi --id=<parent>
 bun src/store/cli.ts trace --source=kimi --id=<id>
 bun src/store/cli.ts tool-errors --source=kimi --id=<id> --status=hard
+bun src/store/cli.ts failures --days=7                  # 跨 source 失败汇总 (JSON)
+bun src/store/cli.ts failures --source=grok --days=3 --format=md --out=failures.md
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash --max-steps=30
 bun src/store/cli.ts trace --source=kimi --id=<id> --out=trace.md
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
@@ -138,6 +141,7 @@ import {
   buildHandoff, formatHandoffMarkdown,
   resolveSessionRef, filterSessionsByCwd, matchesCwd,
   setSessionTitle, isWeakTitle,
+  collectSessionFailures, resolveFailureWindow,
 } from 'ai-coding-sessions';
 ```
 
