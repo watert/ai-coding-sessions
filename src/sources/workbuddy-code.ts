@@ -187,7 +187,8 @@ export function normalizeWorkbuddyModel(
     const id = /minimax-?m3/i.test(clean) ? 'MiniMax-M3' : clean;
     return { providerID: 'minimax', modelID: id };
   }
-  if (m.includes('deepseek')) return { providerID: 'deepseek', modelID: clean };
+  // deepseek 归到 workbuddy 前缀：workbuddy 是 coding agent source，用它跑 deepseek 不应冒充官方 deepseek API 源
+  if (m.includes('deepseek')) return { providerID: 'workbuddy', modelID: clean };
   if (m.includes('glm') || m.includes('zhipu')) return { providerID: 'zai', modelID: clean };
   if (m.includes('kimi') || m.includes('moonshot') || m.includes('k2')) {
     return { providerID: 'moonshotai', modelID: clean };

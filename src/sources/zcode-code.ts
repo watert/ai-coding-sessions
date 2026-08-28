@@ -151,7 +151,8 @@ export function normalizeZcodeModel(
   }
 
   const m = cleanModel.toLowerCase();
-  if (m.includes('deepseek')) return { providerID: 'deepseek', modelID: cleanModel };
+  // zcode 是 coding agent source，跑 deepseek 不应冒充官方 deepseek API 源（同 workbuddy 修正）
+  if (m.includes('deepseek')) return { providerID: 'zcode', modelID: cleanModel };
   if (m.includes('minimax') || /^m\d/.test(m) || m.includes('m3')) {
     return { providerID: 'minimax', modelID: cleanModel };
   }
