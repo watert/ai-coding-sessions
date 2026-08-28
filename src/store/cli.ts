@@ -78,7 +78,7 @@ import {
   setSessionTitle,
 } from './session-title';
 import { initOpencodeDb, updateSessionTitle } from '../sources/opencode';
-import type { UnifiedSessionInfo } from '../sources/types';
+import type { UnifiedSessionInfo, UnifiedSessionDetail } from '../sources/types';
 
 const COMMANDS = [
   'list',
@@ -498,7 +498,8 @@ function requireId(args: CliArgs, cmd: string): string {
   return args.id;
 }
 
-async function overlayLiveDetail<T extends { info: UnifiedSessionInfo } | null>(
+// 约束与 overlaySessionDetail / getSessionDetail 对齐，避免泛型 T 与返回类型不兼容
+async function overlayLiveDetail<T extends UnifiedSessionDetail | null>(
   args: CliArgs,
   detail: T,
 ): Promise<T> {

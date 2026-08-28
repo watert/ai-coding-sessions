@@ -16,7 +16,7 @@ import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from '.
 import type { BashSignals } from '../core';
 import { classifyBashCommands, extractBashCommands, EMPTY_BASH_SIGNALS } from './bash-signals';
 import { inferDeliverableSignals } from './deliverable-signals';
-import { maxContextFromUnifiedMessages, sanitizeUserTextParts } from './utils';
+import { asToolPartState, maxContextFromUnifiedMessages, sanitizeUserTextParts } from './utils';
 import { buildActivitySpanFromUnifiedMessages } from './usage-by-day';
 import {
   createTimingLists,
@@ -197,11 +197,13 @@ export function calculateEditDiffsFromCodexMessages(messages: UnifiedMessage[]):
       // Codex 常用 exec_command / apply_patch 等
       if (!['edit', 'write', 'apply_patch', 'exec_command'].includes(name)) continue;
 
-      const input = part.state?.input || {};
-      const output = part.state?.output;
+      // part.state 可能是字符串（如 'done'），统一走 asToolPartState 取对象形态
+      const state = asToolPartState(part.state);
+      const input = state?.input || {};
+      const output = state?.output;
       const resultText = typeof output === 'object' ? JSON.stringify(output) : String(output || '');
 
-      let filePath = (input.path as string) || (input.filePath as string) || (part.state?.title as string) || '';
+      let filePath = (input.path as string) || (input.filePath as string) || (state?.title as string) || '';
       let additions = 0;
       let deletions = 0;
 

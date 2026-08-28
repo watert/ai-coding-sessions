@@ -17,7 +17,7 @@ import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from '.
 import type { BashSignals } from '../core';
 import { classifyBashCommands, extractBashCommands, EMPTY_BASH_SIGNALS } from './bash-signals';
 import { inferDeliverableSignals } from './deliverable-signals';
-import { maxContextFromUnifiedMessages, sanitizeUserTextParts } from './utils';
+import { asToolPartState, maxContextFromUnifiedMessages, sanitizeUserTextParts } from './utils';
 import { buildActivitySpanFromUnifiedMessages } from './usage-by-day';
 import {
   createTimingLists,
@@ -577,7 +577,7 @@ function calculateEditDiffsFromClaudeMessages(messages: UnifiedMessage[]): {
         if (part.tool === 'write') {
           filePath = filePath || _.get(part, 'state.input.filePath', '') as string;
           if (!additions) {
-            const { content = '' }: any = part.state?.input || {};
+            const { content = '' }: any = asToolPartState(part.state)?.input || {};
             additions = content.split('\n').length;
           }
         }

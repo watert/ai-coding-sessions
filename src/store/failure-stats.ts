@@ -206,9 +206,11 @@ async function collectGrokSession(
     for (const tc of msg.toolCalls || []) {
       const st = String(tc.status || '').toLowerCase();
       const isSoft = tc.errorSeverity === 'soft';
-      const isError = !isSoft && (st === 'failed' || st === 'error' || tc.error);
+      // 注：toolCalls 元素无 error 字段（grok 解析只产出 result/status/errorKind/errorSeverity），
+      // 原 `|| tc.error` / `tc.result ?? tc.error` 恒取不到值，去掉以保持与类型一致
+      const isError = !isSoft && (st === 'failed' || st === 'error');
       if (!isError && !isSoft) continue;
-      const text = errText(tc.result ?? tc.error);
+      const text = errText(tc.result);
       out.push({
         source: 'grok',
         sessionId: s.sessionId,

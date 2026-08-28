@@ -112,7 +112,8 @@ describe('resolveSessionRef', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toBe('ambiguous');
-      expect(r.matches.length).toBe(2);
+      // 收窄到 ambiguous 分支才能访问 matches（not_found 分支无此字段）
+      if (r.error === 'ambiguous') expect(r.matches.length).toBe(2);
     }
   });
 

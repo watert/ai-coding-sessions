@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { getOverallStats, OpenCodeMessage } from '../core';
+import { getOverallStats, OpenCodeMessage, type OpenCodeMessageInfo } from '../core';
 
 import {
   listKimiCodeSessions,
@@ -46,8 +46,8 @@ describe('Kimi Code CLI Context Trend 集成测试', () => {
     console.log('idx\trole\tid\t\t\tparentID\t\tcreated\t\t\t\t total\t input\t output\t cacheRead');
     messages.forEach((m, i) => {
       const info = m.info;
-      const t = info.tokens || {};
-      const c = t.cache || {};
+      const t: Partial<NonNullable<OpenCodeMessageInfo['tokens']>> = info.tokens || {};
+      const c = t.cache || { read: 0, write: 0 };
       const time = new Date(info.time.created).toISOString();
       console.log(
         `${i}\t${info.role}\t${info.id.slice(0, 8)}\t\t${(info.parentID || '').slice(0, 8) || '-'}\t\t${time}\t${t.total ?? '-'}\t${t.input ?? '-'}\t${t.output ?? '-'}\t${c.read ?? '-'}`

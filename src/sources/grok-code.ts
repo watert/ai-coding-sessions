@@ -141,7 +141,8 @@ export type GrokSessionItem = {
 };
 
 export type GrokMessagePart =
-  | { type: 'text'; text: string }
+  // compact summary 等合成文本块会带 state: 'done'
+  | { type: 'text'; text: string; state?: 'done' | 'pending' }
   | { type: 'reasoning'; text: string; state?: 'done' | 'pending' };
 
 /** turn_completed.usage / modelUsage 单项（camelCase，与 grok-build wire 一致） */

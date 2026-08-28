@@ -20,7 +20,7 @@ const metaPath = path.join(tmpDir, 'test.meta.json');
 
 function makeSession(partial: Partial<UnifiedSessionInfo> & { id: string }): UnifiedSessionInfo {
   return {
-    id: partial.id,
+    // id 由末尾 `...partial` 提供，此处重复声明会被覆盖（TS2783）
     project_id: partial.project_id || 'proj',
     slug: partial.slug || partial.id,
     directory: partial.directory || '/tmp',

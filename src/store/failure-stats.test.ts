@@ -5,6 +5,7 @@ import { describe, it, expect, afterAll, beforeEach } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import dayjs from 'dayjs';
 import { collectSessionFailures, resolveFailureWindow } from './failure-stats';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'failure-stats-'));
@@ -59,7 +60,9 @@ describe('resolveFailureWindow', () => {
   it('startDate 优先；无则按 days 回看', () => {
     const w = resolveFailureWindow({ startDate: '2026-08-24', endDate: '2026-08-26' });
     expect(w.days).toBe(3);
-    expect(w.startDate).toBeUndefined();
+    // 原断言 `w.startDate` 恒为 undefined（返回类型无此字段，属无效断言），
+    // 改为校验 startDate 真正驱动的 sinceMs：startOf('day') 于 2026-08-24
+    expect(w.sinceMs).toBe(dayjs('2026-08-24').startOf('day').valueOf());
     const w2 = resolveFailureWindow({ days: 5 });
     expect(w2.days).toBe(5);
     const w3 = resolveFailureWindow({});

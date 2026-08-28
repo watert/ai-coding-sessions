@@ -474,10 +474,11 @@ export function costGrokUsageSlice(opts: {
       return {
         usd: ticksUsd,
         cny: table.cny * s,
-        inputCost: table.inputCost * s,
-        outputCost: table.outputCost * s,
-        cacheReadCost: table.cacheReadCost * s,
-        cacheWriteCost: table.cacheWriteCost * s,
+        // 各分项成本在 MessageCostResult 里是可选的；缺失按 0 计，避免算出 NaN
+        inputCost: (table.inputCost ?? 0) * s,
+        outputCost: (table.outputCost ?? 0) * s,
+        cacheReadCost: (table.cacheReadCost ?? 0) * s,
+        cacheWriteCost: (table.cacheWriteCost ?? 0) * s,
       };
     }
     const rate = getUsdToCnyRate();
@@ -494,10 +495,10 @@ export function costGrokUsageSlice(opts: {
   return {
     usd: table.totalCost,
     cny: table.cny,
-    inputCost: table.inputCost,
-    outputCost: table.outputCost,
-    cacheReadCost: table.cacheReadCost,
-    cacheWriteCost: table.cacheWriteCost,
+    inputCost: table.inputCost ?? 0,
+    outputCost: table.outputCost ?? 0,
+    cacheReadCost: table.cacheReadCost ?? 0,
+    cacheWriteCost: table.cacheWriteCost ?? 0,
   };
 }
 

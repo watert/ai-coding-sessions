@@ -5,6 +5,24 @@
 export { isTimestamp, filterTimestampInRange } from '../lib/date-utils';
 export { sanitizeUserTextParts } from '../core';
 
+/**
+ * part.state 在 wire 上有两种形态：字符串（如 'done'）或对象（工具详情）。
+ * 取对象形态；字符串 / 空值时返回 undefined，与 `strState?.input` 的运行时行为一致。
+ */
+export interface ToolPartState {
+  status?: string;
+  input?: Record<string, unknown>;
+  output?: unknown;
+  title?: string;
+  metadata?: Record<string, unknown>;
+  time?: { start?: number; end?: number };
+}
+
+export function asToolPartState(state: unknown): ToolPartState | undefined {
+  if (!state || typeof state !== 'object') return undefined;
+  return state as ToolPartState;
+}
+
 /** 单条消息的 context window 规模（input + cacheRead；优先 tokens.context） */
 export function getTokensContextSize(tokens?: {
   context?: { total?: number; input?: number; cacheRead?: number };

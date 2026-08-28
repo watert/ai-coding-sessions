@@ -5,7 +5,8 @@ import {
   parseClaudeJsonl,
 } from './claude-main-chain';
 
-function rec(partial: Record<string, any>) {
+// 显式标注返回类型为 Record：fixture 字段按用例拼装，且测试中会就地改写 parentUuid
+function rec(partial: Record<string, any>): Record<string, any> {
   return { isSidechain: false, ...partial };
 }
 
