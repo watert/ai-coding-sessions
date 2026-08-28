@@ -140,12 +140,19 @@ export async function syncSessions(options: SyncOptions = {}): Promise<SyncResul
       { live: 0, inserted: 0, updated: 0, skipped: 0, orphaned: 0 },
     );
 
+    const s = meta.stats ?? {};
+
     return {
-      ok: bySource.every((s) => !s.error),
+      ok: bySource.every((src) => !src.error),
       paths,
       bySource,
       totals,
-      stats: meta.stats!,
+      stats: {
+        session_count: s.session_count ?? 0,
+        prompt_count: s.prompt_count ?? 0,
+        token_total: s.token_total ?? 0,
+        orphan_count: s.orphan_count ?? 0,
+      },
       meta,
       duration_ms: Date.now() - t0,
     };

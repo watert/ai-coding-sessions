@@ -20,8 +20,9 @@ const metaPath = path.join(tmpDir, 'test.meta.json');
 function makeSession(
   partial: Partial<UnifiedSessionInfo> & { id: string },
 ): UnifiedSessionInfo {
+  const { id, ...rest } = partial;
   return {
-    id: partial.id,
+    id,
     project_id: 'proj',
     slug: partial.id,
     directory: '/tmp',
@@ -33,7 +34,7 @@ function makeSession(
     total_tokens: partial.total_tokens ?? 10,
     last_active_at_iso: new Date(1_700_000_100_000).toISOString(),
     userParts: partial.userParts ?? [],
-    ...partial,
+    ...rest,
   } as UnifiedSessionInfo;
 }
 
