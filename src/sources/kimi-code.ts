@@ -838,6 +838,24 @@ function extractTextFromContent(content: unknown[]): string {
     .join('\n');
 }
 
+/**
+ * wire 里 content.part 是流式 delta (常见 1~20 字), 不是完整段落.
+ * 连续同类型必须拼接; 各成一块再用 \n join 会在 web markdown 里炸出假换行.
+ */
+export function appendKimiStreamedPart(
+  parts: Array<{ type: string; text?: string; state?: string }>,
+  type: 'text' | 'reasoning',
+  text: string,
+) {
+  if (!text) return;
+  const last = parts[parts.length - 1];
+  if (last?.type === type) {
+    last.text = (last.text || '') + text;
+    return;
+  }
+  parts.push({ type, text, state: 'done' });
+}
+
 function extractThinkingFromContent(content: unknown[]): string {
   if (!Array.isArray(content)) return '';
   return content
@@ -1144,8 +1162,6 @@ export async function listKimiCodeMessages(params: {
 
     for (const step of steps) {
       const stepEvents = step.events;
-      const textParts: string[] = [];
-      const thinkingParts: string[] = [];
       const toolCalls: KimiToolCallItem[] = [];
       const parts: any[] = [];
       const toolPartIndexByCallId = new Map<string, number>();
@@ -1160,19 +1176,9 @@ export async function listKimiCodeMessages(params: {
         if (evt.type === 'content.part') {
           const part = evt.part;
           if (part?.type === 'text' && part.text) {
-            textParts.push(part.text);
-            parts.push({
-              type: 'text',
-              text: part.text,
-              state: 'done',
-            });
+            appendKimiStreamedPart(parts, 'text', part.text);
           } else if (part?.type === 'think' && part.think) {
-            thinkingParts.push(part.think);
-            parts.push({
-              type: 'reasoning',
-              text: part.think,
-              state: 'done',
-            });
+            appendKimiStreamedPart(parts, 'reasoning', part.think);
           }
         } else if (evt.type === 'tool.call') {
           const tc: KimiToolCallItem = {
@@ -1254,8 +1260,8 @@ export async function listKimiCodeMessages(params: {
         sessionId: messageSessionId,
         role: 'assistant',
         timestamp: lastStepEndTime || step.beginTime || Date.now(),
-        text: textParts.join('\n'),
-        thinking: thinkingParts.join('\n') || undefined,
+        text: parts.filter(p => p.type === 'text').map(p => p.text || '').join(''),
+        thinking: parts.filter(p => p.type === 'reasoning').map(p => p.text || '').join('') || undefined,
         thinkingEffort: step.thinkingEffort,
         toolCalls,
         parts,
