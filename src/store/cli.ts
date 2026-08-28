@@ -19,6 +19,7 @@
  *   bun src/store/cli.ts list --untitled --days=7
  *   bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
  *   bun src/store/cli.ts stats --source=all --days=7
+ *   bun src/store/cli.ts digest --days=1 --roots --format=md --out=digest.md
  *   bun src/store/cli.ts sync --days=7 --source=all --reconcile
  *
  * 兼容旧 flag-only 调用（无子命令 = sync）
@@ -59,6 +60,7 @@ import {
   type TraceExportFormat,
 } from './session-trace';
 import { buildHandoff, formatHandoffMarkdown } from './session-handoff';
+import { buildDigest, formatDigestMarkdown } from './session-digest';
 import {
   filterSessionsByCwd,
   resolveSessionRef,
@@ -87,6 +89,7 @@ const COMMANDS = [
   'failures',
   'handoff',
   'resume-summary', // alias → handoff
+  'digest',
   'resolve',
   'children',
   'prompts',
@@ -304,6 +307,7 @@ Commands:
   tool-errors  Tool error/soft rows for one session
   failures     跨 source 失败汇总 (API 异常 + Tool fail; --days/--start/--end/--source)
   handoff      Cross-agent resume summary (inert)  [alias: resume-summary]
+  digest       Multi-session daily digest (roots → handoff 聚合; 默认 --days=1; --format=md)
   resolve      Resolve --ref= / --id= under filters (cwd/source/window)
   prompts      Cached user prompts
   set-title    Cache overlay title (Agent/user; sync-safe)
@@ -334,6 +338,12 @@ Cross-agent handoff (issue #4):
   handoff --source=claude --ref="fix auth" --format=md --out=handoff.md
   handoff --source=kimi --id=<id> --text-preview=8000   # override both caps
   # need tool I/O / full messages → detail (not handoff)
+
+Multi-session digest (自动化 memory 聚合; 默认 roots-only + 当天):
+  digest                                  # 今日 roots digest (JSON)
+  digest --days=7 --source=all --limit=30
+  digest --cwd=. --format=md --out=digest.md   # 按 project 分组, 可 append 到 memory
+  digest --text-preview=800               # 覆盖 goal/stop/next 截断 cap
 
 Custom title (cache overlay; sync-safe):
   list --untitled --days=7 --roots
@@ -764,6 +774,66 @@ async function cmdChildren(args: CliArgs) {
   args.parentId = id;
   args.id = undefined;
   await cmdList(args);
+}
+
+/**
+ * 多 session digest：cache roots → 逐个 live detail + buildHandoff → 按 project 分组。
+ * 机械聚合、零 LLM；--format=md 可直接 append 到日度 memory 文件。
+ */
+async function cmdDigest(args: CliArgs) {
+  // digest 默认窗口 = 当天（list 默认全量，对 digest 无意义）
+  if (!args.startDate && !args.endDate && args.days == null) args.days = 1;
+  const { startDate, endDate } = resolveWindow(args);
+
+  let sessions: UnifiedSessionInfo[];
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  try {
+    const result = queryCached({
+      source: args.source,
+      startDate,
+      endDate,
+      parentId: args.parentId,
+      // digest 默认只 roots（subagent 会刷屏）；--parent= 时取其 children
+      rootsOnly: args.parentId ? undefined : true,
+      cwd: args.cwd,
+      limit: args.limit ?? 20,
+    });
+    sessions = result.sessions;
+  } finally {
+    closeStoreDb();
+  }
+
+  await initAiCodingStats();
+  try {
+    const result = await buildDigest(
+      sessions,
+      async (s) => {
+        if (!isSourceId(String(s.source))) return null;
+        return getSessionDetail({ sessionId: s.id, source: s.source as SourceId });
+      },
+      {
+        startDate,
+        endDate,
+        ...(args.textPreview != null ? { textPreview: args.textPreview } : {}),
+      },
+    );
+
+    const format = resolveExportFormat(args, 'json');
+    if (format === 'md') {
+      emitExport(formatDigestMarkdown(result), args, 'md', { digested: result.digested });
+      return;
+    }
+    if (args.out) {
+      const body = args.pretty ? JSON.stringify(result, null, 2) : JSON.stringify(result);
+      emitExport(body.endsWith('\n') ? body : `${body}\n`, args, 'json', {
+        digested: result.digested,
+      });
+      return;
+    }
+    printJson(result, args.pretty);
+  } finally {
+    closeAiCodingStats();
+  }
 }
 
 async function cmdDetail(args: CliArgs) {
@@ -1372,6 +1442,9 @@ async function main() {
     case 'handoff':
     case 'resume-summary':
       await cmdHandoff(args);
+      break;
+    case 'digest':
+      await cmdDigest(args);
       break;
     case 'resolve':
       await cmdResolve(args);
