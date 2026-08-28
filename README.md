@@ -156,6 +156,7 @@ bun src/store/cli.ts resolve --source=grok --cwd=. --ref=latest
 bun src/store/cli.ts handoff --source=grok --cwd=. --ref=latest       # cross-agent resume brief (not full transcript)
 bun src/store/cli.ts handoff --source=kimi --id=<id> --format=md --out=handoff.md
 # defaults: user/goal 500 chars, last_assistant_action 3000; override both with --text-preview=N
+bun src/store/cli.ts digest --days=1 --format=md --out=digest.md   # multi-session daily digest (roots, grouped by project)
 bun src/store/cli.ts trace --source=kimi --id=<id>                    # skeleton (~KB)
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash
 bun src/store/cli.ts trace --source=kimi --id=<id> --jsonl --max-steps=30
@@ -178,6 +179,7 @@ bun src/store/cli.ts help
 | `children` | cache | `list --parent=<id>` |
 | `resolve` | cache | `latest` \| id \| path \| title; ambiguous → exit 2 ([#4](https://github.com/watert/ai-coding-sessions/issues/4)) |
 | `handoff` | **live** | cross-agent resume brief (inert; user 500 / assistant 3000); alias `resume-summary` (#4) |
+| `digest` | cache list + **live** detail | multi-session daily digest (roots → handoff aggregate; default today, roots-only; `--format=md` grouped by project) |
 | `trace` | **live** | timeline skeleton (no tool I/O by default); alias `timeline` |
 | `tool-errors` | **live** | soft/hard tool failure rows for one session |
 | `detail` | **live** | full messages; use size flags to fit Agent context |

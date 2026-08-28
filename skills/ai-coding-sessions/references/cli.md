@@ -18,6 +18,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `trace` / `timeline` | **轨迹骨架**（turn + soft-fail + lag/prefill；默认无 tool I/O；`--io` / `--format=md` / `--out=`） |
 | `tool-errors` | 单 session soft/hard 工具失败（`--status=hard` / `--tool=` / `--out=`） |
 | `handoff` / `resume-summary` | **跨 agent 续作摘要**（inert；goal/files/open/warnings；`--ref=` / `--cwd=`） |
+| `digest` | **多 session 日度 digest**（roots → handoff 聚合；默认当天 roots-only；`--format=md` 按 project 分组，面向自动化 memory 整理） |
 | `resolve` | 解析 session 引用：`latest` \| id \| path \| 标题子串（歧义 exit 2） |
 | `detail` | 详情 live；`--tools-only` / `--max-output-chars` / `--from`/`--to` / `--no-reasoning` / `--with-children`；含 `timing` |
 | `prompts` | 缓存 user prompts |
@@ -83,6 +84,22 @@ bun src/store/cli.ts handoff --source=kimi --id=<id> --text-preview=8000
 - 要 tool 输出 / 精确 diff → `detail`，不要指望 handoff
 
 `--cwd=` 匹配 `project_worktree` / `project_name` / `project_id`（互为祖先亦可）；`directory` 仅 exact（避免 kimi 内部 session 路径误伤）。
+
+### 多 session digest（自动化 memory 整理）
+
+roots 列表 → 逐 session live detail + handoff 聚合 → 按 project 分组。机械聚合、零 LLM；md 输出可直接 append 到日度 memory 文件。
+
+```bash
+bun src/store/cli.ts digest                                   # 今日 roots digest (JSON)
+bun src/store/cli.ts digest --days=7 --limit=30 --source=all
+bun src/store/cli.ts digest --cwd=. --format=md --out=digest.md
+bun src/store/cli.ts digest --text-preview=800                # 覆盖 goal/stop/next 截断 cap
+```
+
+- 默认：窗口 = 当天、roots-only（`--parent=` 时取 children）、`--limit=20`
+- preview cap 比 handoff 紧凑（user 300 / assistant 1200）
+- 空 session / detail 缺失 / 读取异常 → 自动 skip，输出 `skipped` 清单（md 中为 HTML 注释）
+- entry 字段：`goal` / `stop_point` / `next_action` / `files_touched`(≤5) / `turn_count` / `total_tokens` / `session_status` / `warnings` 计数
 
 ### 同步
 

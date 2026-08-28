@@ -75,6 +75,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `tool-errors` | 单 session soft/hard 工具失败 |
 | `failures` | **跨 source 失败汇总**（API 异常 + Tool fail；`--days=`/`--start=`/`--end=`/`--source=grok|opencode|kimi`；`--format=md --out=`） |
 | `handoff` / `resume-summary` | **跨 agent 续作摘要**（inert；`--ref=` / `--cwd=`） |
+| `digest` | **多 session 日度 digest**（roots → handoff 聚合；默认当天 roots-only；`--format=md` 按 project 分组，可 append memory） |
 | `resolve` | 解析 `latest` / id / path / 标题（歧义 exit 2） |
 | `detail` | 详情 live + 体量控制 + `timing` |
 | `prompts` | 缓存 user prompts |
@@ -112,6 +113,18 @@ bun src/store/cli.ts handoff --source=kimi --id=<id> --format=md --out=handoff.m
 bun src/store/cli.ts handoff --source=kimi --id=<id> --text-preview=8000   # 超长时
 bun src/store/cli.ts detail --source=kimi --id=<id> --no-reasoning --max-output-chars=8000
 ```
+
+**日度 digest**（自动化 memory 整理原料；机械聚合、零 LLM）：
+
+```bash
+bun src/store/cli.ts digest                          # 今日 roots digest (JSON)
+bun src/store/cli.ts digest --days=7 --limit=30 --source=all
+bun src/store/cli.ts digest --cwd=. --format=md --out=digest.md   # 按 project 分组, 可直接 append memory
+```
+
+- 默认窗口 = 当天、roots-only（`--parent=` 时取其 children）、`--limit` 默认 20
+- 逐 session live detail + handoff 聚合；空 session / detail 缺失自动 skip（输出 `skipped` 计数）
+- digest 的 preview cap 比 handoff 更紧凑（user 300 / assistant 1200），`--text-preview=N` 覆盖
 
 **改标题**（读 prompts → 生成 → 写缓存 overlay）：
 
