@@ -12,9 +12,10 @@ import {
   classifyGrokToolFailure,
   attachGrokWallClockTimestamps,
   readGrokWallClockEvents,
+  tryReadGrokRealUsage,
   type GrokMessageItem,
 } from './grok-code';
-import { calculateEditDiffsFromGrokMessages } from './grok-source';
+import { calculateEditDiffsFromGrokMessages, timingFromGrokRealUsage } from './grok-source';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-tools-'));
 
@@ -503,5 +504,80 @@ describe('calculateEditDiffsFromGrokMessages (P1)', () => {
     expect(d.deletions).toBeGreaterThanOrEqual(0);
     // write: 3 lines
     expect(d.additions).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('tryReadGrokRealUsage TTFT (streamStartMs → 首 chunk)', () => {
+  it('按 promptId 归组提取每次模型流调用的 TTFT', () => {
+    const updates = [
+      // turn p1：两次模型流（streamStart 1000 / 5000），各取首条 chunk；
+      // wire 结构：_meta 在 params 层（promptId 与 turn_completed.update.prompt_id 对齐）
+      {
+        method: 'session/update',
+        timestamp: 100,
+        params: {
+          update: { sessionUpdate: 'user_message_chunk' },
+          _meta: { agentTimestampMs: 1787889448000 },
+        },
+      },
+      {
+        method: 'session/update',
+        timestamp: 100,
+        params: {
+          update: { sessionUpdate: 'agent_thought_chunk' },
+          _meta: { promptId: 'p1', streamStartMs: 1787889449284, agentTimestampMs: 1787889451099 },
+        },
+      },
+      {
+        method: 'session/update',
+        timestamp: 100,
+        params: {
+          update: { sessionUpdate: 'tool_call' },
+          _meta: { promptId: 'p1', streamStartMs: 1787889449284, agentTimestampMs: 1787889453099 },
+        },
+      },
+      {
+        method: 'session/update',
+        timestamp: 100,
+        params: {
+          update: { sessionUpdate: 'agent_message_chunk' },
+          _meta: { promptId: 'p1', streamStartMs: 1787889633527, agentTimestampMs: 1787889636627 },
+        },
+      },
+      {
+        method: 'session/update',
+        timestamp: 100,
+        params: {
+          update: {
+            sessionUpdate: 'turn_completed',
+            prompt_id: 'p1',
+            stop_reason: 'end_turn',
+            usage: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200, modelCalls: 2, apiDurationMs: 9000 },
+          },
+        },
+      },
+      // turn p2：无 chunk，不应有 ttftMsList
+      {
+        method: 'session/update',
+        timestamp: 100,
+        params: {
+          update: {
+            sessionUpdate: 'turn_completed',
+            prompt_id: 'p2',
+            usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600, modelCalls: 1, apiDurationMs: 3000 },
+          },
+        },
+      },
+    ];
+    const dir = writeSession('ttft-session', [], updates);
+    const usage = tryReadGrokRealUsage(dir);
+    expect(usage).not.toBeNull();
+    expect(usage!.turns.length).toBe(2);
+    expect(usage!.turns[0].ttftMsList).toEqual([1815, 3100]);
+    expect(usage!.turns[1].ttftMsList).toBeUndefined();
+    const timing = timingFromGrokRealUsage(usage!);
+    // 每 turn 一条样本：p1 = TTFT 均值 2458，p2 无样本退化为 apiDurationMs 3000 → 2729
+    expect(timing.avg_latency_ms).toBe(2729);
+    expect(timing.latency_list).toEqual([2458, 3000]);
   });
 });

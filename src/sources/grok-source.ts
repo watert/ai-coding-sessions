@@ -407,24 +407,26 @@ function convertGrokSessionFromSummary(session: GrokSessionItem): UnifiedSession
 }
 
 /**
- * 从 turn_completed.usage.apiDurationMs 聚合 session Performance。
- * Grok wire 无 TTFT/prefill 拆分，仅能算 decode 吞吐（output / apiDuration）；
- * 每 turn 一条样本，与其它 source 的 per-assistant 均值语义接近。
+ * 从 turn_completed.usage 聚合 session Performance。
+ * TTFT 用 updates 实测（streamStartMs → 该流首 chunk），每次模型流调用一条样本；
+ * 无实测样本的旧 turn 退化为整段 apiDurationMs 占位过 filter。
+ * decode 吞吐 = 累计 output / apiDurationMs；每 turn 一条样本，与其它 source 的 per-assistant 均值语义接近。
  */
-function timingFromGrokRealUsage(real: GrokRealUsage): TimingSummary {
+export function timingFromGrokRealUsage(real: GrokRealUsage): TimingSummary {
   const lists = createTimingLists();
   for (const turn of real.turns || []) {
     const durationMs = turn.apiDurationMs || 0;
     if (durationMs <= 0) continue;
     const outputTokens = turn.outputTokens || 0;
-    // latencyMs 仅用于通过 filter（>0 且 <300s）；Grok 无真实 lag
-    // 超长 turn 截断到上限内，避免整条被丢
-    const latencyMs = Math.min(durationMs, 299_999);
+    const ttfts = (turn.ttftMsList || []).filter((v) => Number.isFinite(v) && v > 0);
+    const latencyMs = ttfts.length > 0
+      ? Math.round(ttfts.reduce((a, b) => a + b, 0) / ttfts.length)
+      : Math.min(durationMs, 299_999);
     pushAssistantTimingSample(lists, {
       latencyMs,
       outputTokens,
       decodeDurationMs: durationMs,
-      // 不传 inputTokens：无 TTFT，prefill tps 无意义
+      // 不传 inputTokens：turn 级 input 与单次流 TTFT 不匹配，prefill tps 无意义
     });
   }
   return summarizeTimingLists(lists);
@@ -644,9 +646,8 @@ function grokSessionInfoWithMessages(
   let total_reasoning: number;
   let pricing: SessionPricing;
 
-  // Performance：仅 real usage 有 apiDurationMs；无 TTFT → 只填 tps，不填 lag/prefill
-  let avg_tps: number | undefined;
-  let assistant_tps_list: number[] | undefined;
+  // Performance：仅 real usage 有 apiDurationMs；TTFT 来自 streamStartMs→首 chunk 实测
+  let timing: TimingSummary | undefined;
   if (usage?.usageSource === 'real') {
     total_tokens = usage.total;
     total_input = usage.input;
@@ -656,9 +657,7 @@ function grokSessionInfoWithMessages(
     pricing = pricingFromGrokRealUsage(usage)
       ?? calculateSessionPricingFromUnifiedMessages(unifiedMessages);
     if (usage.real) {
-      const timing = timingFromGrokRealUsage(usage.real);
-      avg_tps = timing.avg_tps;
-      assistant_tps_list = timing.assistant_tps_list;
+      timing = timingFromGrokRealUsage(usage.real);
     }
   } else {
     const rawTotal = grokSumAssistantContextTokens(messages) || usage?.total || 0;
@@ -718,8 +717,10 @@ function grokSessionInfoWithMessages(
     // real token + 静态表计价视为完整；estimate token 拆分则 partial
     cost_is_partial: usage?.usageSource !== 'real',
     cost_missing_calls: undefined,
-    avg_tps,
-    assistant_tps_list,
+    avg_tps: timing?.avg_tps,
+    assistant_tps_list: timing?.assistant_tps_list,
+    avg_latency_ms: timing?.avg_latency_ms,
+    latency_list: timing?.latency_list,
     editDiffs,
     summary_additions: editDiffs.additions,
     summary_deletions: editDiffs.deletions,

@@ -163,6 +163,8 @@ export type GrokTurnRealUsage = GrokPromptUsageModel & {
   stopReason?: string;
   timestamp?: number;
   numTurns?: number;
+  /** 实测 TTFT 样本：updates _meta.streamStartMs → 该流首 chunk 的间隔（每次模型调用一条） */
+  ttftMsList?: number[];
   modelUsage: Record<string, GrokPromptUsageModel>;
 };
 
@@ -697,6 +699,42 @@ function parseUsageModel(raw: any): GrokPromptUsageModel | null {
 }
 
 /**
+ * 从 updates 提取各 turn 的 TTFT 样本。
+ * 每次模型流调用对应一个 _meta.streamStartMs；该流内首条 chunk 的
+ * agentTimestampMs - streamStartMs 即该次调用的 time-to-first-token。
+ * 按 promptId 归组，与 turn_completed.usage 对齐（update.prompt_id）。
+ */
+function collectGrokTurnTtftMs(rows: any[]): Map<string, number[]> {
+  const byPrompt = new Map<string, Map<number, number>>();
+  for (const row of rows) {
+    if (!isGrokSessionUpdateMethod(row?.method)) continue;
+    const meta = row?.params?._meta;
+    if (!meta) continue;
+    const promptId = meta.promptId;
+    if (typeof promptId !== 'string' || !promptId) continue;
+    const streamStartMs = Number(meta.streamStartMs);
+    if (!Number.isFinite(streamStartMs) || streamStartMs <= 0) continue;
+    const ts = grokWireTsToMs(meta.agentTimestampMs) || grokWireTsToMs(row?.timestamp);
+    if (ts <= 0 || ts <= streamStartMs) continue;
+    let byStream = byPrompt.get(promptId);
+    if (!byStream) {
+      byStream = new Map();
+      byPrompt.set(promptId, byStream);
+    }
+    // 同一流内多条 chunk，取首条时间
+    const prev = byStream.get(streamStartMs);
+    if (prev == null || ts < prev) byStream.set(streamStartMs, ts);
+  }
+  const out = new Map<string, number[]>();
+  for (const [pid, byStream] of byPrompt) {
+    const list = Array.from(byStream, ([streamStartMs, ts]) => ts - streamStartMs)
+      .filter((v) => Number.isFinite(v) && v > 0);
+    if (list.length) out.set(pid, list);
+  }
+  return out;
+}
+
+/**
  * 读取 session 真实 usage（grok-build ≥ 7-21 / CLI 含 PromptUsage）。
  * 来源: updates.jsonl → turn_completed.usage，多 turn 累加。
  * 旧 session 无此字段时返回 null。
@@ -705,6 +743,7 @@ export function tryReadGrokRealUsage(sessionDir: string): GrokRealUsage | null {
   if (!sessionDir || !fs.existsSync(sessionDir)) return null;
   const rows = readUpdatesJsonl(sessionDir);
   const turns: GrokTurnRealUsage[] = [];
+  const ttftByPrompt = collectGrokTurnTtftMs(rows);
 
   for (const row of rows) {
     if (!isGrokSessionUpdateMethod(row?.method)) continue;
@@ -725,6 +764,7 @@ export function tryReadGrokRealUsage(sessionDir: string): GrokRealUsage | null {
       }
     }
 
+    const ttftList = ttftByPrompt.get(String(update.prompt_id ?? ''));
     turns.push({
       ...base,
       promptId: typeof update.prompt_id === 'string' ? update.prompt_id : undefined,
@@ -735,6 +775,7 @@ export function tryReadGrokRealUsage(sessionDir: string): GrokRealUsage | null {
           ? row.params._meta.agentTimestampMs
           : undefined),
       numTurns: Number(rawUsage.numTurns) || undefined,
+      ...(ttftList && ttftList.length ? { ttftMsList: ttftList } : {}),
       modelUsage,
     });
   }
