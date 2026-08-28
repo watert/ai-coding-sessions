@@ -21,20 +21,12 @@
   },
   "files": [
     "src",
-    "core.ts",
     "skills",
     "README.md",
     "README.zh.md",
     "LICENSE",
     "!**/*.test.ts"
   ],
-  "typesVersions": {
-    "*": {
-      "core": ["src/core/index.ts", "core.ts"],
-      "pricing": ["src/pricing.ts"],
-      "*": ["src/*"]
-    }
-  },
   "scripts": {
     "check": "bunx tsc --noEmit --project tsconfig.json",
     "test": "bun test src",
