@@ -15,10 +15,14 @@ import { listGrokCodeSessions, listGrokCodeMessages } from '../sources/grok-code
 import { readJsonlCached } from '../lib/jsonl-cache';
 import { initOpencodeDb, getOpencodeDb } from '../sources/opencode';
 import { listKimiCodeSessions, listKimiCodeMessages, parseAgentSwarmResult } from '../sources/kimi-code';
+import { listClaudeCodeSessions, listClaudeCodeMessages } from '../sources/claude-code';
+import { listCodexSessions, listCodexMessages } from '../sources/codex-code';
+import { listZcodeSessions, listZcodeMessages } from '../sources/zcode-code';
+import { listWorkbuddySessions, readWorkbuddyJsonl } from '../sources/workbuddy-code';
 import { classifySoftToolError } from '../sources/tool-error-soft';
 
 /** 已实现失败采集的 source */
-export type FailureSource = 'grok' | 'opencode' | 'kimi';
+export type FailureSource = 'grok' | 'opencode' | 'kimi' | 'claude' | 'codex' | 'zcode' | 'workbuddy';
 
 export type FailureKind = 'api' | 'tool';
 
@@ -147,6 +151,70 @@ function toolSoftFlag(errorText: string, metadata?: Record<string, unknown>) {
   const cls = classifySoftToolError({ error: errorText, output: errorText });
   const isSoft = cls.soft || metadata?.errorSeverity === 'soft';
   return { isSoft, kind: cls.kind };
+}
+
+// ==================== 4 source 通用 helper ====================
+
+/** 单个 part 提取出的工具元信息；非法 part 返回 null（调用方跳过） */
+export interface ToolPartInfo {
+  name: string;
+  command?: string;
+}
+
+/**
+ * 4 source 共用的 part 提取器。
+ * 识别形态：
+ *  - claude:    { type:'tool_use', name, input:{command,...} }
+ *  - codex/zcode/opencode/kimi: { type:'tool', tool, state:{ input, status, error, output } }
+ *  - 扩展: type:'tool_call' / 'function_call'（workbuddy 适配后形态）
+ * 其它（tool_result / text / 缺字段）一律返回 null。
+ */
+export function extractToolPartInfo(part: unknown): ToolPartInfo | null {
+  if (!part || typeof part !== 'object') return null;
+  const p = part as Record<string, unknown>;
+  const t = String(p.type || '').toLowerCase();
+  if (t !== 'tool_use' && t !== 'tool' && t !== 'tool_call' && t !== 'function_call') return null;
+
+  const name = String(p.name || p.tool || p.toolName || '').trim();
+  if (!name) return null;
+
+  // command 提取：input / state.input / arguments / 直接 command 字段
+  const input = (p.input && typeof p.input === 'object' ? p.input : undefined) as Record<string, unknown> | undefined;
+  const state = (p.state && typeof p.state === 'object' ? p.state : undefined) as Record<string, unknown> | undefined;
+  const stateInput = state && typeof state.input === 'object' ? (state.input as Record<string, unknown>) : undefined;
+  const args = p.arguments && typeof p.arguments === 'object' ? (p.arguments as Record<string, unknown>) : undefined;
+  const directCmd = typeof p.command === 'string' ? p.command : undefined;
+
+  const cmdRaw =
+    (typeof input?.command === 'string' ? input.command : undefined)
+    ?? (typeof stateInput?.command === 'string' ? stateInput.command : undefined)
+    ?? (typeof stateInput?.cmd === 'string' ? stateInput.cmd : undefined)
+    ?? (typeof args?.command === 'string' ? args.command : undefined)
+    ?? directCmd;
+  const command = typeof cmdRaw === 'string' && cmdRaw.length > 0 ? cmdRaw : undefined;
+
+  return { name, command };
+}
+
+/** 归一工具名（对齐 host tool-call-stats.ts）：bash 类归 'bash'，File 类归 'file edit'，其余保名 lowercase */
+export function normalizeToolName(name: string): string {
+  const t = (name || 'unknown').trim();
+  if (!t) return 'unknown';
+  const lower = t.toLowerCase();
+  if (lower === 'bash' || lower === 'sh' || lower === 'shell' || lower === 'exec_command' || lower === 'terminal') return 'bash';
+  if (lower === 'read' || lower === 'write' || lower === 'edit' || lower === 'multi_edit' || lower === 'multiedit') return 'file edit';
+  return lower;
+}
+
+/** 把任意 part 数组里所有命中的 part 转成 ToolPartInfo（用于测试/调试；collect 内部直接复用 extractToolPartInfo） */
+export function extractToolPartInfos(parts: unknown): ToolPartInfo[] {
+  if (!Array.isArray(parts)) return [];
+  const out: ToolPartInfo[] = [];
+  for (const part of parts) {
+    const info = extractToolPartInfo(part);
+    if (info) out.push(info);
+  }
+  return out;
 }
 
 // ==================== grok ====================
@@ -357,6 +425,239 @@ function extractKimiOutput(raw: unknown): string | undefined {
   return undefined;
 }
 
+// ==================== claude ====================
+
+/**
+ * Claude Code：listClaudeCodeMessages 返回的消息里 assistant 的 content 是数组，
+ * 形如 `[{type:'tool_use', name, input:{command,...}, id}, {type:'text', text}]`。
+ * tool_result 是单独的 user 消息（含 type:'tool_result' block），不进 collect（无 status=failed 字段）。
+ */
+export function collectClaudeSessionEvents(
+  sessionId: string,
+  sessionTitle: string | undefined,
+  msgs: any[],
+  sinceMs: number,
+  endMs: number,
+  out: FailureEvent[],
+): void {
+  for (const msg of msgs || []) {
+    const ts = msg?.timestamp ? toMs(msg.timestamp) ?? msg.timestamp : 0;
+    if (!ts || !tsInWindow(ts, sinceMs, endMs)) continue;
+    const blocks = Array.isArray(msg?.message?.content) ? msg.message.content : Array.isArray(msg?.content) ? msg.content : [];
+    for (const block of blocks) {
+      const t = String(block?.type || '').toLowerCase();
+      // claude 在 tool_use 同消息后常带 tool_result block（user message）。这里只关心 tool_use。
+      if (t !== 'tool_use' && t !== 'tool_call') continue;
+      const info = extractToolPartInfo(block);
+      if (!info) continue;
+      const input = (block?.input && typeof block.input === 'object' ? block.input : {}) as Record<string, unknown>;
+      // Claude 当前 schema 无显式 status=failed；tool_result content 错误文本由后续 user message 承载。
+      // 本 collector 仅在 tool_use block 自带 is_error=true（fixture 或 schema 扩展字段）时记一条 tool error。
+      const isError = block?.is_error === true || block?.input?.is_error === true;
+      if (!isError) continue;
+      const raw = String(input?.error || input?.message || input?.output || '');
+      const { isSoft, kind } = toolSoftFlag(errText(raw));
+      const tsEvent = ts || 0;
+      out.push({
+        source: 'claude',
+        sessionId,
+        sessionTitle,
+        ts: tsEvent,
+        kind: 'tool',
+        model: msg?.message?.model,
+        toolName: normalizeToolName(info.name),
+        soft: isSoft,
+        errorKind: kind,
+        error: isSoft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
+        errorRaw: raw.slice(0, 400).replace(/\s+/g, ' '),
+      });
+    }
+  }
+}
+
+// ==================== codex ====================
+
+/**
+ * Codex：listCodexMessages 返回的 msg.parts 形态为 `{type:'tool', tool, callID, state:{status, input, output, error}}`。
+ * 防御式：若 type 字段缺失或形态异常，extractToolPartInfo 也会兜底。
+ */
+export function collectCodexSessionEvents(
+  sessionId: string,
+  sessionTitle: string | undefined,
+  msgs: any[],
+  sinceMs: number,
+  endMs: number,
+  out: FailureEvent[],
+): void {
+  for (const msg of msgs || []) {
+    const ts = msg?.timestamp || 0;
+    if (!tsInWindow(ts, sinceMs, endMs)) continue;
+    for (const part of msg?.parts || []) {
+      // 先取 info 拿到 command；status/error 单独从 state 读（与 helper 解耦）
+      const info = extractToolPartInfo(part);
+      if (!info) continue;
+      const state = (part && typeof part.state === 'object' ? part.state : {}) as Record<string, unknown>;
+      const status = String(state.status || '').toLowerCase();
+      const metadata = (state.metadata && typeof state.metadata === 'object' ? state.metadata : {}) as Record<string, unknown>;
+      const isSoft = metadata.errorSeverity === 'soft';
+      const isError = !isSoft && (status === 'failed' || status === 'error');
+      if (!isError && !isSoft) continue;
+      const raw = state.error ?? state.output ?? '';
+      const { isSoft: soft, kind } = toolSoftFlag(errText(raw), state.metadata as Record<string, unknown> | undefined);
+      out.push({
+        source: 'codex',
+        sessionId,
+        sessionTitle,
+        ts,
+        kind: 'tool',
+        model: msg?.model,
+        toolName: normalizeToolName(info.name),
+        soft,
+        errorKind: kind,
+        error: soft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
+        errorRaw: errText(raw).slice(0, 400).replace(/\s+/g, ' '),
+      });
+    }
+  }
+}
+
+// ==================== zcode ====================
+
+/**
+ * ZCode：listZcodeMessages 返回的 msg.parts（DB part.data 解构）形态与 codex 类似：
+ * `{type:'tool', tool, state:{status, input, output, error, metadata}}`。
+ */
+export function collectZcodeSessionEvents(
+  sessionId: string,
+  sessionTitle: string | undefined,
+  msgs: any[],
+  sinceMs: number,
+  endMs: number,
+  out: FailureEvent[],
+): void {
+  for (const msg of msgs || []) {
+    const ts = msg?.timeCreated || msg?.timeUpdated || 0;
+    if (!tsInWindow(ts, sinceMs, endMs)) continue;
+    for (const part of msg?.parts || []) {
+      const info = extractToolPartInfo(part);
+      if (!info) continue;
+      const state = (part && typeof part.state === 'object' ? part.state : {}) as Record<string, unknown>;
+      const status = String(state.status || '').toLowerCase();
+      const metadata = (state.metadata && typeof state.metadata === 'object' ? state.metadata : {}) as Record<string, unknown>;
+      const isSoft = metadata.errorSeverity === 'soft';
+      const isError = !isSoft && (status === 'failed' || status === 'error');
+      if (!isError && !isSoft) continue;
+      const raw = state.error ?? state.output ?? '';
+      const { isSoft: soft, kind } = toolSoftFlag(errText(raw), state.metadata as Record<string, unknown> | undefined);
+      // model 优先用 msg.modelUsage?.modelId，回退 data.role 之外的信息；这里保守用 modelUsage
+      const model = msg?.modelUsage?.modelId;
+      out.push({
+        source: 'zcode',
+        sessionId,
+        sessionTitle,
+        ts,
+        kind: 'tool',
+        model,
+        toolName: normalizeToolName(info.name),
+        soft,
+        errorKind: kind,
+        error: soft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
+        errorRaw: errText(raw).slice(0, 400).replace(/\s+/g, ' '),
+      });
+    }
+  }
+}
+
+// ==================== workbuddy ====================
+
+/**
+ * WorkBuddy：jsonl events 流（不是嵌套 parts），主事件类型 `function_call` / `function_call_result`。
+ * 这里先把每个 event 适配成 part-like（type:'function_call'），再走 extractToolPartInfo + state 同款读取。
+ * 失败判定对齐 host：仅 `function_call_result` 且 status='failed'|'error' 才记。
+ */
+export function collectWorkbuddySessionEvents(
+  sessionId: string,
+  sessionTitle: string | undefined,
+  events: any[],
+  sinceMs: number,
+  endMs: number,
+  out: FailureEvent[],
+): void {
+  // 1) 先按 callId 累积 function_call 输入（提供 command / 模型元信息）
+  type CallInfo = { args?: Record<string, unknown>; name?: string; ts?: number; model?: string };
+  const calls = new Map<string, CallInfo>();
+  for (const ev of events || []) {
+    if (ev?.type !== 'function_call') continue;
+    const cid = String(ev.callId || ev.id || '').trim();
+    if (!cid) continue;
+    const args = ev.arguments && typeof ev.arguments === 'object' ? ev.arguments as Record<string, unknown>
+      : (typeof ev.arguments === 'string' ? safeParseJson(ev.arguments) : undefined) || {};
+    calls.set(cid, { args, name: ev.name, ts: ev.timestamp, model: ev.providerData?.model || ev.providerData?.requestModelName });
+  }
+
+  // 2) 再扫 function_call_result 取 failed/error
+  for (const ev of events || []) {
+    if (ev?.type !== 'function_call_result') continue;
+    const st = String(ev.status || '').toLowerCase();
+    const isSoft = (ev as any).errorSeverity === 'soft';
+    const isError = !isSoft && (st === 'failed' || st === 'error');
+    if (!isError && !isSoft) continue;
+    const ts = ev.timestamp || 0;
+    if (!tsInWindow(ts, sinceMs, endMs)) continue;
+    const cid = String(ev.callId || '').trim();
+    const info = calls.get(cid);
+
+    // 把 event 适配成 part-like 形态，给 extractToolPartInfo 统一处理
+    const partLike = {
+      type: 'function_call',
+      name: ev.name || info?.name || 'unknown',
+      input: info?.args || {},
+    };
+    const partInfo = extractToolPartInfo(partLike);
+    if (!partInfo) continue;
+
+    const errText = extractWorkbuddyErrorText(ev);
+    const { isSoft: soft, kind } = toolSoftFlag(errText);
+    out.push({
+      source: 'workbuddy',
+      sessionId,
+      sessionTitle,
+      ts,
+      kind: 'tool',
+      model: info?.model || (ev as any).providerData?.model,
+      toolName: normalizeToolName(partInfo.name),
+      soft,
+      errorKind: kind,
+      error: soft ? normError(errText) || `soft:${kind || 'unknown'}` : normError(errText),
+      errorRaw: errText.slice(0, 400).replace(/\s+/g, ' '),
+    });
+  }
+}
+
+function safeParseJson(s: string): Record<string, unknown> | undefined {
+  try {
+    const o = JSON.parse(s);
+    return o && typeof o === 'object' ? o as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractWorkbuddyErrorText(ev: any): string {
+  const out = ev?.output;
+  if (typeof out === 'string') return out;
+  if (out && typeof out === 'object') {
+    if (typeof out.text === 'string') return out.text;
+    if (typeof out.content === 'string') return out.content;
+    try {
+      return JSON.stringify(out);
+    } catch {
+      return String(out);
+    }
+  }
+  return String(ev?.status || 'error');
+}
+
 // ==================== 汇总 ====================
 
 /**
@@ -402,6 +703,66 @@ export async function collectSessionFailures(
         try {
           const msgs = await listKimiCodeMessages({ sessionId: s.sessionId, sessionDir: s.sessionDir });
           collectKimiSessionEvents(s.sessionId, s.title || undefined, msgs, sinceMs, endMs, events);
+        } catch {
+          // 单 session 失败跳过
+        }
+      }
+    });
+  }
+
+  if (source === 'all' || source === 'claude') {
+    run('claude', async () => {
+      const sessions = await listClaudeCodeSessions();
+      for (const s of sessions) {
+        if ((s.timestamp || 0) < sinceMs) continue;
+        try {
+          const msgs = await listClaudeCodeMessages({ project: s.project, sessionId: s.sessionId });
+          collectClaudeSessionEvents(s.sessionId, s.display, msgs, sinceMs, endMs, events);
+        } catch {
+          // 单 session 失败跳过
+        }
+      }
+    });
+  }
+
+  if (source === 'all' || source === 'codex') {
+    run('codex', async () => {
+      const sessions = await listCodexSessions();
+      for (const s of sessions) {
+        if ((s.updatedAt || 0) < sinceMs) continue;
+        try {
+          const msgs = await listCodexMessages({ sessionId: s.sessionId, rolloutPath: s.rolloutPath });
+          collectCodexSessionEvents(s.sessionId, s.title, msgs, sinceMs, endMs, events);
+        } catch {
+          // 单 session 失败跳过
+        }
+      }
+    });
+  }
+
+  if (source === 'all' || source === 'zcode') {
+    run('zcode', async () => {
+      const sessions = await listZcodeSessions();
+      for (const s of sessions) {
+        if ((s.updatedAt || 0) < sinceMs) continue;
+        try {
+          const msgs = await listZcodeMessages(s.sessionId);
+          collectZcodeSessionEvents(s.sessionId, s.title, msgs, sinceMs, endMs, events);
+        } catch {
+          // 单 session 失败跳过
+        }
+      }
+    });
+  }
+
+  if (source === 'all' || source === 'workbuddy') {
+    run('workbuddy', async () => {
+      const sessions = await listWorkbuddySessions();
+      for (const s of sessions) {
+        if ((s.updatedAt || 0) < sinceMs) continue;
+        try {
+          const evts = readWorkbuddyJsonl(s.sessionId, s.jsonlPath);
+          collectWorkbuddySessionEvents(s.sessionId, s.title, evts, sinceMs, endMs, events);
         } catch {
           // 单 session 失败跳过
         }
