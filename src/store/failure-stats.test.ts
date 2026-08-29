@@ -15,6 +15,7 @@ import {
   collectWorkbuddySessionEvents,
   extractToolPartInfo,
   normalizeToolName,
+  aggregateSourceModelTool,
   type FailureEvent,
 } from './failure-stats';
 
@@ -340,5 +341,107 @@ describe('P1: 4-source collectors', () => {
     expect(out).toHaveLength(1);
     expect(out[0].soft).toBe(true);
     expect(out[0].errorKind).toBe('aborted_user');
+  });
+});
+
+// ==================== P1: model field populated (MUST-FIX #3 from k3 review) ====================
+
+describe('P1: model field populated', () => {
+  it('claude collector 写入 msg.message.model → FailureEvent.model', () => {
+    const ts = Date.now();
+    const msg = {
+      message: {
+        model: 'claude-sonnet-4',
+        content: [{ type: 'tool_use', name: 'Bash', id: 't1', is_error: true, input: { command: 'ls', error: 'oops' } }],
+      },
+      timestamp: ts,
+    };
+    const out: FailureEvent[] = [];
+    collectClaudeSessionEvents('s1', 't', [msg], 0, ts + 1, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].model).toBe('claude-sonnet-4');
+  });
+
+  it('codex collector 写入 msg.model → FailureEvent.model', () => {
+    const ts = Date.now();
+    const msg = {
+      model: 'o3',
+      timestamp: ts,
+      parts: [{ type: 'tool', tool: 'Bash', callID: 'c1', state: { status: 'failed', input: { command: 'ls' }, error: 'boom' } }],
+    };
+    const out: FailureEvent[] = [];
+    collectCodexSessionEvents('s1', 't', [msg], 0, ts + 1, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].model).toBe('o3');
+  });
+
+  it('zcode collector 写入 msg.modelUsage.modelId → FailureEvent.model', () => {
+    const ts = Date.now();
+    const msg = {
+      timeCreated: ts,
+      timeUpdated: ts,
+      modelUsage: { modelId: 'zcode-flash' },
+      parts: [{ type: 'tool', tool: 'Bash', state: { status: 'failed', input: { command: 'ls' }, error: 'boom' } }],
+    };
+    const out: FailureEvent[] = [];
+    collectZcodeSessionEvents('s1', 't', [msg], 0, ts + 1, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].model).toBe('zcode-flash');
+  });
+
+  it('workbuddy collector 写入 ev.providerData.model → FailureEvent.model', () => {
+    const ts = Date.now();
+    const events = [
+      { type: 'function_call', callId: 'c1', name: 'bash', arguments: { command: 'ls' }, timestamp: ts, providerData: { model: 'workbuddy-flash' } },
+      { type: 'function_call_result', callId: 'c1', status: 'failed', output: { text: 'boom' }, timestamp: ts },
+    ];
+    const out: FailureEvent[] = [];
+    collectWorkbuddySessionEvents('s1', 't', events, 0, ts + 1, out);
+    expect(out).toHaveLength(1);
+    expect(out[0].model).toBe('workbuddy-flash');
+  });
+});
+
+// ==================== P1: bySourceModelTool aggregation ====================
+
+describe('P1: aggregateSourceModelTool', () => {
+  it('2 条同 (source, model, tool) 事件 → 1 行 count=2，pct 与 topError 都对', () => {
+    const events: FailureEvent[] = [
+      { source: 'opencode', sessionId: 's1', ts: 1, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'boom-a' },
+      { source: 'opencode', sessionId: 's1', ts: 2, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'boom-a' },
+    ] as FailureEvent[];
+    const rows = aggregateSourceModelTool(events);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe('opencode');
+    expect(rows[0].model).toBe('gpt-x');
+    expect(rows[0].tool).toBe('bash');
+    expect(rows[0].count).toBe(2);
+    expect(rows[0].pct).toBe(100);
+    expect(rows[0].topError).toBe('boom-a');
+    expect(rows[0].topErrorCount).toBe(2);
+  });
+
+  it('api 事件不进交叉表；不同 (model, tool) 各占一行', () => {
+    const events: FailureEvent[] = [
+      { source: 'kimi', sessionId: 's1', ts: 1, kind: 'api', model: 'kimi-x', error: 'api-fail' },
+      { source: 'opencode', sessionId: 's2', ts: 2, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'a' },
+      { source: 'opencode', sessionId: 's3', ts: 3, kind: 'tool', model: 'gpt-x', toolName: 'read', error: 'b' },
+    ] as FailureEvent[];
+    const rows = aggregateSourceModelTool(events);
+    expect(rows).toHaveLength(2);
+    const bashRow = rows.find((r) => r.tool === 'bash')!;
+    expect(bashRow.count).toBe(1);
+    expect(bashRow.pct).toBeCloseTo(33.333, 1);
+    const readRow = rows.find((r) => r.tool === 'read')!;
+    expect(readRow.count).toBe(1);
+    // api 不计 count，但参与 total（与 host 对齐）
+  });
+
+  it('top 截断', () => {
+    const events: FailureEvent[] = ['bash', 'read', 'edit'].map((t, i) => ({
+      source: 'opencode', sessionId: `s${i}`, ts: i, kind: 'tool', model: 'gpt-x', toolName: t, error: 'x',
+    } as FailureEvent));
+    const rows = aggregateSourceModelTool(events, 2);
+    expect(rows).toHaveLength(2);
   });
 });

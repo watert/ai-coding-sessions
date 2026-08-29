@@ -1156,6 +1156,46 @@ async function cmdFailures(args: CliArgs) {
           `- [${fmtTs(e.ts)}] ${e.source} ${e.model ?? '?'} stop=${e.stopReason ?? '?'}${e.statusCode ? ` http=${e.statusCode}` : ''} \`${e.error}\``)
         : ['- (none)']),
       '',
+      '## By Source × Model × Tool',
+      ...(result.bySourceModelTool.length
+        ? [
+            '| source | model | tool | count | % | top error |',
+            '|---|---|---|---:|---:|---|',
+            ...result.bySourceModelTool.map((r) => {
+              const err = (r.topError || '').replace(/\|/g, '\\|').slice(0, 72);
+              return `| ${r.source} | ${r.model.replace(/\|/g, '\\|')} | ${r.tool} | ${r.count} | ${r.pct.toFixed(1)}% | ${err} (${r.topErrorCount}) |`;
+            }),
+          ]
+        : ['- (empty)']),
+      '',
+      ...(result.bash && result.bash.total > 0
+        ? [
+            '## Bash Failures',
+            ...(result.bash.byExitCode.length
+              ? ['### Bash · Exit Code', ...result.bash.byExitCode.map((r) => `- ${r.key}: ${r.count} (${r.pct.toFixed(1)}%)`), '']
+              : []),
+            ...(result.bash.byCmdFamily.length
+              ? ['### Bash · Cmd Family', ...result.bash.byCmdFamily.map((r) => `- ${r.key}: ${r.count} (${r.pct.toFixed(1)}%)`), '']
+              : []),
+            ...(result.bash.byCategory.length
+              ? ['### Bash · Category', ...result.bash.byCategory.map((r) => `- ${r.key}: ${r.count} (${r.pct.toFixed(1)}%)`), '']
+              : []),
+            ...(result.bash.byModel.length
+              ? ['### Bash · Model', ...result.bash.byModel.map((r) => `- ${r.key}: ${r.count} (${r.pct.toFixed(1)}%)`), '']
+              : []),
+            ...(result.bash.byCommand.length
+              ? ['### Bash · Command', ...result.bash.byCommand.map((r) => `- ${r.key.replace(/\|/g, '\\|')}: ${r.count} (${r.pct.toFixed(1)}%)`), '']
+              : []),
+            ...(result.bash.samples.length
+              ? [
+                  '### Bash Samples',
+                  ...result.bash.samples.map((s) =>
+                    `- [${s.time}] ${s.source} | ${s.model} | exit=${s.exitCode} | ${s.category} | \`${s.cmdFamily}\`\n  $ ${s.command}\n  > ${s.error}`),
+                ]
+              : []),
+            '',
+          ]
+        : []),
       '## Samples',
       ...(result.samples.length
         ? result.samples.slice(0, 10).map((e) =>

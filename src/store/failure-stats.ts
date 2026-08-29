@@ -20,6 +20,7 @@ import { listCodexSessions, listCodexMessages } from '../sources/codex-code';
 import { listZcodeSessions, listZcodeMessages } from '../sources/zcode-code';
 import { listWorkbuddySessions, readWorkbuddyJsonl } from '../sources/workbuddy-code';
 import { classifySoftToolError } from '../sources/tool-error-soft';
+import { buildBashBreakdown, extractBashExitCode } from './bash-breakdown';
 
 /** 已实现失败采集的 source */
 export type FailureSource = 'grok' | 'opencode' | 'kimi' | 'claude' | 'codex' | 'zcode' | 'workbuddy';
@@ -65,6 +66,42 @@ export interface FailureCollectOptions {
   top?: number;
 }
 
+/** source × model × tool 交叉行；含 top error 提示 */
+export interface SourceModelToolRow {
+  source: string;
+  model: string;
+  tool: string;
+  count: number;
+  pct: number;
+  topError: string;
+  topErrorCount: number;
+}
+
+/**
+ * Bash 失败深掘（仅当 hard tool 中有 bash 工具时存在）。
+ * cmdFamily / category / command 列依赖事件携带 `command` 信息；当前 FailureEvent 不携带
+ * raw command（详见 BashBreakdownRow），所以 byCmdFamily/byCategory/byCommand 多为占位，
+ * byExitCode / byModel / samples 是稳定信息源。
+ */
+export interface BashBreakdown {
+  total: number;
+  byExitCode: FailureDistRow[];
+  byCmdFamily: FailureDistRow[];
+  byCategory: FailureDistRow[];
+  byCommand: FailureDistRow[];
+  byModel: FailureDistRow[];
+  samples: Array<{
+    time: string;
+    source: string;
+    model: string;
+    exitCode: string;
+    category: string;
+    cmdFamily: string;
+    command: string;
+    error: string;
+  }>;
+}
+
 export interface FailureAnalyzeResult {
   range: { start: string; end: string; days: number };
   total: number;
@@ -79,6 +116,10 @@ export interface FailureAnalyzeResult {
   byModel: FailureDistRow[];
   byTool: FailureDistRow[];
   byError: FailureDistRow[];
+  /** source × model × tool 交叉表（含 topError 提示） */
+  bySourceModelTool: SourceModelToolRow[];
+  /** Bash 失败深掘（仅当 hard tool 中有 bash 工具时存在） */
+  bash?: BashBreakdown;
   /** 全部 API 异常事件 */
   apiFailures: FailureEvent[];
   /** 最近事件样本（api + hard tool，按时间倒序） */
@@ -658,6 +699,99 @@ function extractWorkbuddyErrorText(ev: any): string {
   return String(ev?.status || 'error');
 }
 
+// ==================== 交叉 / 深掘聚合 ====================
+
+/**
+ * 聚合 source × model × tool 交叉行，每行附 topError / topErrorCount。
+ * 仅 kind='tool' 进表；pct 基于入参 events 总量（host 对齐）。
+ */
+export function aggregateSourceModelTool(events: FailureEvent[], top?: number): SourceModelToolRow[] {
+  const smtCounts = new Map<string, number>();
+  const smtErrors = new Map<string, Map<string, number>>();
+  for (const e of events) {
+    if (e.kind !== 'tool') continue;
+    const model = e.model || 'unknown';
+    const tool = e.toolName || 'unknown';
+    const key = `${e.source}\t${model}\t${tool}`;
+    smtCounts.set(key, (smtCounts.get(key) || 0) + 1);
+    let inner = smtErrors.get(key);
+    if (!inner) { inner = new Map(); smtErrors.set(key, inner); }
+    const err = e.error || '(empty)';
+    inner.set(err, (inner.get(err) || 0) + 1);
+  }
+  const rows: SourceModelToolRow[] = Array.from(smtCounts.entries()).map(([key, count]) => {
+    const [source, model, tool] = key.split('\t');
+    const errMap = smtErrors.get(key)!;
+    let topError = '(empty)';
+    let topErrorCount = 0;
+    for (const [err, c] of errMap) {
+      if (c > topErrorCount) { topErrorCount = c; topError = err; }
+    }
+    return { source, model, tool, count, pct: 0, topError, topErrorCount };
+  }).sort((a, b) => b.count - a.count);
+  const total = events.length;
+  for (const r of rows) r.pct = total > 0 ? (r.count / total) * 100 : 0;
+  return top ? rows.slice(0, top) : rows;
+}
+
+/**
+ * BashBreakdown 包装：调 buildBashBreakdown 拿 row 级数据，再聚合多维分布 + byModel + samples。
+ * `byExitCode` / `byModel` / `samples` 不依赖 command 信息，始终可用；
+ * 其余维度依赖 buildBashBreakdown 是否能从 ev.command/ev.bash 提取 family。
+ */
+function wrapBashBreakdown(events: FailureEvent[], top: number = 20): BashBreakdown {
+  const total = events.length;
+  if (total === 0) {
+    return { total: 0, byExitCode: [], byCmdFamily: [], byCategory: [], byCommand: [], byModel: [], samples: [] };
+  }
+  const rows = buildBashBreakdown(events, top);
+  const byCmdFamily = new Map<string, number>();
+  const byCategory = new Map<string, number>();
+  const byCommand = new Map<string, number>();
+  for (const r of rows) {
+    byCmdFamily.set(r.cmdFamily, (byCmdFamily.get(r.cmdFamily) || 0) + r.samples);
+    byCategory.set(r.category, (byCategory.get(r.category) || 0) + r.samples);
+    byCommand.set(r.command, (byCommand.get(r.command) || 0) + r.samples);
+  }
+  const byExitCode = new Map<string, number>();
+  for (const e of events) {
+    const code = extractBashExitCode(e.errorRaw || e.error || '');
+    const key = code !== undefined ? String(code) : '(unknown)';
+    byExitCode.set(key, (byExitCode.get(key) || 0) + 1);
+  }
+  const byModel = new Map<string, number>();
+  for (const e of events) {
+    const m = e.model || 'unknown';
+    byModel.set(m, (byModel.get(m) || 0) + 1);
+  }
+  const samples = events
+    .slice()
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, 5)
+    .map((e) => {
+      const ec = extractBashExitCode(e.errorRaw || e.error || '');
+      return {
+        time: dayjs(e.ts).format('MM-DD HH:mm'),
+        source: e.source,
+        model: e.model || 'unknown',
+        exitCode: ec !== undefined ? String(ec) : '(unknown)',
+        category: '(unknown)',
+        cmdFamily: '(unknown)',
+        command: '(unknown)',
+        error: e.error || '(empty)',
+      };
+    });
+  return {
+    total,
+    byExitCode: toDist(byExitCode, total),
+    byCmdFamily: toDist(byCmdFamily, total, top),
+    byCategory: toDist(byCategory, total, top),
+    byCommand: toDist(byCommand, total, top),
+    byModel: toDist(byModel, total, top),
+    samples,
+  };
+}
+
 // ==================== 汇总 ====================
 
 /**
@@ -798,6 +932,12 @@ export async function collectSessionFailures(
     .sort((a, b) => b.ts - a.ts)
     .slice(0, Math.min(12, top));
 
+  // 交叉聚合：source × model × tool
+  const bySourceModelTool = aggregateSourceModelTool(hard, top);
+  // Bash 深掘：仅当 hard tool 中存在 bash 工具时落地
+  const bashEvents = hard.filter((e) => e.kind === 'tool' && e.toolName === 'bash');
+  const bash = bashEvents.length > 0 ? wrapBashBreakdown(bashEvents, top) : undefined;
+
   return {
     range: { start: dayjs(sinceMs).format('YYYY-MM-DD'), end: dayjs(endMs).format('YYYY-MM-DD'), days },
     total,
@@ -810,6 +950,8 @@ export async function collectSessionFailures(
     byModel: toDist(byModel, total, top),
     byTool: toDist(byTool, total, top),
     byError: toDist(byError, total, top),
+    bySourceModelTool,
+    bash,
     apiFailures: apiFailures.slice().sort((a, b) => b.ts - a.ts).slice(0, Math.min(30, top)),
     samples,
   };
