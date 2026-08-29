@@ -16,6 +16,7 @@ import {
   extractToolPartInfo,
   normalizeToolName,
   aggregateSourceModelTool,
+  wrapBashBreakdown,
   type FailureEvent,
 } from './failure-stats';
 
@@ -431,10 +432,12 @@ describe('P1: aggregateSourceModelTool', () => {
     expect(rows).toHaveLength(2);
     const bashRow = rows.find((r) => r.tool === 'bash')!;
     expect(bashRow.count).toBe(1);
-    expect(bashRow.pct).toBeCloseTo(33.333, 1);
+    // MUST-FIX #2：pct 分母改为 tool events 数（2 个 tool），bash / read 各占 50%
+    expect(bashRow.pct).toBeCloseTo(50, 1);
     const readRow = rows.find((r) => r.tool === 'read')!;
     expect(readRow.count).toBe(1);
-    // api 不计 count，但参与 total（与 host 对齐）
+    expect(readRow.pct).toBeCloseTo(50, 1);
+    // api 不计 count，也不进分母（MUST-FIX #2）
   });
 
   it('top 截断', () => {
@@ -443,5 +446,73 @@ describe('P1: aggregateSourceModelTool', () => {
     } as FailureEvent));
     const rows = aggregateSourceModelTool(events, 2);
     expect(rows).toHaveLength(2);
+  });
+
+  // NICE-FIX #3：并列 topError 策略（首个最大，Map 插入序）
+  it('同 (source, model, tool) 多 error：A=2 B=1 → topError=A, topErrorCount=2', () => {
+    const events: FailureEvent[] = [
+      { source: 'opencode', sessionId: 's1', ts: 1, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'A' },
+      { source: 'opencode', sessionId: 's1', ts: 2, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'B' },
+      { source: 'opencode', sessionId: 's1', ts: 3, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'A' },
+    ] as FailureEvent[];
+    const rows = aggregateSourceModelTool(events);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].topError).toBe('A');
+    expect(rows[0].topErrorCount).toBe(2);
+  });
+
+  it('同 (source, model, tool) 多 error：A=1 B=1 → topError 取 Map 首位 A（不取 B）', () => {
+    const events: FailureEvent[] = [
+      { source: 'opencode', sessionId: 's1', ts: 1, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'A' },
+      { source: 'opencode', sessionId: 's1', ts: 2, kind: 'tool', model: 'gpt-x', toolName: 'bash', error: 'B' },
+    ] as FailureEvent[];
+    const rows = aggregateSourceModelTool(events);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].topError).toBe('A');
+    expect(rows[0].topErrorCount).toBe(1);
+  });
+});
+
+// ==================== MUST-FIX #4: wrapBashBreakdown ====================
+
+describe('P1: wrapBashBreakdown', () => {
+  it('空 events → 返回 total=0 全空结构（NICE-FIX #1 bash 必填）', () => {
+    const r = wrapBashBreakdown([]);
+    expect(r).toEqual({
+      total: 0,
+      byExitCode: [],
+      byCmdFamily: [],
+      byCategory: [],
+      byCommand: [],
+      byModel: [],
+      samples: [],
+    });
+  });
+
+  it('多 exit code + 多 model：3 事件同 kind=tool/toolName=bash，exit 1/2/2 model a/b/a', () => {
+    const t1 = dayjs('2026-08-15T10:00:00Z').valueOf();
+    const t2 = t1 + 60_000;
+    const t3 = t2 + 60_000;
+    const events: FailureEvent[] = [
+      { source: 'opencode', sessionId: 's1', ts: t1, kind: 'tool', model: 'a', toolName: 'bash', errorRaw: 'exit code 1', error: 'exit code 1' },
+      { source: 'opencode', sessionId: 's1', ts: t2, kind: 'tool', model: 'b', toolName: 'bash', errorRaw: 'exit code 2', error: 'exit code 2' },
+      { source: 'opencode', sessionId: 's1', ts: t3, kind: 'tool', model: 'a', toolName: 'bash', errorRaw: 'exit code 2', error: 'exit code 2' },
+    ] as FailureEvent[];
+    const r = wrapBashBreakdown(events);
+    expect(r.total).toBe(3);
+    // byExitCode 含 1:1, 2:2
+    expect(r.byExitCode.find((x) => x.key === '1')?.count).toBe(1);
+    expect(r.byExitCode.find((x) => x.key === '2')?.count).toBe(2);
+    // byModel 含 a:2, b:1
+    expect(r.byModel.find((x) => x.key === 'a')?.count).toBe(2);
+    expect(r.byModel.find((x) => x.key === 'b')?.count).toBe(1);
+    // samples.length = 3，按 ts 倒序（无 raw command → category/cmdFamily/command 全 null，MUST-FIX #3）
+    expect(r.samples.length).toBe(3);
+    expect(r.samples[0].time).toBe(dayjs(t3).format('MM-DD HH:mm'));
+    expect(r.samples[1].time).toBe(dayjs(t2).format('MM-DD HH:mm'));
+    expect(r.samples[2].time).toBe(dayjs(t1).format('MM-DD HH:mm'));
+    expect(r.samples[0].category).toBeNull();
+    expect(r.samples[0].cmdFamily).toBeNull();
+    expect(r.samples[0].command).toBeNull();
   });
 });

@@ -20,7 +20,7 @@ import { listCodexSessions, listCodexMessages } from '../sources/codex-code';
 import { listZcodeSessions, listZcodeMessages } from '../sources/zcode-code';
 import { listWorkbuddySessions, readWorkbuddyJsonl } from '../sources/workbuddy-code';
 import { classifySoftToolError } from '../sources/tool-error-soft';
-import { buildBashBreakdown, extractBashExitCode } from './bash-breakdown';
+import { buildBashBreakdown, classifyBashCategory, extractBashCmdFamily, extractBashExitCode } from './bash-breakdown';
 
 /** 已实现失败采集的 source */
 export type FailureSource = 'grok' | 'opencode' | 'kimi' | 'claude' | 'codex' | 'zcode' | 'workbuddy';
@@ -78,10 +78,10 @@ export interface SourceModelToolRow {
 }
 
 /**
- * Bash 失败深掘（仅当 hard tool 中有 bash 工具时存在）。
- * cmdFamily / category / command 列依赖事件携带 `command` 信息；当前 FailureEvent 不携带
- * raw command（详见 BashBreakdownRow），所以 byCmdFamily/byCategory/byCommand 多为占位，
- * byExitCode / byModel / samples 是稳定信息源。
+ * Bash 失败深掘。
+ * byExitCode / byModel / samples 是稳定信息源；
+ * byCmdFamily / byCategory / byCommand 在 T4 (#11) 落地后真正聚合（当前 FailureEvent 不携带
+ * raw command，多为占位）；samples 内嵌字段缺失 raw command 时返回 null 而非占位字符串。
  */
 export interface BashBreakdown {
   total: number;
@@ -95,9 +95,12 @@ export interface BashBreakdown {
     source: string;
     model: string;
     exitCode: string;
-    category: string;
-    cmdFamily: string;
-    command: string;
+    /** 无 raw command 时为 null（MUST-FIX #3）；占位字符串不再下发 */
+    category: string | null;
+    /** 无 raw command 且无 ev.bash.cmdFamily 兜底时为 null */
+    cmdFamily: string | null;
+    /** 无 raw command 时为 null */
+    command: string | null;
     error: string;
   }>;
 }
@@ -118,8 +121,8 @@ export interface FailureAnalyzeResult {
   byError: FailureDistRow[];
   /** source × model × tool 交叉表（含 topError 提示） */
   bySourceModelTool: SourceModelToolRow[];
-  /** Bash 失败深掘（仅当 hard tool 中有 bash 工具时存在） */
-  bash?: BashBreakdown;
+  /** Bash 失败深掘；无 bash 事件时 total=0 仍返回结构（渲染段用 total>0 控制） */
+  bash: BashBreakdown;
   /** 全部 API 异常事件 */
   apiFailures: FailureEvent[];
   /** 最近事件样本（api + hard tool，按时间倒序） */
@@ -703,34 +706,46 @@ function extractWorkbuddyErrorText(ev: any): string {
 
 /**
  * 聚合 source × model × tool 交叉行，每行附 topError / topErrorCount。
- * 仅 kind='tool' 进表；pct 基于入参 events 总量（host 对齐）。
+ * 仅 kind='tool' 进表；pct 分母用 tool events 数量（行都是 tool，避免总和 < 100% 误导）；
+ * 当 tool events 为 0 时所有 pct=0。
+ *
+ * 复合 key 用结构化 bucket（`Map<string, SmtBucket>`）存 `{source, model, tool, count, errors}`，
+ * 不再用 `\t` 拼接 → split 重建，避免 source/model/tool 含 `\t` 时错位。
+ *
+ * 并列 topError 策略：取首个最大的（Map 插入序）。
+ * - 多个 error 都达最大计数时，取最先遇到的那条（不取最末或随机）。
+ * - 当前实现：`if (c > topErrorCount)` 严格大于，并列时保留首个命中。
  */
 export function aggregateSourceModelTool(events: FailureEvent[], top?: number): SourceModelToolRow[] {
-  const smtCounts = new Map<string, number>();
-  const smtErrors = new Map<string, Map<string, number>>();
+  type SmtBucket = { source: string; model: string; tool: string; count: number; errors: Map<string, number> };
+  const smtBuckets = new Map<string, SmtBucket>();
   for (const e of events) {
     if (e.kind !== 'tool') continue;
     const model = e.model || 'unknown';
     const tool = e.toolName || 'unknown';
-    const key = `${e.source}\t${model}\t${tool}`;
-    smtCounts.set(key, (smtCounts.get(key) || 0) + 1);
-    let inner = smtErrors.get(key);
-    if (!inner) { inner = new Map(); smtErrors.set(key, inner); }
+    // 复合 key 用 `::` 仅作 bucket 查表去重（避免 `\t` 重叠错位），字段语义以 bucket 对象为准
+    const key = `${e.source}::${model}::${tool}`;
+    let bucket = smtBuckets.get(key);
+    if (!bucket) {
+      bucket = { source: e.source, model, tool, count: 0, errors: new Map() };
+      smtBuckets.set(key, bucket);
+    }
+    bucket.count += 1;
     const err = e.error || '(empty)';
-    inner.set(err, (inner.get(err) || 0) + 1);
+    bucket.errors.set(err, (bucket.errors.get(err) || 0) + 1);
   }
-  const rows: SourceModelToolRow[] = Array.from(smtCounts.entries()).map(([key, count]) => {
-    const [source, model, tool] = key.split('\t');
-    const errMap = smtErrors.get(key)!;
+  const rows: SourceModelToolRow[] = Array.from(smtBuckets.values()).map((b) => {
     let topError = '(empty)';
     let topErrorCount = 0;
-    for (const [err, c] of errMap) {
+    for (const [err, c] of b.errors) {
+      // 并列时仅 `>` 才覆盖 → 首个最大保留
       if (c > topErrorCount) { topErrorCount = c; topError = err; }
     }
-    return { source, model, tool, count, pct: 0, topError, topErrorCount };
+    return { source: b.source, model: b.model, tool: b.tool, count: b.count, pct: 0, topError, topErrorCount };
   }).sort((a, b) => b.count - a.count);
-  const total = events.length;
-  for (const r of rows) r.pct = total > 0 ? (r.count / total) * 100 : 0;
+  // pct 分母用 tool events 数（行都是 tool，避免总和 < 100% 误导）
+  const toolTotal = events.filter((e) => e.kind === 'tool').length;
+  for (const r of rows) r.pct = toolTotal > 0 ? (r.count / toolTotal) * 100 : 0;
   return top ? rows.slice(0, top) : rows;
 }
 
@@ -738,13 +753,19 @@ export function aggregateSourceModelTool(events: FailureEvent[], top?: number): 
  * BashBreakdown 包装：调 buildBashBreakdown 拿 row 级数据，再聚合多维分布 + byModel + samples。
  * `byExitCode` / `byModel` / `samples` 不依赖 command 信息，始终可用；
  * 其余维度依赖 buildBashBreakdown 是否能从 ev.command/ev.bash 提取 family。
+ *
+ * samples 内嵌字段（category / cmdFamily / command）缺失 raw command 时返回 null，
+ * 而非 `'(unknown)'` 占位字符串（MUST-FIX #3，避免下游误当真信息）。
+ *
+ * 导出供 `failure-stats.test.ts` 补 case（MUST-FIX #4：零单测）。
  */
-function wrapBashBreakdown(events: FailureEvent[], top: number = 20): BashBreakdown {
+export function wrapBashBreakdown(events: FailureEvent[], top: number = 20): BashBreakdown {
   const total = events.length;
   if (total === 0) {
     return { total: 0, byExitCode: [], byCmdFamily: [], byCategory: [], byCommand: [], byModel: [], samples: [] };
   }
   const rows = buildBashBreakdown(events, top);
+  // TODO(#11 T4): FailureEvent 携带 raw command 后改为真聚合
   const byCmdFamily = new Map<string, number>();
   const byCategory = new Map<string, number>();
   const byCommand = new Map<string, number>();
@@ -753,6 +774,7 @@ function wrapBashBreakdown(events: FailureEvent[], top: number = 20): BashBreakd
     byCategory.set(r.category, (byCategory.get(r.category) || 0) + r.samples);
     byCommand.set(r.command, (byCommand.get(r.command) || 0) + r.samples);
   }
+  // TODO(#11 T4): FailureEvent 携带 raw command 后改为真聚合（cmdFamily/category/command 三维）
   const byExitCode = new Map<string, number>();
   for (const e of events) {
     const code = extractBashExitCode(e.errorRaw || e.error || '');
@@ -770,14 +792,22 @@ function wrapBashBreakdown(events: FailureEvent[], top: number = 20): BashBreakd
     .slice(0, 5)
     .map((e) => {
       const ec = extractBashExitCode(e.errorRaw || e.error || '');
+      // 推断 cmdFamily / category / command：无 raw command 时一律返回 null
+      const evAny = e as FailureEvent & {
+        command?: string;
+        bash?: { command?: string; cmdFamily?: string };
+      };
+      const command = evAny.command ?? evAny.bash?.command ?? '';
+      const family = evAny.bash?.cmdFamily ?? (command ? extractBashCmdFamily(command) : '');
+      const category = family ? classifyBashCategory(family) : null;
       return {
         time: dayjs(e.ts).format('MM-DD HH:mm'),
         source: e.source,
         model: e.model || 'unknown',
         exitCode: ec !== undefined ? String(ec) : '(unknown)',
-        category: '(unknown)',
-        cmdFamily: '(unknown)',
-        command: '(unknown)',
+        category,
+        cmdFamily: family || null,
+        command: command || null,
         error: e.error || '(empty)',
       };
     });
@@ -934,9 +964,9 @@ export async function collectSessionFailures(
 
   // 交叉聚合：source × model × tool
   const bySourceModelTool = aggregateSourceModelTool(hard, top);
-  // Bash 深掘：仅当 hard tool 中存在 bash 工具时落地
+  // Bash 深掘：bashEvents 为空时 wrapBashBreakdown 内部已返回 total=0 结构（NICE-FIX #1：bash 必填）
   const bashEvents = hard.filter((e) => e.kind === 'tool' && e.toolName === 'bash');
-  const bash = bashEvents.length > 0 ? wrapBashBreakdown(bashEvents, top) : undefined;
+  const bash = wrapBashBreakdown(bashEvents, top);
 
   return {
     range: { start: dayjs(sinceMs).format('YYYY-MM-DD'), end: dayjs(endMs).format('YYYY-MM-DD'), days },

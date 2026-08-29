@@ -1150,12 +1150,6 @@ async function cmdFailures(args: CliArgs) {
       '## By Tool',
       ...(result.byTool.length ? result.byTool.map((r) => `- ${r.key}: ${r.count} (${r.pct.toFixed(1)}%)`) : ['- (empty)']),
       '',
-      '## API Failures',
-      ...(result.apiFailures.length
-        ? result.apiFailures.slice(0, 15).map((e) =>
-          `- [${fmtTs(e.ts)}] ${e.source} ${e.model ?? '?'} stop=${e.stopReason ?? '?'}${e.statusCode ? ` http=${e.statusCode}` : ''} \`${e.error}\``)
-        : ['- (none)']),
-      '',
       '## By Source × Model × Tool',
       ...(result.bySourceModelTool.length
         ? [
@@ -1189,13 +1183,24 @@ async function cmdFailures(args: CliArgs) {
             ...(result.bash.samples.length
               ? [
                   '### Bash Samples',
-                  ...result.bash.samples.map((s) =>
-                    `- [${s.time}] ${s.source} | ${s.model} | exit=${s.exitCode} | ${s.category} | \`${s.cmdFamily}\`\n  $ ${s.command}\n  > ${s.error}`),
+                  ...result.bash.samples.map((s) => {
+                    // cmdFamily/command 为 null 时（无 raw command）不展示占位
+                    const cat = s.category ?? '?';
+                    const fam = s.cmdFamily ?? '(no-cmd)';
+                    const cmd = s.command ?? '(no-cmd)';
+                    return `- [${s.time}] ${s.source} | ${s.model} | exit=${s.exitCode} | ${cat} | \`${fam}\`\n  $ ${cmd}\n  > ${s.error}`;
+                  }),
                 ]
               : []),
             '',
           ]
         : []),
+      '## API Failures',
+      ...(result.apiFailures.length
+        ? result.apiFailures.slice(0, 15).map((e) =>
+          `- [${fmtTs(e.ts)}] ${e.source} ${e.model ?? '?'} stop=${e.stopReason ?? '?'}${e.statusCode ? ` http=${e.statusCode}` : ''} \`${e.error}\``)
+        : ['- (none)']),
+      '',
       '## Samples',
       ...(result.samples.length
         ? result.samples.slice(0, 10).map((e) =>
