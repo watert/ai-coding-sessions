@@ -249,23 +249,31 @@ export function resolveMessageContextSize(tokens?: {
 
 export function groupMessagesByUser(messages: OpenCodeMessage[]): Record<string, { userMsg: OpenCodeMessage; msgs: OpenCodeMessage[] }> {
   const result: Record<string, { userMsg: OpenCodeMessage; msgs: OpenCodeMessage[] }> = {};
-  const msgMap = _.keyBy(messages, (m) => m.info.id);
-  const userMsgs = messages.filter((m) => m.info.role === "user");
+  const msgMap = _.keyBy(messages, (m) => m.info?.id);
+  const userMsgs = messages.filter((m) => m.info?.role === "user");
   userMsgs.forEach((userMsg) => {
+    const uid = userMsg.info?.id;
+    if (!uid) return;
     const relatedMsgs: OpenCodeMessage[] = [];
     messages.forEach((msg) => {
-      if (msg.info.role === "assistant") {
-        let current = msg;
-        while (current) {
-          if (current.info.parentID === userMsg.info.id) {
-            relatedMsgs.push(msg); break;
-          }
-          if (!current.info.parentID) break;
-          current = msgMap[current.info.parentID];
+      if (msg.info?.role !== "assistant") return;
+      const seen = new Set<string>();
+      let current: OpenCodeMessage | undefined = msg;
+      while (current?.info) {
+        const cid = current.info.id;
+        if (cid) {
+          if (seen.has(cid)) break; // parentID 环 → 否则 while 卡死详情页
+          seen.add(cid);
         }
+        if (current.info.parentID === uid) {
+          relatedMsgs.push(msg);
+          break;
+        }
+        if (!current.info.parentID) break;
+        current = msgMap[current.info.parentID];
       }
     });
-    result[userMsg.info.id] = { userMsg, msgs: relatedMsgs };
+    result[uid] = { userMsg, msgs: relatedMsgs };
   });
   return result;
 }
