@@ -1,10 +1,10 @@
 /**
  * 缓存库 schema（M3）
  * - 无 sync_state 表：同步元信息走 meta JSON
- * - detail/messages 不缓存；prompts 完整落库
+ * - detail/messages 不缓存；prompts 完整落库；tool_calls 按 session 物化（v3, tool-calls --build 按需构建）
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** sessions / prompts / usage_by_day / schema_meta */
 export const SCHEMA_SQL = `
@@ -69,6 +69,27 @@ CREATE TABLE IF NOT EXISTS prompts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prompts_session ON prompts(source, session_id);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+  source TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  msg_idx INTEGER,
+  turn INTEGER,
+  tool TEXT NOT NULL,
+  status TEXT,
+  soft INTEGER,
+  input TEXT,
+  input_len INTEGER,
+  output_len INTEGER,
+  error TEXT,
+  created_at INTEGER,
+  built_at INTEGER NOT NULL,
+  PRIMARY KEY (source, session_id, idx)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(source, session_id);
 `;
 
 export type SourceId =

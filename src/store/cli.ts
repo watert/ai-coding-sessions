@@ -21,6 +21,9 @@
  *   bun src/store/cli.ts stats --source=all --days=7
  *   bun src/store/cli.ts digest --days=1 --roots --format=md --out=digest.md
  *   bun src/store/cli.ts sync --days=7 --source=all --reconcile
+ *   bun src/store/cli.ts scan --grep='kimi -p' --days=90 --limit=20
+ *   bun src/store/cli.ts tool-calls --build --days=90
+ *   bun src/store/cli.ts tool-calls --days=90 --out=tc.jsonl
  *
  * 兼容旧 flag-only 调用（无子命令 = sync）
  *
@@ -68,6 +71,14 @@ import {
 } from './session-resolve';
 import { computeCliStats } from './session-stats';
 import { collectSessionFailures } from './failure-stats';
+import { scanSessions } from './session-scan';
+import {
+  extractToolCalls,
+  getToolCallsBuiltAt,
+  queryToolCallsBySession,
+  replaceToolCalls,
+  toolCallHeader,
+} from './session-tool-calls';
 import { countStats } from './upsert';
 import { loadMeta } from './meta';
 import { resolveStorePaths } from './paths';
@@ -96,6 +107,8 @@ const COMMANDS = [
   'set-title',
   'title-review',
   'stats',
+  'scan',
+  'tool-calls',
   'sync',
   'refs',
   'help',
@@ -166,6 +179,12 @@ interface CliArgs {
   promptPreviewChars: number;
   /** title-review: 无 prompt 的 session 也列出 */
   includeEmptyReview: boolean;
+  /** scan: 匹配 pattern */
+  grep?: string;
+  /** scan: pattern 按 RegExp 匹配 */
+  regex: boolean;
+  /** tool-calls: live 提取并物化到缓存表 (增量) */
+  build: boolean;
 }
 
 function parseSource(s: string): SourceId | 'all' {
@@ -198,6 +217,8 @@ function parseArgs(argv: string[]): CliArgs {
     promptPreviewCount: 3,
     promptPreviewChars: 300,
     includeEmptyReview: false,
+    regex: false,
+    build: false,
   };
 
   let i = 0;
@@ -233,6 +254,9 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--clear') out.clearTitle = true;
     else if (a === '--write-source') out.writeSource = true;
     else if (a === '--include-empty') out.includeEmptyReview = true;
+    else if (a === '--regex') out.regex = true;
+    else if (a === '--build') out.build = true;
+    else if (a.startsWith('--grep=')) out.grep = a.slice('--grep='.length);
     else if (a.startsWith('--prompt-count=')) {
       out.promptPreviewCount = Number(a.slice('--prompt-count='.length));
     } else if (a.startsWith('--prompt-chars=')) {
@@ -313,6 +337,8 @@ Commands:
   set-title    Cache overlay title (Agent/user; sync-safe)
   title-review Review title candidates: title + prompt count + truncated prompts
   stats        Aggregate counts / tokens (cache; P0 window clip + quality)
+  scan         跨 session prompt 检索 (缓存 prompts 表, cache-first)
+  tool-calls   跨 session tool call 导出 jsonl (--build 物化 / --live 直读)
   sync         Incremental sync → SQLite
   refs         listRefs only
   help
@@ -344,6 +370,18 @@ Multi-session digest (自动化 memory 聚合; 默认 roots-only + 当天):
   digest --days=7 --source=all --limit=30
   digest --cwd=. --format=md --out=digest.md   # 按 project 分组, 可 append 到 memory
   digest --text-preview=800               # 覆盖 goal/stop/next 截断 cap
+
+Content scan (issue #7 方向 H; prompt 走缓存需先 sync):
+  scan --grep='kimi -p' --days=90                      # 7 CLI 入口归因 (prompt 侧)
+  scan --grep='parent_id' --regex --limit=10
+  # --limit=N 命中 session 数上限 (默认 20); --max-output-chars=N preview 长度 (默认 200)
+
+Tool calls export (数据出口与检索解耦; jsonl 每行自含 session 归因, 落盘后 grep/jq/python 接管):
+  tool-calls --build --days=90                         # live 提取物化 (增量, 已 built 且未过期的 session 跳过)
+  tool-calls --days=90 --out=tc.jsonl                  # cache-first 导出 jsonl
+  tool-calls --days=14 --tool=Bash | grep 'grok -m'    # 管道直查
+  tool-calls --days=7 --live --io --max-output-chars=500   # 跳过物化表 live 直读 + 附 output preview
+  # 默认 cache-first (先 --build); --limit=N 行上限 (默认 5000); --format=json 包装数组
 
 Custom title (cache overlay; sync-safe):
   list --untitled --days=7 --roots
@@ -378,6 +416,10 @@ Options:
   --max-output-chars=N  truncate tool I/O & long text
   --from=N --to=N     message index range
   --io                trace/tool-errors: include tool I/O previews
+  --grep=PATTERN      scan: 匹配 pattern (默认大小写不敏感 substring)
+  --regex             scan: pattern 按 RegExp (忽略大小写)
+  --build             tool-calls: live 提取并物化 (增量)
+  --tool=NAME --status=STATUS  tool-calls/filter tools (error|soft|hard|completed)
   --reasoning         trace: include reasoning_preview
   --tool=NAME --status=STATUS  filter tools (error|soft|hard|completed)
   --text-preview=N    handoff: override user+assistant caps (default 500/3000);
@@ -834,6 +876,141 @@ async function cmdDigest(args: CliArgs) {
     printJson(result, args.pretty);
   } finally {
     closeAiCodingStats();
+  }
+}
+
+/** 跨 session prompt 检索 (缓存 prompts 表; tool input 用 tool-calls 导出后自行 grep) */
+async function cmdScan(args: CliArgs) {
+  if (!args.grep) throw new Error('scan requires --grep=<pattern>');
+  // 默认窗口 7 天 (90d 归因需显式 --days=90)
+  if (!args.startDate && !args.endDate && args.days == null) args.days = 7;
+  const { startDate, endDate } = resolveWindow(args);
+
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  try {
+    const { sessions } = queryCached({
+      source: args.source,
+      startDate,
+      endDate,
+      rootsOnly: args.rootsOnly || undefined,
+      cwd: args.cwd,
+    });
+
+    const result = scanSessions(
+      sessions,
+      { pattern: args.grep, regex: args.regex, maxChars: args.maxOutputChars },
+      {
+        getPrompts: (s) => {
+          if (!isSourceId(String(s.source))) return [];
+          return getSessionPrompts(s.source as SourceId, s.id);
+        },
+      },
+    );
+
+    // --limit 截命中 session 数 (默认 20)
+    const limit = args.limit ?? 20;
+    const output = { ...result, matches: result.matches.slice(0, limit), truncated: result.matched > limit };
+    printJson(output, args.pretty);
+  } finally {
+    closeStoreDb();
+  }
+}
+
+/**
+ * 跨 session tool call 导出 (jsonl 流, 数据出口与检索解耦):
+ * 默认 cache-first 读物化表; --build live 提取物化 (增量); --live 仅本次 live 直读。
+ * 导出行自含 session 归因字段, 落盘后 grep/jq/python 随意。
+ */
+async function cmdToolCalls(args: CliArgs) {
+  if (!args.startDate && !args.endDate && args.days == null) args.days = 7;
+  const { startDate, endDate } = resolveWindow(args);
+
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  const { sessions } = queryCached({
+    source: args.source,
+    startDate,
+    endDate,
+    rootsOnly: args.rootsOnly || undefined,
+    cwd: args.cwd,
+  });
+
+  // ---- build: live 提取 → 物化表 (session 级增量, last_active 晚于 built_at 才重提) ----
+  if (args.build) {
+    await initAiCodingStats();
+    try {
+      let built = 0;
+      let skipped = 0;
+      let totalRows = 0;
+      for (const s of sessions) {
+        if (!isSourceId(String(s.source))) continue;
+        const source = s.source as SourceId;
+        const lastActiveMs = s.last_active_at_iso ? Date.parse(s.last_active_at_iso) : 0;
+        const builtAt = getToolCallsBuiltAt(source, s.id);
+        if (builtAt != null && lastActiveMs <= builtAt) {
+          skipped += 1;
+          continue;
+        }
+        const detail = await getSessionDetail({ sessionId: s.id, source });
+        const rows = extractToolCalls(detail?.messages);
+        totalRows += replaceToolCalls(source, s.id, rows);
+        built += 1;
+      }
+      printJson({ ok: true, build: { sessions: sessions.length, built, skipped, total_rows: totalRows } }, args.pretty);
+    } finally {
+      closeAiCodingStats();
+      closeStoreDb();
+    }
+    return;
+  }
+
+  // ---- 导出 ----
+  const maxOutputChars = args.includeIo ? (args.maxOutputChars ?? 300) : undefined;
+  const filters = { tool: args.tool, status: args.status };
+  const emitRow = (s: UnifiedSessionInfo, row: Record<string, unknown>) =>
+    JSON.stringify({ ...toolCallHeader(s), ...row });
+
+  const collect = async (): Promise<string> => {
+    const lines: string[] = [];
+    let count = 0;
+    const limit = args.limit ?? 5000;
+    if (args.live) await initAiCodingStats();
+    for (const s of sessions) {
+      if (!isSourceId(String(s.source))) continue;
+      const source = s.source as SourceId;
+      let rows: Record<string, unknown>[];
+      if (args.live) {
+        const detail = await getSessionDetail({ sessionId: s.id, source });
+        rows = extractToolCalls(detail?.messages, { tool: args.tool, maxOutputChars }) as any;
+        if (args.status) rows = rows.filter((r) => String(r.status) === args.status) as any;
+      } else {
+        rows = queryToolCallsBySession(source, s.id, filters) as any;
+      }
+      for (const r of rows) {
+        lines.push(emitRow(s, r));
+        count += 1;
+        if (count >= limit) return lines.join('\n');
+      }
+    }
+    return lines.join('\n');
+  };
+
+  try {
+    if (args.format === 'json') {
+      const all = (await collect()).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      printJson({ ok: true, count: all.length, truncated: all.length >= (args.limit ?? 5000), records: all }, args.pretty);
+      return;
+    }
+    const body = await collect();
+    if (args.out) {
+      writeFileSync(args.out, body ? `${body}\n` : '', 'utf8');
+      printJson({ ok: true, out: args.out, bytes: Buffer.byteLength(body, 'utf8'), lines: body ? body.split('\n').length : 0 }, args.pretty);
+      return;
+    }
+    if (body) process.stdout.write(`${body}\n`);
+    else console.error('[cli] tool_calls 表为空或窗口无 session; 先 tool-calls --build 物化, 或 --live 直读');
+  } finally {
+    if (args.live) closeAiCodingStats();
+    closeStoreDb();
   }
 }
 
@@ -1506,6 +1683,12 @@ async function main() {
       break;
     case 'stats':
       await cmdStats(args);
+      break;
+    case 'scan':
+      await cmdScan(args);
+      break;
+    case 'tool-calls':
+      await cmdToolCalls(args);
       break;
     case 'refs':
       await cmdRefs(args);

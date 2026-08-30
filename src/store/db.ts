@@ -67,6 +67,8 @@ function migrateIfNeeded(db: any): void {
     }
   }
 
+  // v2 → v3：tool_calls 物化表（SCHEMA_SQL 先行且 IF NOT EXISTS 已覆盖，此处仅记版本）
+
   if (cur >= SCHEMA_VERSION) return;
 
   db.prepare(

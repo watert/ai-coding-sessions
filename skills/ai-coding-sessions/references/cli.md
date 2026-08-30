@@ -26,6 +26,8 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `title-review` | **标题审查候选**：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
 | `stats` | 聚合 token（P0 裁剪/split/quality · P1 `by_model`/cost/`tool_fail`） |
 | `sync` | 增量同步缓存（`--reconcile` / `--full`） |
+| `scan` | **跨 session prompt 检索**（`--grep=` · `--regex`；缓存 prompts 表, cache-first） |
+| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含 session 归因; `--build` live 物化(增量) / `--live` 直读 / `--tool=` / `--status=` / `--out=`；分析交给 grep/jq/python） |
 | `refs` | listRefs（无 convert/write） |
 | `help` | 帮助 |
 

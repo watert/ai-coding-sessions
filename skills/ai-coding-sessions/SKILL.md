@@ -82,6 +82,8 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `set-title` | 缓存 `custom_title`（`--clear` · OpenCode `--write-source`） |
 | `title-review` | 标题审查候选：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
 | `stats` | token / bySource 聚合 |
+| `scan` | **跨 session prompt 检索**（缓存 prompts 表, cache-first; `--grep=` · `--regex` · `--days=`） |
+| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含 session 归因; `--build` 物化 / `--live` 直读 / `--tool=` / `--out=`; 落盘后 grep/jq/python 接管分析） |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |
 
@@ -97,6 +99,10 @@ bun src/store/cli.ts failures --source=grok --days=3 --format=md --out=failures.
 bun src/store/cli.ts trace --source=kimi --id=<id> --io --tool=Bash --max-steps=30
 bun src/store/cli.ts trace --source=kimi --id=<id> --out=trace.md
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
+bun src/store/cli.ts scan --grep='kimi -p' --days=90                      # prompt 侧 CLI 入口归因 (cache-first)
+bun src/store/cli.ts tool-calls --build --days=90                          # tool call 物化 (增量)
+bun src/store/cli.ts tool-calls --days=90 --out=tc.jsonl                   # 导出 jsonl (0.1s 级) → grep/jq/python
+bun src/store/cli.ts tool-calls --days=14 --tool=Bash | grep 'grok -m'     # 管道直查
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 ```
 
