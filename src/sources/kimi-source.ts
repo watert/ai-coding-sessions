@@ -560,6 +560,21 @@ async function getKimiSubagentSessionStats(
   return getKimiSessionStats(pseudo, preloadedMessages);
 }
 
+/**
+ * 子 agent 最终状态: outcome 仅覆盖确凿的失败/中断。
+ * aborted: 父 agent 提前收尾时框架会把存活 subagent 统一标 aborted,
+ * 若 wire 已自主收尾(end_turn/step.end 无 error)则视为"做完被收割", 保留 done
+ * started/running: 是占位/过期信息(main wire 缺失时的兜底), 不降级 wire 已 done 的会话
+ */
+export function resolveSubagentSessionStatus(
+  wireStatus: ReturnType<typeof checkSessionStatus>,
+  outcome?: string,
+): ReturnType<typeof checkSessionStatus> {
+  if (outcome === 'failed') return 'error';
+  if (outcome === 'aborted' && wireStatus !== 'done') return 'aborted';
+  return wireStatus;
+}
+
 export async function convertKimiSubagentSession(
   root: KimiSessionItem,
   meta: KimiSubagentMeta,
@@ -570,18 +585,15 @@ export async function convertKimiSubagentSession(
     debugFallback(`[convertKimiSubagentSession] 时间字段回退汇总 sessionId=${meta.virtualSessionId} fallbackCount=${stats.fallbackCount}/${unifiedMessages.length}`);
   }
   // AgentSwarm 返回的 outcome 比 wire 文件本身更准确地反映子 agent 是否失败/被中断
-  let session_status = checkSessionStatus(unifiedMessages);
-  if (meta.outcome === 'failed') session_status = 'error';
-  else if (meta.outcome === 'aborted') session_status = 'aborted';
-  else if (meta.outcome === 'started' || meta.outcome === 'running') session_status = 'in-progress';
+  const session_status = resolveSubagentSessionStatus(checkSessionStatus(unifiedMessages), meta.outcome);
 
   const title = meta.description
     ? `${meta.subagentType}: ${meta.description}`
     : `${meta.subagentType} (${meta.agentDir})`;
 
-  // 仅失败/中断时注入 AgentSwarm 错误详情（completed 的 body 不是 error）
+  // 仅真正失败/中断时注入 AgentSwarm 错误详情（"做完被收割"已保留 done，body 不是 error）
   const last_message: UnifiedSessionInfo['last_message'] =
-    (meta.outcome === 'failed' || meta.outcome === 'aborted') && meta.errorInfo
+    (meta.outcome === 'failed' || (meta.outcome === 'aborted' && session_status !== 'done')) && meta.errorInfo
       ? {
           ...(stats.last_message || {}),
           id: `${meta.virtualSessionId}-error`,
