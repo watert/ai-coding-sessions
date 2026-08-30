@@ -139,6 +139,17 @@ function resolveTiming(msg: ZcodeMessageItem, usage?: ZcodeModelUsage): {
   return { created, decodeStart, completed, latencyMs, decodeMs };
 }
 
+/**
+ * model-only 注入消息 (todo_reminder / background_task / compact_summary 等)
+ * 带结构化标记, 不代表用户输入, session list prompts 与轨迹需过滤
+ */
+export function isZcodeModelOnlyMessage(msg: ZcodeMessageItem): boolean {
+  const d = msg.data || {};
+  const visibility = d.metadata?.visibility || d.semantics?.uiVisibility;
+  return visibility === 'model-only' || visibility === 'hidden'
+    || d.semantics?.transcriptVisibility === 'hidden';
+}
+
 export function convertZcodeMessage(msg: ZcodeMessageItem): UnifiedMessage {
   const usage = msg.modelUsage;
   const timing = resolveTiming(msg, usage);
@@ -338,7 +349,7 @@ async function getZcodeSessionStats(
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const um = unifiedMessages[i];
-      if (msg.role === 'user') stats.total_user_messages++;
+      if (msg.role === 'user' && !isZcodeModelOnlyMessage(msg)) stats.total_user_messages++;
 
       for (const part of msg.parts || []) {
         if (part.type !== 'tool') continue;
@@ -359,21 +370,23 @@ async function getZcodeSessionStats(
       const modelKey = um.info.modelID || um.info.model?.modelID;
       if (modelKey) models.add(modelKey);
 
-      // text parts 摘要
-      const texts = (msg.parts || [])
-        .filter((p) => p.type === 'text' || p.type === 'reasoning')
-        .map((p) => p.text)
-        .filter(Boolean);
-      if (texts.length) {
-        const timing = resolveTiming(msg, msg.modelUsage);
-        textParts.push({
-          role: msg.role,
-          text: texts.join('\n'),
-          tool: '',
-          duration: timing.decodeMs || 0,
-          startTime: timing.created,
-          endTime: timing.completed || timing.created,
-        });
+      // text parts 摘要（跳过 model-only 注入, 避免 reminder 混入 prompts 展示）
+      if (!isZcodeModelOnlyMessage(msg)) {
+        const texts = (msg.parts || [])
+          .filter((p) => p.type === 'text' || p.type === 'reasoning')
+          .map((p) => p.text)
+          .filter(Boolean);
+        if (texts.length) {
+          const timing = resolveTiming(msg, msg.modelUsage);
+          textParts.push({
+            role: msg.role,
+            text: texts.join('\n'),
+            tool: '',
+            duration: timing.decodeMs || 0,
+            startTime: timing.created,
+            endTime: timing.completed || timing.created,
+          });
+        }
       }
 
       if (msg.role === 'assistant') {
