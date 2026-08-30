@@ -8,6 +8,7 @@ import path from 'path';
 import dayjs from 'dayjs';
 import {
   collectSessionFailures,
+  collectFailureEvents,
   resolveFailureWindow,
   collectClaudeSessionEvents,
   collectCodexSessionEvents,
@@ -593,5 +594,53 @@ describe('#11 T4: wrapBashBreakdown 三维列真聚合', () => {
     expect(r.byCommand).toEqual([]);
     expect(r.byExitCode.find((x) => x.key === '3')?.count).toBe(1);
     expect(r.byModel.find((x) => x.key === 'm')?.count).toBe(1);
+  });
+});
+
+// ==================== #11 T5: collectFailureEvents 平价锁 ====================
+
+describe('collectFailureEvents 与 collectSessionFailures 平价', () => {
+  it('同一事件集: hard/soft/api/tool 计数与会话数完全对齐', async () => {
+    const callId = 'call-parity-1';
+    const err = 'Error: /tmp/parity.md does not exist.';
+    writeSession('parity-session', 'sess-parity', [
+      { type: 'user', content: '<user_query>go</user_query>' },
+      {
+        type: 'assistant',
+        content: '',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: callId, name: 'read_file', arguments: '{"target_file":"/tmp/parity.md"}' }],
+      },
+      { type: 'tool_result', tool_call_id: callId, content: err },
+    ], [
+      toolUpdate(callId, 'in_progress'),
+      toolUpdate(callId, 'failed', err, { type: 'ReadFile', FileNotFound: err }),
+      {
+        timestamp: Date.now() / 1000,
+        method: '_x.ai/session/update',
+        params: {
+          update: { sessionUpdate: 'turn_completed', stop_reason: 'error', agent_result: 'API error (status 500): parity boom' },
+        },
+      },
+    ]);
+
+    const { events } = await collectFailureEvents({ source: 'grok', days: 1 });
+    const result = await collectSessionFailures({ source: 'grok', days: 1 });
+
+    const hard = events.filter((e) => !e.soft);
+    const hardTool = hard.filter((e) => e.kind === 'tool');
+    const hardApi = hard.filter((e) => e.kind === 'api');
+    expect(hard.length).toBe(result.total);
+    expect(hardTool.length).toBe(result.toolCount);
+    expect(hardApi.length).toBe(result.apiCount);
+    expect(events.filter((e) => e.soft).length).toBe(result.softCount);
+    expect(new Set(hard.map((e) => e.sessionId)).size).toBe(result.sessions);
+    // 集合级一致: 事件签名 (kind:session:error) 无增无漏
+    const sigs = hard.map((e) => `${e.kind}:${e.sessionId}:${e.error}`).sort();
+    const resultSigs = [
+      ...result.samples.map((e) => `${e.kind}:${e.sessionId}:${e.error}`),
+      ...result.apiFailures.map((e) => `api:${e.sessionId}:${e.error}`),
+    ].sort();
+    expect(sigs).toEqual([...new Set(resultSigs)]);
   });
 });
