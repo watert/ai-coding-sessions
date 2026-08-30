@@ -10,6 +10,7 @@ import {
   getSessionDetail,
   closeOpencodeDb,
 } from './opencode';
+import { listSessions, getSessionDetail as getUnifiedSessionDetail } from './index';
 import {
   createOpencodeFixtureDb,
   OC_SESSION_ID,
@@ -56,6 +57,19 @@ describe('OpenCode SQLite (fixture)', () => {
     expect(item.total_tokens).toBe(150);
     expect(item.total_input).toBe(100);
     expect(item.total_output).toBe(50);
+    expect(item.session_status).toBe('done');
+  });
+
+  it('getSessionList compact 同样带 session_status', () => {
+    const { list } = getSessionList(undefined, undefined, true);
+    const item = list.find((s) => s.session_id === OC_SESSION_ID)!;
+    expect(item.session_status).toBe('done');
+  });
+
+  it('listSessions convert 透传 session_status（勿漏映射成 unknown）', async () => {
+    const { sessions } = await listSessions({ source: 'opencode' });
+    const item = sessions.find((s) => s.id === OC_SESSION_ID);
+    expect(item?.session_status).toBe('done');
   });
 
   it('日期过滤（YYYY-MM-DD）', () => {
@@ -65,7 +79,7 @@ describe('OpenCode SQLite (fixture)', () => {
     expect(miss.list.some((s) => s.session_id === OC_SESSION_ID)).toBe(false);
   });
 
-  it('getSessionDetail 结构与 parts 关联', () => {
+  it('getSessionDetail 结构与 parts 关联', async () => {
     const detail = getSessionDetail(OC_SESSION_ID);
     expect(detail).toBeTruthy();
     expect(detail!.info.id).toBe(OC_SESSION_ID);
@@ -83,6 +97,9 @@ describe('OpenCode SQLite (fixture)', () => {
     const tools = detail!.messages[1].parts.filter((p) => p.type === 'tool');
     expect(tools.length).toBe(1);
     expect(tools[0].tool).toBe('bash');
+    expect(detail!.info.session_status).toBe('done');
+    const unified = await getUnifiedSessionDetail({ sessionId: OC_SESSION_ID, source: 'opencode' });
+    expect(unified?.info.session_status).toBe('done');
   });
 
   it('不存在的 session 返回 null', () => {

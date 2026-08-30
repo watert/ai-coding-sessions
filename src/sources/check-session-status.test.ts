@@ -2,7 +2,7 @@
  * checkSessionStatus 纯函数边界（不依赖本机 OpenCode SQLite）
  */
 import { describe, expect, it } from 'bun:test';
-import { checkSessionStatus } from './opencode';
+import { checkSessionStatus, determineSessionStatusFromLastMessage } from './opencode';
 
 function msg(partial: {
   role: string;
@@ -130,6 +130,29 @@ describe('checkSessionStatus', () => {
         parts: [{ type: 'tool', tool: 'Bash', state: { status: 'error', error: 'exit 1' } }],
       }),
     ])).toBe('done');
+  });
+
+  it('list compact last_message（无 parts 包装）finish=stop → done', () => {
+    expect(determineSessionStatusFromLastMessage({
+      role: 'assistant',
+      finish: 'stop',
+      time: { completed: 2000 },
+    })).toBe('done');
+  });
+
+  it('list compact last_message 无 finish/completed → in-progress', () => {
+    expect(determineSessionStatusFromLastMessage({
+      role: 'assistant',
+      time: { created: 1000 },
+    })).toBe('in-progress');
+  });
+
+  it('list compact last_message compaction assistant → done', () => {
+    expect(determineSessionStatusFromLastMessage({
+      role: 'assistant',
+      agent: 'compaction',
+      mode: 'compaction',
+    })).toBe('done');
   });
 
   it('历史消息有 running 后台 tool + 最后是 stop 文本 → in-progress', () => {

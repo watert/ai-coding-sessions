@@ -237,6 +237,7 @@ export async function listSessions(
           time_compacting: s.time_compacting || undefined,
           last_message: s.last_message,
           lastTokenInfo: s.lastTokenInfo,
+          session_status: s.session_status,
           textParts: s.textParts,
           userParts: s.userParts,
           avg_tps: s.avg_tps,
@@ -444,6 +445,7 @@ export async function getSessionDetail(
         ...detail.info,
         source: 'opencode',
         pricing,
+        session_status: detail.info.session_status ?? checkSessionStatus(detail.messages),
       },
       pricing,
     };

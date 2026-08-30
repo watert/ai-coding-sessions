@@ -136,6 +136,7 @@ const OpenCodeSessionInfoSchema = z.object({
   workspace_id: z.string().optional().nullable(), // 工作区ID，可为 null
   project_name: z.string().optional().nullable(), // 项目名称，可为 null
   project_worktree: z.string().optional().nullable(), // 项目工作树路径，可为 null
+  session_status: z.enum(['in-progress', 'done', 'error', 'aborted', 'unknown']).optional(),
 });
 
 const EditDiffsSchema = z.object({
@@ -380,6 +381,7 @@ function isCompactionMessage(msg: { info?: any; parts?: any[] } | null | undefin
 export function checkSessionStatus(messages: OpenCodeMessage[]): 'in-progress' | 'done' | 'error' | 'aborted' | 'unknown' {
   const lastMsg = messages[messages.length - 1];
   if (!lastMsg) return 'done';
+  if (!lastMsg.info) return 'unknown';
 
   // compact 已落地（assistant 摘要）→ done；仅有 user 侧 compact 触发、尚无摘要 → 仍进行中
   if (isCompactionMessage(lastMsg)) {
@@ -678,7 +680,7 @@ function getMessageTimingStats(sessionIds: string[]): Map<string, MessageTimingS
 }
 
 /** 仅根据最后一条消息判断 session 状态，避免 compact 模式加载全部 parts */
-function determineSessionStatusFromLastMessage(lastMsg: any): 'in-progress' | 'done' | 'error' | 'aborted' | 'unknown' {
+export function determineSessionStatusFromLastMessage(lastMsg: any): 'in-progress' | 'done' | 'error' | 'aborted' | 'unknown' {
   if (!lastMsg) return 'done';
   // list 侧 last_message 可能是 message.data（无 parts）；靠 agent/mode/compaction 识别
   if (lastMsg.compaction || lastMsg.agent === 'compaction' || lastMsg.mode === 'compaction') {
@@ -1456,6 +1458,7 @@ export function getSessionDetail(sessionId: string): OpenCodeSessionExport | nul
     workspace_id: session.workspace_id,
     project_name: session.project_name,
     project_worktree: session.project_worktree,
+    session_status: checkSessionStatus(messages),
   };
 
   const editDiffs = calculateEditDiffs(partRows.map(part => {
