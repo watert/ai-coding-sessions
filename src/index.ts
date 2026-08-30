@@ -131,6 +131,7 @@ export {
   isStoreDbReady,
   // failures：API 异常 + Tool Call Fail 查询
   collectSessionFailures,
+  collectFailureEvents,
   resolveFailureWindow,
 } from './store';
 
@@ -173,4 +174,10 @@ export type {
   ResolveResult,
   ResolveMatchKind,
   SetSessionTitleResult,
+  // failures 类型（宿主薄适配 #11 T5）
+  FailureEvent,
+  FailureKind,
+  FailureSource,
+  FailureCollectOptions,
+  FailureAnalyzeResult,
 } from './store';

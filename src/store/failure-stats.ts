@@ -394,6 +394,7 @@ function collectOpencodeToolEvents(sinceMs: number, out: FailureEvent[]) {
       kind: 'tool',
       model: m.modelID || m.model?.modelID,
       toolName: String(p.tool || p.name || 'unknown'),
+      command: typeof state.input?.command === 'string' ? state.input.command : undefined,
       soft: isSoft,
       errorKind: kind,
       error: isSoft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
@@ -431,6 +432,7 @@ function collectKimiSessionEvents(
           kind: 'tool',
           model: msg.model,
           toolName: String(part.tool || part.name || 'unknown'),
+          command: typeof state.input?.command === 'string' ? state.input.command : undefined,
           soft: isSoft,
           errorKind: kind,
           error: isSoft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
@@ -832,14 +834,13 @@ export function wrapBashBreakdown(events: FailureEvent[], top: number = 20): Bas
 // ==================== 汇总 ====================
 
 /**
- * 汇总近 N 天各 source 失败事件。
+ * 仅采集窗口内失败事件，不做聚合（宿主薄适配 #11 T5）。
  * 每个 source 独立 try/catch：单源失败不影响其他源结果。
  */
-export async function collectSessionFailures(
+export async function collectFailureEvents(
   opts: FailureCollectOptions = {},
-): Promise<FailureAnalyzeResult> {
+): Promise<{ events: FailureEvent[]; sinceMs: number; endMs: number; days: number }> {
   const source = opts.source ?? 'all';
-  const top = opts.top ?? 20;
   const { sinceMs, endMs, days } = resolveFailureWindow(opts);
   const events: FailureEvent[] = [];
 
@@ -942,6 +943,18 @@ export async function collectSessionFailures(
   }
 
   await Promise.all(tasks);
+
+  return { events, sinceMs, endMs, days };
+}
+
+/**
+ * 汇总近 N 天各 source 失败事件（采集 + 聚合）。
+ */
+export async function collectSessionFailures(
+  opts: FailureCollectOptions = {},
+): Promise<FailureAnalyzeResult> {
+  const top = opts.top ?? 20;
+  const { events, sinceMs, endMs, days } = await collectFailureEvents(opts);
 
   const filtered = events.filter((e) => tsInWindow(e.ts, sinceMs, endMs));
   const hard = filtered.filter((e) => !e.soft);
