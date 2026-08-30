@@ -516,3 +516,82 @@ describe('P1: wrapBashBreakdown', () => {
     expect(r.samples[0].command).toBeNull();
   });
 });
+
+// ==================== #11 T4: command 透传 + 三维列真聚合 ====================
+
+describe('#11 T4: collector 透传 raw command', () => {
+  const sinceMs = dayjs('2026-08-01').valueOf();
+  const endMs = dayjs('2026-08-31').endOf('day').valueOf();
+
+  it('claude: tool_use input.command → ev.command', () => {
+    const msgs = [{
+      timestamp: dayjs('2026-08-15T10:00:00Z').valueOf(),
+      message: { content: [{ type: 'tool_use', name: 'Bash', is_error: true, input: { command: 'bun test src', error: 'fail' } }] },
+    }];
+    const out: FailureEvent[] = [];
+    collectClaudeSessionEvents('s', undefined, msgs, sinceMs, endMs, out);
+    expect(out[0].command).toBe('bun test src');
+  });
+
+  it('codex/zcode: state.input.command → ev.command', () => {
+    const part = { type: 'tool', tool: 'shell', state: { status: 'failed', input: { command: 'git push origin main' }, error: 'denied' } };
+    const codexOut: FailureEvent[] = [];
+    collectCodexSessionEvents('s', undefined, [{ timestamp: dayjs('2026-08-10T12:00:00Z').valueOf(), parts: [part] }], sinceMs, endMs, codexOut);
+    expect(codexOut[0].command).toBe('git push origin main');
+    const zcodeOut: FailureEvent[] = [];
+    collectZcodeSessionEvents('s', undefined, [{ timeCreated: dayjs('2026-08-12T05:00:00Z').valueOf(), parts: [part] }], sinceMs, endMs, zcodeOut);
+    expect(zcodeOut[0].command).toBe('git push origin main');
+  });
+
+  it('workbuddy: function_call arguments.command → ev.command', () => {
+    const events = [
+      { type: 'function_call', callId: 'c1', name: 'bash', arguments: { command: 'gh pr create' }, timestamp: dayjs('2026-08-10T03:00:00Z').valueOf() },
+      { type: 'function_call_result', callId: 'c1', status: 'failed', output: 'error', timestamp: dayjs('2026-08-10T03:00:00Z').valueOf() },
+    ];
+    const out: FailureEvent[] = [];
+    collectWorkbuddySessionEvents('s', undefined, events, sinceMs, endMs, out);
+    expect(out[0].command).toBe('gh pr create');
+  });
+});
+
+describe('#11 T4: wrapBashBreakdown 三维列真聚合', () => {
+  const t = dayjs('2026-08-15T10:00:00Z').valueOf();
+
+  it('同 family 多事件逐条计数（不按 (family,exitCode) 行去重）', () => {
+    const events: FailureEvent[] = [
+      { source: 'codex', sessionId: 's', ts: t, kind: 'tool', toolName: 'bash', command: 'cd /x && bun test foo', errorRaw: 'exit code 1', error: 'exit code 1' },
+      { source: 'codex', sessionId: 's', ts: t + 1, kind: 'tool', toolName: 'bash', command: 'cd /y && bun test bar', errorRaw: 'exit code 2', error: 'exit code 2' },
+    ];
+    const r = wrapBashBreakdown(events);
+    // family/category/command 都应计 2，而非被 (family,exitCode) 分桶切片吞掉
+    expect(r.byCmdFamily.find((x) => x.key === 'bun test')?.count).toBe(2);
+    expect(r.byCategory.find((x) => x.key === 'test-run')?.count).toBe(2);
+    expect(r.byCommand.length).toBe(2); // 两条命令不同，各自 1
+    expect(r.samples[0].cmdFamily).toBe('bun test');
+    expect(r.samples[0].category).toBe('test-run');
+    expect(r.samples[0].command).toBe('cd /y && bun test bar'); // samples 按 ts 倒序, 首条是后者
+  });
+
+  it('family 解析对齐：git push / gh pr / bun test 三类各归其位', () => {
+    const events: FailureEvent[] = (['git push origin main', 'gh pr create', 'bun test'].map((command, i) => ({
+      source: 'zcode' as const, sessionId: 's', ts: t + i, kind: 'tool' as const, toolName: 'bash', command, errorRaw: 'exit code 1', error: 'exit code 1',
+    })));
+    const r = wrapBashBreakdown(events);
+    expect(r.byCmdFamily.map((x) => x.key).sort()).toEqual(['bun test', 'gh pr', 'git push']);
+    expect(r.byCategory.find((x) => x.key === 'git')?.count).toBe(1);
+    expect(r.byCategory.find((x) => x.key === 'gh')?.count).toBe(1);
+    expect(r.byCategory.find((x) => x.key === 'test-run')?.count).toBe(1);
+  });
+
+  it('无 command 且无 bash 兜底的事件不进三维桶（byExitCode/byModel 不受影响）', () => {
+    const events: FailureEvent[] = [
+      { source: 'claude', sessionId: 's', ts: t, kind: 'tool', toolName: 'bash', model: 'm', errorRaw: 'exit code 3', error: 'exit code 3' },
+    ];
+    const r = wrapBashBreakdown(events);
+    expect(r.byCmdFamily).toEqual([]);
+    expect(r.byCategory).toEqual([]);
+    expect(r.byCommand).toEqual([]);
+    expect(r.byExitCode.find((x) => x.key === '3')?.count).toBe(1);
+    expect(r.byModel.find((x) => x.key === 'm')?.count).toBe(1);
+  });
+});

@@ -114,7 +114,7 @@ interface BucketKey {
 }
 
 /** 归一 command 展示用：去多空白 → 截断 160 → 空 → '(empty)' */
-function normCommand(command: string): string {
+export function normCommand(command: string): string {
   const c = (command || '').replace(/\s+/g, ' ').trim();
   return c ? c.slice(0, 160) : '(empty)';
 }

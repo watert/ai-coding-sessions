@@ -20,7 +20,7 @@ import { listCodexSessions, listCodexMessages } from '../sources/codex-code';
 import { listZcodeSessions, listZcodeMessages } from '../sources/zcode-code';
 import { listWorkbuddySessions, readWorkbuddyJsonl } from '../sources/workbuddy-code';
 import { classifySoftToolError } from '../sources/tool-error-soft';
-import { buildBashBreakdown, classifyBashCategory, extractBashCmdFamily, extractBashExitCode } from './bash-breakdown';
+import { classifyBashCategory, extractBashCmdFamily, extractBashExitCode, normCommand } from './bash-breakdown';
 
 /** 已实现失败采集的 source */
 export type FailureSource = 'grok' | 'opencode' | 'kimi' | 'claude' | 'codex' | 'zcode' | 'workbuddy';
@@ -40,6 +40,8 @@ export interface FailureEvent {
   statusCode?: number;
   /** tool: 工具名 */
   toolName?: string;
+  /** tool: bash 原始命令（BashBreakdown 三维列用） */
+  command?: string;
   /** soft fail（已自动降级，非硬错误） */
   soft?: boolean;
   /** grok errorKind / soft 分类 */
@@ -510,6 +512,7 @@ export function collectClaudeSessionEvents(
         kind: 'tool',
         model: msg?.message?.model,
         toolName: normalizeToolName(info.name),
+        command: info.command,
         soft: isSoft,
         errorKind: kind,
         error: isSoft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
@@ -556,6 +559,7 @@ export function collectCodexSessionEvents(
         kind: 'tool',
         model: msg?.model,
         toolName: normalizeToolName(info.name),
+        command: info.command,
         soft,
         errorKind: kind,
         error: soft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
@@ -603,6 +607,7 @@ export function collectZcodeSessionEvents(
         kind: 'tool',
         model,
         toolName: normalizeToolName(info.name),
+        command: info.command,
         soft,
         errorKind: kind,
         error: soft ? normError(raw) || `soft:${kind || 'unknown'}` : normError(raw),
@@ -670,6 +675,7 @@ export function collectWorkbuddySessionEvents(
       kind: 'tool',
       model: info?.model || (ev as any).providerData?.model,
       toolName: normalizeToolName(partInfo.name),
+      command: partInfo.command,
       soft,
       errorKind: kind,
       error: soft ? normError(errText) || `soft:${kind || 'unknown'}` : normError(errText),
@@ -764,17 +770,21 @@ export function wrapBashBreakdown(events: FailureEvent[], top: number = 20): Bas
   if (total === 0) {
     return { total: 0, byExitCode: [], byCmdFamily: [], byCategory: [], byCommand: [], byModel: [], samples: [] };
   }
-  const rows = buildBashBreakdown(events, top);
-  // TODO(#11 T4): FailureEvent 携带 raw command 后改为真聚合
+  // 三维真聚合：逐事件提取 command → family / category / command 各自入桶（不按 (family,exitCode) 行去重）
   const byCmdFamily = new Map<string, number>();
   const byCategory = new Map<string, number>();
   const byCommand = new Map<string, number>();
-  for (const r of rows) {
-    byCmdFamily.set(r.cmdFamily, (byCmdFamily.get(r.cmdFamily) || 0) + r.samples);
-    byCategory.set(r.category, (byCategory.get(r.category) || 0) + r.samples);
-    byCommand.set(r.command, (byCommand.get(r.command) || 0) + r.samples);
+  for (const e of events) {
+    const evAny = e as FailureEvent & { bash?: { command?: string; cmdFamily?: string } };
+    const command = e.command ?? evAny.bash?.command ?? '';
+    if (!command.trim() && !evAny.bash?.cmdFamily) continue;
+    const family = evAny.bash?.cmdFamily ?? extractBashCmdFamily(command);
+    byCmdFamily.set(family, (byCmdFamily.get(family) || 0) + 1);
+    const category = classifyBashCategory(family);
+    byCategory.set(category, (byCategory.get(category) || 0) + 1);
+    const cmdKey = normCommand(command);
+    byCommand.set(cmdKey, (byCommand.get(cmdKey) || 0) + 1);
   }
-  // TODO(#11 T4): FailureEvent 携带 raw command 后改为真聚合（cmdFamily/category/command 三维）
   const byExitCode = new Map<string, number>();
   for (const e of events) {
     const code = extractBashExitCode(e.errorRaw || e.error || '');
@@ -793,11 +803,8 @@ export function wrapBashBreakdown(events: FailureEvent[], top: number = 20): Bas
     .map((e) => {
       const ec = extractBashExitCode(e.errorRaw || e.error || '');
       // 推断 cmdFamily / category / command：无 raw command 时一律返回 null
-      const evAny = e as FailureEvent & {
-        command?: string;
-        bash?: { command?: string; cmdFamily?: string };
-      };
-      const command = evAny.command ?? evAny.bash?.command ?? '';
+      const evAny = e as FailureEvent & { bash?: { command?: string; cmdFamily?: string } };
+      const command = e.command ?? evAny.bash?.command ?? '';
       const family = evAny.bash?.cmdFamily ?? (command ? extractBashCmdFamily(command) : '');
       const category = family ? classifyBashCategory(family) : null;
       return {
