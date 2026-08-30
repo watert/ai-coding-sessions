@@ -44,6 +44,8 @@ export interface SyncOptions {
   source?: SourceId | 'all';
   /** 全量：不按 dirty 跳过写库提示 + 扫描 orphan */
   full?: boolean;
+  /** 忽略 dirty，对窗口内 session 强制 convert+upsert（宿主 ?fresh=1） */
+  reconvert?: boolean;
   dbPath?: string;
   metaPath?: string;
   /** 同步后关闭源 DB（CLI 用） */
@@ -107,7 +109,7 @@ export async function syncSessions(options: SyncOptions = {}): Promise<SyncResul
 
   try {
     for (const source of sources) {
-      const r = await syncOneSource(source, { startDate, endDate, full });
+      const r = await syncOneSource(source, { startDate, endDate, full, reconvert: !!options.reconvert });
       bySource.push(r);
       const sm: SourceSyncMeta = {
         last_sync_at: Date.now(),
@@ -166,7 +168,7 @@ export async function syncSessions(options: SyncOptions = {}): Promise<SyncResul
 
 async function syncOneSource(
   source: SourceId,
-  opts: { startDate?: string; endDate?: string; full: boolean },
+  opts: { startDate?: string; endDate?: string; full: boolean; reconvert?: boolean },
 ): Promise<SyncSourceResult> {
   const t0 = Date.now();
   const result: SyncSourceResult = {
@@ -194,8 +196,8 @@ async function syncOneSource(
       }
     }
 
-    // 无脏且非 full：只刷新 meta 时间，跳过 convert
-    if (!opts.full && dirtyIds.length === 0) {
+    // 无脏且非 full/reconvert：只刷新 meta 时间，跳过 convert
+    if (!opts.full && !opts.reconvert && dirtyIds.length === 0) {
       result.live = 0;
       result.duration_ms = Date.now() - t0;
       return result;
@@ -203,6 +205,7 @@ async function syncOneSource(
 
     const useFull =
       opts.full ||
+      opts.reconvert ||
       dirtyIds.length > INCREMENTAL_DIRTY_MAX ||
       (refs.length > 0 && dirtyIds.length > refs.length * 0.5) ||
       // 仅 grok/kimi 有按 id 增量 convert；其它源走全量 list（本身已较快）
@@ -235,7 +238,7 @@ async function syncOneSource(
 
       const ur = upsertSession(merged, {
         dirty_mark: dirty,
-        force: opts.full,
+        force: opts.full || opts.reconvert,
       });
       if (ur.action === 'insert') result.inserted++;
       else if (ur.action === 'update') result.updated++;
