@@ -9,6 +9,7 @@ import dayjs from 'dayjs';
 import {
   collectSessionFailures,
   collectFailureEvents,
+  dailyTopFailedTools,
   resolveFailureWindow,
   collectClaudeSessionEvents,
   collectCodexSessionEvents,
@@ -642,5 +643,50 @@ describe('collectFailureEvents 与 collectSessionFailures 平价', () => {
       ...result.apiFailures.map((e) => `api:${e.sessionId}:${e.error}`),
     ].sort();
     expect(sigs).toEqual([...new Set(resultSigs)]);
+  });
+});
+
+// ==================== #10 快线: dailyTopFailedTools ====================
+
+describe('dailyTopFailedTools', () => {
+  const d1 = dayjs('2026-08-29T10:00:00').valueOf();
+  const d2 = dayjs('2026-08-30T10:00:00').valueOf();
+  const ev = (ts: number, toolName: string, extra: Partial<FailureEvent> = {}): FailureEvent =>
+    ({ source: 'kimi', sessionId: 's', ts, kind: 'tool', toolName, error: 'x', ...extra } as FailureEvent);
+
+  it('日内 count 降序 top5 + pct 分母为当日 hard tool 总数; 日期倒序', () => {
+    const events = [
+      ev(d1, 'bash'), ev(d1, 'bash'), ev(d1, 'bash'), ev(d1, 'bash'),
+      ev(d1, 'grep'), ev(d1, 'grep'),
+      ev(d1, 'edit'),
+      ev(d2, 'read'),
+    ];
+    const r = dailyTopFailedTools(events);
+    expect(Object.keys(r)).toEqual(['2026-08-30', '2026-08-29']); // 日期倒序
+    expect(r['2026-08-29']).toHaveLength(3); // 不足 topN 全保留
+    expect(r['2026-08-29'][0]).toEqual({ key: 'bash', count: 4, pct: (4 / 7) * 100 });
+    expect(r['2026-08-30'][0].key).toBe('read');
+  });
+
+  it('api / soft 事件由调用方过滤的约定: helper 不过滤, 传错了就进桶', () => {
+    const events = [
+      ev(d1, 'bash'),
+      ev(d1, 'bash', { kind: 'api' }),
+      ev(d1, 'grep', { soft: true }),
+    ];
+    // helper 本身不做 kind/soft 过滤 (宿主/汇总层已过滤); 此处仅锁行为
+    const r = dailyTopFailedTools(events);
+    expect(r['2026-08-29'].map((x) => x.key).sort()).toEqual(['bash', 'grep']);
+  });
+
+  it('maxDays 截断: 只保留最近 N 天', () => {
+    const events = [ev(d1, 'bash'), ev(d2, 'bash')];
+    const r = dailyTopFailedTools(events, 5, 1);
+    expect(Object.keys(r)).toEqual(['2026-08-30']);
+  });
+
+  it('timestamp 字段兼容 (宿主 ToolErrorEvent duck-typed)', () => {
+    const r = dailyTopFailedTools([{ timestamp: d1, toolName: 'bash' }]);
+    expect(r['2026-08-29'][0].key).toBe('bash');
   });
 });

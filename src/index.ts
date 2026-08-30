@@ -132,6 +132,7 @@ export {
   // failures：API 异常 + Tool Call Fail 查询
   collectSessionFailures,
   collectFailureEvents,
+  dailyTopFailedTools,
   resolveFailureWindow,
 } from './store';
 

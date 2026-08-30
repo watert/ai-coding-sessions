@@ -125,6 +125,8 @@ export interface FailureAnalyzeResult {
   bySourceModelTool: SourceModelToolRow[];
   /** Bash 失败深掘；无 bash 事件时 total=0 仍返回结构（渲染段用 total>0 控制） */
   bash: BashBreakdown;
+  /** 每日 top 失败工具 (#10 快线): 日期 → 日内 top5 (count 降序, 日期倒序, 最多 30 天) */
+  dailyTopFailedTools: Record<string, DailyToolFailRow[]>;
   /** 全部 API 异常事件 */
   apiFailures: FailureEvent[];
   /** 最近事件样本（api + hard tool，按时间倒序） */
@@ -833,6 +835,47 @@ export function wrapBashBreakdown(events: FailureEvent[], top: number = 20): Bas
 
 // ==================== 汇总 ====================
 
+export interface DailyToolFailRow {
+  key: string;
+  count: number;
+  /** 占当日 hard tool 失败数百分比 */
+  pct: number;
+}
+
+/**
+ * 每日 top 失败工具 (#10 快线): 失败事件按 ts 本地日期分桶, 日内 count 降序取 topN。
+ * 输入须为 hard tool 事件 (api/soft 由调用方过滤); duck-typed 兼容 FailureEvent(ts) 与
+ * 宿主 ToolErrorEvent(timestamp), 建议传归一化 toolName 后的事件避免同工具分裂成多桶。
+ * 返回日期倒序, 最多 maxDays 天。
+ */
+export function dailyTopFailedTools(
+  events: Array<{ ts?: number; timestamp?: number; toolName?: string; kind?: string; soft?: boolean }>,
+  topN = 5,
+  maxDays = 30,
+): Record<string, DailyToolFailRow[]> {
+  const byDay = new Map<string, Map<string, number>>();
+  for (const e of events) {
+    const ts = e.ts ?? e.timestamp ?? 0;
+    if (!ts) continue;
+    const date = dayjs(ts).format('YYYY-MM-DD');
+    let dayMap = byDay.get(date);
+    if (!dayMap) { dayMap = new Map(); byDay.set(date, dayMap); }
+    const tool = e.toolName || 'unknown';
+    dayMap.set(tool, (dayMap.get(tool) || 0) + 1);
+  }
+  const out: Record<string, DailyToolFailRow[]> = {};
+  const days = Array.from(byDay.keys()).sort().reverse().slice(0, maxDays);
+  for (const date of days) {
+    const dayMap = byDay.get(date)!;
+    const dayTotal = Array.from(dayMap.values()).reduce((a, b) => a + b, 0);
+    out[date] = Array.from(dayMap.entries())
+      .map(([key, count]) => ({ key, count, pct: dayTotal > 0 ? (count / dayTotal) * 100 : 0 }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, topN);
+  }
+  return out;
+}
+
 /**
  * 仅采集窗口内失败事件，不做聚合（宿主薄适配 #11 T5）。
  * 每个 source 独立 try/catch：单源失败不影响其他源结果。
@@ -1002,6 +1045,7 @@ export async function collectSessionFailures(
     byError: toDist(byError, total, top),
     bySourceModelTool,
     bash,
+    dailyTopFailedTools: dailyTopFailedTools(hard.filter((e) => e.kind === 'tool')),
     apiFailures: apiFailures.slice().sort((a, b) => b.ts - a.ts).slice(0, Math.min(30, top)),
     samples,
   };
