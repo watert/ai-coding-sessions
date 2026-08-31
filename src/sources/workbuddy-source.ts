@@ -493,6 +493,54 @@ function loadUnifiedMessages(session: WorkbuddySessionItem): UnifiedMessage[] {
   return convertWorkbuddyEventsToMessages(session.sessionId, events, session.cwd, session.model);
 }
 
+/**
+ * 每次 LLM call 时长采样。
+ * workbuddy jsonl 只在 call 结束后批量 flush 事件（无原生 TTFT 原料），
+ * 旧口径 user→首步 flush 会把首步全量 decode 算进 latency，严重虚高。
+ * 新口径逐 call 采样：
+ * - anchor = user 发送 ts（首步）/ 上一步最后一个 tool result ts（后续步，剔除工具执行时间）
+ * - stepMs = 本步 assistant created（组内最早事件 ts）- anchor
+ * 语义为「单次 LLM call 总时长」近似（排队 + prefill + 该步全量 decode）。
+ */
+export function collectWorkbuddyStepSamples(messages: UnifiedMessage[]): Array<{
+  msgId: string;
+  stepMs: number;
+  outputTokens: number;
+}> {
+  const samples: Array<{ msgId: string; stepMs: number; outputTokens: number }> = [];
+  let anchorTs: number | null = null;
+
+  for (const um of messages) {
+    const role = um.info.role;
+    const created = um.info.time?.created || 0;
+
+    if (role === 'user') {
+      if (created) anchorTs = created;
+      continue;
+    }
+    if (role !== 'assistant' || !created) continue;
+
+    // 本步最后一个 tool result ts：作为下一步 call 起点锚（剔除工具执行时间）
+    let lastResultTs = 0;
+    for (const part of um.parts || []) {
+      if (part.type !== 'tool') continue;
+      const endTs = (part.state as any)?.time?.end;
+      if (typeof endTs === 'number' && endTs > lastResultTs) lastResultTs = endTs;
+    }
+
+    const stepMs = anchorTs != null && created > anchorTs ? created - anchorTs : 0;
+    const tokens = um.info.tokens;
+    samples.push({
+      msgId: String(um.info.id ?? ''),
+      stepMs,
+      outputTokens: (tokens?.output || 0) + (tokens?.reasoning || 0),
+    });
+    anchorTs = Math.max(created, lastResultTs);
+  }
+
+  return samples;
+}
+
 async function getWorkbuddySessionStats(
   session: WorkbuddySessionItem,
   preloaded?: UnifiedMessage[],
