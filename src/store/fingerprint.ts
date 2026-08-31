@@ -90,6 +90,8 @@ export function contentFingerprint(session: UnifiedSessionInfo): string {
     session.total_tool_calls || 0,
     session.usage_is_incomplete ? 1 : 0,
     session.parent_id || '',
+    session.total_credits || 0,
+    JSON.stringify(session.meta || {}),
     JSON.stringify(usage),
     // prompts 长度指纹（全文太大，取条数+总长+首尾 hash）
     promptSketch(session),

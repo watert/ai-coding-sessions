@@ -69,6 +69,16 @@ function migrateIfNeeded(db: any): void {
 
   // v2 → v3：tool_calls 物化表（SCHEMA_SQL 先行且 IF NOT EXISTS 已覆盖，此处仅记版本）
 
+  // v3 → v4：sessions.meta 源侧附加数据（WorkBuddy credits 明细等）
+  // 注意：不能依赖 `cur < 4` 判定——watch 热更可能先写版本号再补迁移，
+  // 版本已为 4 时 `cur < 4` 恒 false 导致列永不补上。以列存在性为准（幂等）。
+  {
+    const cols = tableColumns(db, 'sessions');
+    if (!cols.has('meta')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN meta TEXT');
+    }
+  }
+
   if (cur >= SCHEMA_VERSION) return;
 
   db.prepare(

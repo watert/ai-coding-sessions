@@ -56,6 +56,10 @@ export interface UnifiedSessionInfo {
   total_reasoning?: number;
   total_cache_read?: number;
   total_cache_write?: number;
+  /** WorkBuddy credits 消耗（per-call providerData.rawUsage.credit 汇总；仅 workbuddy source） */
+  total_credits?: number;
+  /** 源侧附加元数据（如 WorkBuddy credits 明细 / DB credit 快照）；缓存列 meta 镜像 */
+  meta?: Record<string, unknown>;
   last_active_at?: string;
   /** 最后活跃时间 ISO 8601，供前端 dayjs 解析 */
   last_active_at_iso?: string;

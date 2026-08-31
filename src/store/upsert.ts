@@ -62,6 +62,7 @@ export function upsertSession(
   const usage_by_model = extractUsageByModel(session);
   const payloadObj = stripPricingForPayload(session);
   const payload = JSON.stringify(payloadObj);
+  const meta = session.meta ? JSON.stringify(session.meta) : null;
   const prompts = extractPrompts(session);
 
   const lastActive =
@@ -78,9 +79,9 @@ export function upsertSession(
       `INSERT INTO sessions (
         source, session_id, title, project, cwd,
         time_created, time_updated, last_active_at, status, models,
-        input_tokens, output_tokens, total_tokens, usage_by_model, payload,
+        input_tokens, output_tokens, total_tokens, usage_by_model, payload, meta,
         dirty_mark, content_fingerprint, orphaned_at, synced_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
       ON CONFLICT(source, session_id) DO UPDATE SET
         title = excluded.title,
         project = excluded.project,
@@ -95,6 +96,7 @@ export function upsertSession(
         total_tokens = excluded.total_tokens,
         usage_by_model = excluded.usage_by_model,
         payload = excluded.payload,
+        meta = excluded.meta,
         dirty_mark = excluded.dirty_mark,
         content_fingerprint = excluded.content_fingerprint,
         orphaned_at = NULL,
@@ -115,6 +117,7 @@ export function upsertSession(
       session.total_tokens ?? null,
       JSON.stringify(usage_by_model),
       payload,
+      meta,
       opts?.dirty_mark ?? null,
       fp,
       now,

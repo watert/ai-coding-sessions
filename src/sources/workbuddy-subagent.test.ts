@@ -190,6 +190,15 @@ describe('WorkBuddy subagent list + convert', () => {
       expect(childInfo.title).toContain('调研模块 A');
       expect(childInfo.total_tokens).toBeGreaterThan(0);
       expect(childInfo.total_user_messages).toBeGreaterThanOrEqual(1);
+      // credits 汇总 + meta 落库数据（rawUsage.credit: 1.5）
+      expect(childInfo.total_credits).toBe(1.5);
+      expect(childInfo.meta).toEqual({
+        workbuddy: {
+          totalCredits: 1.5,
+          creditsByModel: { hy3: 1.5 },
+          dbCredits: null,
+        },
+      });
 
       // detail by virtual id
       const detail = await getWorkbuddySessionDetail(metas[0].virtualSessionId);

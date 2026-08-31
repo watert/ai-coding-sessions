@@ -510,6 +510,7 @@ async function getWorkbuddySessionStats(
     total_cache_read: number;
     total_cache_write: number;
     total_credits: number;
+    creditsByModel: Record<string, number>;
     models_used: string;
     editDiffs: { additions: number; deletions: number; filesChanged: number; files?: string[] };
     bashSignals?: BashSignals;
@@ -541,6 +542,7 @@ async function getWorkbuddySessionStats(
     total_cache_read: 0,
     total_cache_write: 0,
     total_credits: 0,
+    creditsByModel: {},
     models_used: '',
     editDiffs: { additions: 0, deletions: 0, filesChanged: 0 } as {
       additions: number;
@@ -586,7 +588,11 @@ async function getWorkbuddySessionStats(
         stats.total_cache_write += um.info.tokens.cache?.write || 0;
       }
       const credit = (um.info as any).workbuddyCredit;
-      if (typeof credit === 'number') stats.total_credits += credit;
+      if (typeof credit === 'number') {
+        stats.total_credits += credit;
+        const creditModel = um.info.modelID || um.info.model?.modelID || 'unknown';
+        stats.creditsByModel[creditModel] = (stats.creditsByModel[creditModel] || 0) + credit;
+      }
 
       const modelKey = um.info.modelID || um.info.model?.modelID;
       if (modelKey && modelKey !== 'unknown') models.add(modelKey);
@@ -771,6 +777,14 @@ export async function convertWorkbuddySession(
     usage_source: 'real',
     // DB credit 滞后；jsonl 汇总优先
     cost_is_partial: stats.total_credits === 0 && (session.dbCredits ?? 0) > 0 ? true : undefined,
+    total_credits: stats.total_credits || undefined,
+    meta: {
+      workbuddy: {
+        totalCredits: stats.total_credits || 0,
+        creditsByModel: stats.creditsByModel,
+        dbCredits: session.dbCredits ?? null,
+      },
+    },
 
     source: 'workbuddy',
   };
@@ -886,6 +900,14 @@ export async function convertWorkbuddySubagentSession(
     deliverableSignals: inferDeliverableSignals({ messages: unifiedMessages }),
     pricing,
     usage_source: 'real',
+    total_credits: stats.total_credits || undefined,
+    meta: {
+      workbuddy: {
+        totalCredits: stats.total_credits || 0,
+        creditsByModel: stats.creditsByModel,
+        dbCredits: parent.dbCredits ?? null,
+      },
+    },
 
     source: 'workbuddy',
   };

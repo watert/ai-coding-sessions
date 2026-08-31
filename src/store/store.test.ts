@@ -151,6 +151,31 @@ describe('upsert + query', () => {
     expect((found as any).usage_by_model?.length).toBeGreaterThan(0);
   });
 
+  test('meta column persists credits meta', () => {
+    upsertSession(
+      makeSession({
+        id: 'meta-sess',
+        title: 'm',
+        total_credits: 1.5,
+        meta: { workbuddy: { totalCredits: 1.5, creditsByModel: { 'hy3-x': 1.5 }, dbCredits: 0.53 } },
+      }),
+    );
+    const db = getStoreDb();
+    const row = db
+      .prepare(`SELECT meta FROM sessions WHERE source = ? AND session_id = ?`)
+      .get('claude', 'meta-sess') as { meta: string | null };
+    expect(JSON.parse(row.meta!)).toEqual({
+      workbuddy: { totalCredits: 1.5, creditsByModel: { 'hy3-x': 1.5 }, dbCredits: 0.53 },
+    });
+    // payload 透出（queryCached 从 payload 读）
+    const cached = queryCached({ source: 'claude' });
+    const found = cached.sessions.find((x) => x.id === 'meta-sess');
+    expect((found as any).meta).toEqual({
+      workbuddy: { totalCredits: 1.5, creditsByModel: { 'hy3-x': 1.5 }, dbCredits: 0.53 },
+    });
+    expect((found as any).total_credits).toBe(1.5);
+  });
+
   test('prompts full text queryable', () => {
     const rows = getSessionPrompts('claude', 'sess-1');
     expect(rows.length).toBe(1);

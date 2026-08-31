@@ -4,7 +4,7 @@
  * - detail/messages 不缓存；prompts 完整落库；tool_calls 按 session 物化（v3, tool-calls --build 按需构建）
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** sessions / prompts / usage_by_day / schema_meta */
 export const SCHEMA_SQL = `
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   total_tokens INTEGER,
   usage_by_model TEXT,
   payload TEXT NOT NULL,
+  meta TEXT,
   dirty_mark TEXT,
   content_fingerprint TEXT,
   orphaned_at INTEGER,
@@ -155,6 +156,7 @@ export interface CachedSessionRow {
   total_tokens: number | null;
   usage_by_model: string | null;
   payload: string;
+  meta: string | null;
   dirty_mark: string | null;
   content_fingerprint: string | null;
   orphaned_at: number | null;
