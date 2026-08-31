@@ -201,6 +201,7 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
     ...(finish ? { finish } : {}),
     ...(isCompaction ? { compaction: true } : {}),
     ...(msg.timeSource ? { timeSource: msg.timeSource } : {}),
+    ...(msg.error ? { error: msg.error } : {}),
     // 有 message.realUsage 用真实分项（含 0 占位：进行中 turn 不计费）；否则 context 快照估算
     tokens: (() => {
       const ctx = msg.contextTokens ?? 0;

@@ -372,6 +372,99 @@ describe('listGrokCodeMessages tool status', () => {
     expect(tools).toHaveLength(1);
     expect(tools[0].status).toBe('completed');
   });
+
+  it('后台任务完成: task_completed 事件按 task_id 回填原 toolCallId → completed', async () => {
+    const callId = 'call-bg-4';
+    const dir = writeSession('bg-task-completed-event', [
+      { type: 'user', content: '<user_query>start</user_query>' },
+      {
+        type: 'assistant',
+        content: '',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: callId, name: 'run_terminal_command', arguments: '{"command":"kimi -p ..."}' }],
+      },
+      {
+        type: 'tool_result',
+        tool_call_id: callId,
+        content: [
+          `<task-id>${callId}</task-id>`,
+          '<task-type>bash</task-type>',
+          '<status>running</status>',
+        ].join('\n'),
+      },
+    ], [
+      {
+        method: 'session/update',
+        params: {
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: callId,
+            status: 'completed',
+            title: `[bg] kimi -p ...`,
+          },
+        },
+      },
+      {
+        method: 'session/update',
+        params: {
+          update: {
+            sessionUpdate: 'task_completed',
+            will_wake: false,
+            task_snapshot: { task_id: callId, exit_code: 0, output: 'done\n' },
+          },
+        },
+      },
+    ]);
+
+    const tools = (await listGrokCodeMessages({ sessionId: 'bg-task-completed-event', sessionDir: dir }))
+      .flatMap((m) => m.toolCalls || []);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe('completed');
+  });
+
+  it('后台任务完成: 旧版 task_id ≠ toolCallId，经 task_backgrounded 映射回填', async () => {
+    const callId = 'call-bg-5';
+    const taskId = '01a04ce6-6aea-7be2-abe5-2cc10ee500db';
+    const dir = writeSession('bg-task-completed-oldfmt', [
+      { type: 'user', content: '<user_query>start</user_query>' },
+      {
+        type: 'assistant',
+        content: '',
+        model_id: 'grok-4.5',
+        tool_calls: [{ id: callId, name: 'run_terminal_command', arguments: '{"command":"kimi -p ..."}' }],
+      },
+      {
+        type: 'tool_result',
+        tool_call_id: callId,
+        content: `<task-id>${taskId}</task-id>\n<task-type>bash</task-type>\n<status>running</status>`,
+      },
+    ], [
+      {
+        method: 'session/update',
+        params: {
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: callId,
+            status: 'completed',
+            title: '[bg] kimi -p ...',
+          },
+        },
+      },
+      {
+        method: 'session/update',
+        params: { update: { sessionUpdate: 'task_backgrounded', tool_call_id: callId, task_id: taskId } },
+      },
+      {
+        method: 'session/update',
+        params: { update: { sessionUpdate: 'task_completed', task_snapshot: { task_id: taskId, exit_code: 1 } } },
+      },
+    ]);
+
+    const tools = (await listGrokCodeMessages({ sessionId: 'bg-task-completed-oldfmt', sessionDir: dir }))
+      .flatMap((m) => m.toolCalls || []);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].status).toBe('completed');
+  });
 });
 
 describe('classifyGrokToolFailure rawOutput', () => {

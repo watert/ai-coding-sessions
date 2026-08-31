@@ -220,6 +220,8 @@ export type GrokMessageItem = {
   parts?: GrokMessagePart[];
   /** context compact 合成消息（对齐 Kimi [Context Compacted]） */
   compaction?: boolean;
+  /** 合成终态：updates 最后一条 retry_state 已失败 / 重试中途死掉 */
+  error?: { name: string; message: string };
   /**
    * 来自 updates.jsonl 的该 assistant 步骤对应时刻的 totalTokens（上下文窗口快照）。
    * 不是真实计费 token，仅反映该步骤发生时模型上下文的大小，用于 UI 展示与 session 总用量估算。
@@ -1778,6 +1780,7 @@ export type GrokToolErrorKind =
   | 'blocked'
   | 'mcp_error'
   | 'execution_failed'
+  | 'timeout'
   | 'unknown';
 
 export type GrokToolErrorSeverity = 'hard' | 'soft';
@@ -1922,6 +1925,8 @@ export function classifyGrokToolErrorText(text: string): {
     kind = 'file_read_error';
   } else if (/HTTP request failed|too many redirects|error sending request/i.test(t)) {
     kind = 'http_error';
+  } else if (/timed out|timeout/i.test(t)) {
+    kind = 'timeout';
   } else if (/MCP |via `use_tool`|Managed MCP/i.test(t)) {
     kind = 'mcp_error';
   } else if (/Tool `.+` failed/i.test(t)) {
@@ -2074,13 +2079,34 @@ function finalizeGrokToolEntry(entry: GrokToolResultEntry): GrokToolResultEntry 
   };
 }
 
-/** 从 updates.jsonl 收集 tool_call_update 的 result/status（未 soft 降级；调用方 merge 后再 finalize） */
+/** 从 updates.jsonl 收集 tool_call_update / task_completed 的 result/status（未 soft 降级；调用方 merge 后再 finalize） */
 function collectToolResultsFromUpdates(sessionDir: string): Map<string, GrokToolResultEntry> {
   const map = new Map<string, GrokToolResultEntry>();
+  // bg 任务 task_id → 原 toolCallId（新版两者相同；旧版 task_id 是独立 uuid）
+  const taskIdToCall = new Map<string, string>();
   for (const row of readUpdatesJsonl(sessionDir)) {
     if (!isGrokSessionUpdateMethod(row?.method)) continue;
     const u = row?.params?.update;
-    if (!u || u.sessionUpdate !== 'tool_call_update') continue;
+    if (!u) continue;
+    // bg 任务终态回填：`[bg]` completed 只是后台化，真正终态在 task_completed。
+    // 缺此回填 tool 会永远停在 running，全局扫描的 checkSessionStatus 便误判
+    // 整个 session 为 in-progress。bg 命令 exit_code 语义由后续
+    // get_command_or_subagent_output 承载，此处只标启动成功。
+    if (u.sessionUpdate === 'task_backgrounded') {
+      const taskId = typeof u.task_id === 'string' ? u.task_id : undefined;
+      const callId = typeof u.tool_call_id === 'string' ? u.tool_call_id : undefined;
+      if (taskId && callId) taskIdToCall.set(taskId, callId);
+      continue;
+    }
+    if (u.sessionUpdate === 'task_completed') {
+      const taskId = typeof u.task_snapshot?.task_id === 'string' ? u.task_snapshot.task_id : undefined;
+      const id = taskId ? taskIdToCall.get(taskId) ?? taskId : undefined;
+      if (id) {
+        map.set(id, mergeGrokToolResultEntry(map.get(id), { status: 'completed' }));
+      }
+      continue;
+    }
+    if (u.sessionUpdate !== 'tool_call_update') continue;
     const id = u.toolCallId;
     if (!id) continue;
     const result = normalizeGrokToolResult(u);
@@ -2151,6 +2177,140 @@ function toolEntryToFields(entry?: GrokToolResultEntry): {
     errorKind: entry.errorKind,
     errorSeverity: entry.errorSeverity,
   };
+}
+
+/** updates 末尾 retry_state（其后若有其它 sessionUpdate 则不算卡住） */
+export type GrokRetryState = {
+  type: string;
+  attempt?: number;
+  maxRetries?: number;
+  reason: string;
+  tsMs: number;
+  lastDeltaMs?: number;
+};
+
+export function readGrokLastRetryState(sessionDir: string): GrokRetryState | null {
+  const rows = readUpdatesJsonl(sessionDir);
+  let lastSu: string | undefined;
+  let last: GrokRetryState | null = null;
+  let prevRetryTs = 0;
+  for (const row of rows) {
+    if (!isGrokSessionUpdateMethod(row?.method)) continue;
+    const u = row?.params?.update;
+    if (!u?.sessionUpdate) continue;
+    lastSu = u.sessionUpdate;
+    if (u.sessionUpdate !== 'retry_state') {
+      last = null;
+      continue;
+    }
+    const tsMs = grokWireTsToMs(row?.params?._meta?.agentTimestampMs)
+      || grokWireTsToMs(row?.timestamp);
+    const reason = String(u.message || u.reason || '').trim();
+    last = {
+      type: typeof u.type === 'string' ? u.type : 'retrying',
+      attempt: Number.isFinite(Number(u.attempt)) ? Number(u.attempt) : undefined,
+      maxRetries: Number.isFinite(Number(u.max_retries)) ? Number(u.max_retries) : undefined,
+      reason,
+      tsMs,
+      lastDeltaMs: prevRetryTs > 0 && tsMs > prevRetryTs ? tsMs - prevRetryTs : undefined,
+    };
+    if (tsMs > 0) prevRetryTs = tsMs;
+  }
+  return lastSu === 'retry_state' ? last : null;
+}
+
+/**
+ * retry_state 是否已是终态：type=failed 立即算；retrying 则看是否错过下一次 backoff。
+ * 本机实测间隔约 10s→37s 递增；无间隔时兜底 15min，上限 30min，避免晚段 backoff 误杀。
+ */
+export function isGrokRetryStateTerminal(state: GrokRetryState, now = Date.now()): boolean {
+  if (state.type === 'failed' || state.type === 'exhausted') return true;
+  if (state.maxRetries != null && state.attempt != null && state.attempt >= state.maxRetries) {
+    return true;
+  }
+  if (state.type !== 'retrying' || !state.tsMs) return false;
+  const gap = state.lastDeltaMs != null
+    ? Math.min(30 * 60_000, Math.max(120_000, state.lastDeltaMs * 3))
+    : 15 * 60_000;
+  return now - state.tsMs > gap;
+}
+
+/** calling/pending 超过此时长且 session 无新 updates → 视为 tool timeout */
+export const GROK_CALLING_STALE_MS = 5 * 60_000;
+
+function grokUpdatesLastActivityMs(sessionDir: string): number {
+  let last = 0;
+  for (const row of readUpdatesJsonl(sessionDir)) {
+    if (!isGrokSessionUpdateMethod(row?.method)) continue;
+    const ts = grokWireTsToMs(row?.params?._meta?.agentTimestampMs)
+      || grokWireTsToMs(row?.timestamp);
+    if (ts > last) last = ts;
+  }
+  return last;
+}
+
+function isGrokCallingLikeStatus(status?: string): boolean {
+  const s = (status || '').toLowerCase();
+  return !s || s === 'calling' || s === 'pending' || s === 'in_progress';
+}
+
+/**
+ * 会话已停（无新 updates）但 tool 仍 calling：典型是 web_search/tool timeout 后进程死掉。
+ * 不碰 running（后台任务可能很长）；由 last activity 相对 now 判断。
+ */
+function applyGrokStaleToolTimeouts(
+  messages: GrokMessageItem[],
+  sessionDir: string,
+  summaryLastMs = 0,
+  now = Date.now(),
+): void {
+  const lastMs = Math.max(grokUpdatesLastActivityMs(sessionDir), summaryLastMs);
+  if (!lastMs || now - lastMs <= GROK_CALLING_STALE_MS) return;
+  for (const m of messages) {
+    if (m.role !== 'assistant') continue;
+    const timed: string[] = [];
+    for (const tc of m.toolCalls || []) {
+      if (!isGrokCallingLikeStatus(tc.status)) continue;
+      tc.status = 'failed';
+      tc.errorKind = 'timeout';
+      tc.errorSeverity = 'hard';
+      if (tc.result == null) tc.result = 'tool timed out (session stalled)';
+      timed.push(tc.name);
+    }
+    if (timed.length && !m.error) {
+      m.error = {
+        name: 'ToolTimeoutError',
+        message: `${timed.join(', ')} timed out`,
+      };
+    }
+  }
+}
+
+function appendGrokRetryErrorMessage(
+  messages: GrokMessageItem[],
+  sessionId: string,
+  sessionDir: string,
+): void {
+  const st = readGrokLastRetryState(sessionDir);
+  if (!st || !isGrokRetryStateTerminal(st)) return;
+  const errId = `grok-retry-error-${sessionId}`;
+  const last = messages[messages.length - 1];
+  if (last?.uuid === errId || last?.error) return;
+  const ts = st.tsMs || last?.timestamp || Date.now();
+  const reason = st.reason || 'request error: model request failed';
+  messages.push({
+    uuid: errId,
+    sessionId,
+    role: 'assistant',
+    timestamp: ts,
+    completedAt: ts,
+    text: reason,
+    toolCalls: [],
+    parts: [{ type: 'text', text: reason, state: 'done' }],
+    error: { name: 'RequestError', message: reason },
+    parentID: last?.role === 'user' ? last.uuid : last?.parentID,
+    timeSource: 'wall',
+  });
 }
 
 export async function listGrokCodeMessages(params: {
@@ -2519,6 +2679,11 @@ export async function listGrokCodeMessages(params: {
     compactInserts,
     compactionMeta.tokensBefore,
   );
+
+  // calling 过期：tool timeout 后进程死掉，避免全局扫描误判 in-progress
+  applyGrokStaleToolTimeouts(messages, dir, baseTime);
+  // 请求失败 / 重试中途死掉：补一条 error assistant，避免最后停在 user → 误判 in-progress
+  appendGrokRetryErrorMessage(messages, sessionId, dir);
 
   return messages;
 }
