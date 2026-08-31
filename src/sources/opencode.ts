@@ -362,6 +362,11 @@ function isFinishInProgress(finish?: string): boolean {
   return finish === 'tool-calls' || finish === 'tool_use';
 }
 
+/** finish 是否表示用户中断 / 取消（kimi step.end interrupted + turn.cancel） */
+function isFinishAborted(finish?: string): boolean {
+  return finish === 'interrupted' || finish === 'cancelled' || finish === 'aborted' || finish === 'abort';
+}
+
 /** tool 仍在执行中（opencode: calling/pending；zcode: running） */
 function isToolInProgressStatus(status?: string): boolean {
   return status === 'calling' || status === 'pending' || status === 'running';
@@ -396,6 +401,10 @@ export function checkSessionStatus(messages: OpenCodeMessage[]): 'in-progress' |
   const lastError = getError(lastMsg);
   if (isMessageAbortedError(lastError)) return 'aborted';
   if (lastError && !isMessageAbortedError(lastError)) return 'error';
+
+  // 用户取消必须先于 tool 扫描 / 空 parts：kimi turn.cancel 常留下
+  // finish=interrupted 的空 step，或取消瞬间 tool 仍 calling。
+  if (isFinishAborted(lastMsg.info.finish)) return 'aborted';
 
   // tool 仍在执行 → 进行中（含 zcode 的 running）。
   // 全局扫描而非只看最后一条：后台任务（grok [bg]/<status>running</status>）启动后
@@ -690,6 +699,7 @@ export function determineSessionStatusFromLastMessage(lastMsg: any): 'in-progres
   const lastError = lastMsg.error;
   if (isMessageAbortedError(lastError)) return 'aborted';
   if (lastError) return 'error';
+  if (isFinishAborted(lastMsg.finish)) return 'aborted';
   if (isFinishDone(lastMsg.finish)) return 'done';
   if (isFinishInProgress(lastMsg.finish)) return 'in-progress';
   return lastMsg.time?.completed ? 'done' : 'in-progress';

@@ -121,6 +121,29 @@ describe('checkSessionStatus', () => {
     ])).toBe('in-progress');
   });
 
+  it('finish=interrupted 空 parts → aborted（kimi user_cancelled）', () => {
+    expect(checkSessionStatus([
+      msg({
+        role: 'assistant',
+        finish: 'tool-calls',
+        completed: 2000,
+        parts: [{ type: 'tool', tool: 'Bash', state: { status: 'completed' } }],
+      }),
+      msg({ role: 'assistant', finish: 'interrupted', completed: 3000, parts: [] }),
+    ])).toBe('aborted');
+  });
+
+  it('finish=interrupted 即使有 calling tool → aborted', () => {
+    expect(checkSessionStatus([
+      msg({
+        role: 'assistant',
+        finish: 'interrupted',
+        completed: 2000,
+        parts: [{ type: 'tool', tool: 'Bash', state: { status: 'calling' } }],
+      }),
+    ])).toBe('aborted');
+  });
+
   it('tool 失败不算 session error（只看 message.error）', () => {
     expect(checkSessionStatus([
       msg({
@@ -145,6 +168,14 @@ describe('checkSessionStatus', () => {
       role: 'assistant',
       time: { created: 1000 },
     })).toBe('in-progress');
+  });
+
+  it('list compact last_message finish=interrupted → aborted', () => {
+    expect(determineSessionStatusFromLastMessage({
+      role: 'assistant',
+      finish: 'interrupted',
+      time: { completed: 2000 },
+    })).toBe('aborted');
   });
 
   it('list compact last_message compaction assistant → done', () => {
