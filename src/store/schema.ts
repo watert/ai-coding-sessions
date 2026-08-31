@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   total_tokens INTEGER,
   usage_by_model TEXT,
   payload TEXT NOT NULL,
-  meta TEXT,
+  meta JSON,
   dirty_mark TEXT,
   content_fingerprint TEXT,
   orphaned_at INTEGER,

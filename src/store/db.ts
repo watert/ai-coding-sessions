@@ -75,7 +75,7 @@ function migrateIfNeeded(db: any): void {
   {
     const cols = tableColumns(db, 'sessions');
     if (!cols.has('meta')) {
-      db.exec('ALTER TABLE sessions ADD COLUMN meta TEXT');
+      db.exec('ALTER TABLE sessions ADD COLUMN meta JSON');
     }
   }
 
