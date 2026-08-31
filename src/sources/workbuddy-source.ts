@@ -608,7 +608,15 @@ async function getWorkbuddySessionStats(
     const models = new Set<string>();
     const textParts: any[] = [];
     const timingLists = createTimingLists();
-    let lastUserTs: number | null = null;
+    // 逐 LLM call 时长采样（口径见 collectWorkbuddyStepSamples 注释）
+    for (const s of collectWorkbuddyStepSamples(unifiedMessages)) {
+      pushAssistantTimingSample(timingLists, {
+        latencyMs: s.stepMs,
+        outputTokens: s.outputTokens,
+        decodeDurationMs: s.stepMs > 0 ? s.stepMs : undefined,
+        // 不传 inputTokens：步时长≠prefill 时间，不造假 prefill_tps（与 grok 口径一致）
+      });
+    }
 
     for (const um of unifiedMessages) {
       const role = um.info.role;
@@ -616,7 +624,6 @@ async function getWorkbuddySessionStats(
 
       if (role === 'user') {
         stats.total_user_messages++;
-        lastUserTs = created;
       }
 
       for (const part of um.parts || []) {
@@ -660,17 +667,6 @@ async function getWorkbuddySessionStats(
         });
       }
 
-      if (role === 'assistant') {
-        const tokens = um.info.tokens;
-        const latencyMs = lastUserTs && created > lastUserTs ? created - lastUserTs : 0;
-        pushAssistantTimingSample(timingLists, {
-          latencyMs,
-          outputTokens: (tokens?.output || 0) + (tokens?.reasoning || 0),
-          inputTokens: (tokens?.input || 0) + (tokens?.cache?.read || 0),
-        });
-        // 同 turn 内后续 sub-call 不再用 user latency
-        lastUserTs = null;
-      }
     }
 
     stats.total_tokens = stats.total_input + stats.total_cache_read + stats.total_output;
