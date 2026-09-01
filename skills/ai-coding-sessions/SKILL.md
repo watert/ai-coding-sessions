@@ -2,7 +2,7 @@
 name: ai-coding-sessions
 description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.8.0
+  version: 1.9.1
 ---
 
 # AI Coding Sessions
@@ -13,7 +13,7 @@ metadata:
 - 轨迹设计：[issue #1](https://github.com/watert/ai-coding-sessions/issues/1)
 - 跨 agent handoff：[issue #4](https://github.com/watert/ai-coding-sessions/issues/4)
 - Claude/Codex 主链 fidelity：[issue #5](https://github.com/watert/ai-coding-sessions/issues/5)
-- 参考：[Source](./references/sources.md) · [CLI](./references/cli.md) · [排查](./references/troubleshooting.md)
+- 参考：[Source](./references/sources.md) · [CLI](./references/cli.md) · [排查](./references/troubleshooting.md) · [其它 agent](./references/other-agents.md)
 
 ## 触发场景
 
@@ -22,6 +22,7 @@ metadata:
 - 缓存 sync / reconcile / 脏检
 - 弱标题 / Untitled / 生成或改 session title（`set-title`）/ 批量标题审查（`title-review`）
 - 新 source 适配或字段不对
+- 未实现 agent 本地目录 / 本机有哪些 CLI 落盘数据（check 脚本, **不实现解析**）
 
 ## 数据流
 
@@ -47,6 +48,8 @@ skills/ai-coding-sessions/   本 skill
 
 `opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor`  
 本地路径与适配见 [references/sources.md](./references/sources.md)。  
+未实现 agent 目录与落盘形态 → [other-agents.md](./references/other-agents.md)。  
+本机探测：`bun skills/ai-coding-sessions/scripts/check-local-agents.ts`（`--format=md` · `--kind=other` · `--all`）。  
 新 source：`*-code` + `*-source` → `sources/index.ts` 注册。
 
 ## 数据模型要点

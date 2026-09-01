@@ -68,3 +68,6 @@
 
 对照 wire / tool schema 时自行 clone 上游（opencode、kimi-code、grok-build、claude dump 等）。  
 **不要把本机绝对路径写进包代码**；仅维护者本地笔记即可。
+
+未实现的其它 CLI 目录与扫描思路（只读参考、不实现）→ [other-agents.md](./other-agents.md)。  
+本机规模探测：`bun skills/ai-coding-sessions/scripts/check-local-agents.ts`。
