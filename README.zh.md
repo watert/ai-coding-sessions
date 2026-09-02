@@ -166,6 +166,8 @@ bun src/store/cli.ts detail --source=opencode --id=ses_xxx
 bun src/store/cli.ts detail --source=kimi --id=<id> --tools-only --max-output-chars=500
 bun src/store/cli.ts detail --source=kimi --id=<id> --from=0 --to=8 --no-reasoning --with-children
 bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
+bun src/store/cli.ts prompts --source=kimi --id=<id1>,<id2>       # 同 source 批量（逗号分隔）
+bun src/store/cli.ts prompts --source=kimi --days=7 --roots --limit=20   # 窗口批量（默认 7 天; --jsonl 每行一个 session）
 bun src/store/cli.ts list --untitled --days=7 --roots
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
 bun src/store/cli.ts stats --source=all --days=7   # 裁剪合计 + quality（issue #2）
@@ -183,7 +185,7 @@ bun src/store/cli.ts help
 | `trace` | **live** | 时间线骨架（默认无 tool I/O）；别名 `timeline` |
 | `tool-errors` | **live** | 单 session soft/hard 工具失败行 |
 | `detail` | **live** | 完整 messages；用体量 flag 适配 Agent 上下文 |
-| `prompts` | 缓存 | 仅 user prompts |
+| `prompts` | 缓存 | 仅 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl` 每行一个 session） |
 | `set-title` | 写缓存 | `custom_title` overlay（sync 不覆盖）；`--clear`；OpenCode `--write-source` |
 | `stats` | 缓存 | **P0** 裁剪 + split + quality（[#2](https://github.com/watert/ai-coding-sessions/issues/2)）；**P1** `by_model` · 可选成本 · `costByDay` · `tool_fail`（[#3](https://github.com/watert/ai-coding-sessions/issues/3)） |
 | `sync` | 写缓存 | `--full` / `--reconcile` |

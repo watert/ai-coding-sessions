@@ -81,7 +81,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `digest` | **多 session 日度 digest**（roots → handoff 聚合；默认当天 roots-only；`--format=md` 按 project 分组，可 append memory） |
 | `resolve` | 解析 `latest` / id / path / 标题（歧义 exit 2） |
 | `detail` | 详情 live + 体量控制 + `timing` |
-| `prompts` | 缓存 user prompts |
+| `prompts` | 缓存 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl` 每行一个 session） |
 | `set-title` | 缓存 `custom_title`（`--clear` · OpenCode `--write-source`） |
 | `title-review` | 标题审查候选：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
 | `stats` | token / bySource 聚合 |
@@ -141,6 +141,8 @@ bun src/store/cli.ts digest --cwd=. --format=md --out=digest.md   # 按 project 
 bun src/store/cli.ts list --untitled --days=7 --roots          # 机械弱标题
 bun src/store/cli.ts title-review --days=7 --roots             # Agent 审查: title + prompt count + truncated prompts
 bun src/store/cli.ts prompts --source=kimi --id=<id>
+bun src/store/cli.ts prompts --source=kimi --id=<id1>,<id2>       # 同 source 批量 (逗号分隔)
+bun src/store/cli.ts prompts --source=kimi --days=7 --roots --limit=20   # 窗口批量 (默认 7 天; --jsonl 每行一个 session)
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
 bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --write-source
 ```

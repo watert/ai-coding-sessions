@@ -4,7 +4,7 @@
 
 import type { UnifiedSessionInfo, ListSessionsResult } from '../sources/types';
 import type { SourceId, SessionPromptRow, UsageByModelEntry } from './schema';
-import { ALL_SOURCES } from './schema';
+import { ALL_SOURCES, isSourceId } from './schema';
 import { getStoreDb } from './db';
 import { loadMeta } from './meta';
 import {
@@ -207,6 +207,74 @@ export function getSessionPrompts(
        ORDER BY idx ASC`,
     )
     .all(source, sessionId) as SessionPromptRow[];
+}
+
+/** 批量 prompts 导出条目（单条含全量 prompts，与 cmdPrompts 单条形状对齐） */
+export interface SessionPromptsEntry {
+  source: SourceId;
+  sessionId: string;
+  count: number;
+  title: string | null;
+  parent_id: string | null;
+  prompts: SessionPromptRow[];
+}
+
+export interface ListSessionPromptsOptions {
+  /** 显式 (source, id) 列表，优先于窗口过滤 */
+  ids?: Array<{ source: SourceId; id: string }>;
+  source?: SourceId | 'all';
+  startDate?: string;
+  endDate?: string;
+  rootsOnly?: boolean;
+  cwd?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * 批量取 prompts：显式 ids 优先；否则按窗口过滤缓存 sessions。
+ * skipped = 查询不到 session 的显式 ids（窗口模式下恒 0）。
+ */
+export function listSessionPrompts(options: ListSessionPromptsOptions = {}): {
+  sessions: SessionPromptsEntry[];
+  total: number;
+  skipped: number;
+} {
+  const { ids, source = 'all', startDate, endDate, rootsOnly, cwd, limit, offset } = options;
+
+  const targets: Array<{ source: SourceId; id: string }> = ids?.length
+    ? ids
+    : queryCached({ source, startDate, endDate, rootsOnly, cwd }).sessions
+        .filter((s) => isSourceId(String(s.source)))
+        .map((s) => ({ source: s.source as SourceId, id: s.id }));
+
+  const sessions: SessionPromptsEntry[] = [];
+  let skipped = 0;
+  for (const t of targets) {
+    const cached = getCachedSession(t.source, t.id);
+    const rows = getSessionPrompts(t.source, t.id);
+    if (!cached && rows.length === 0) {
+      skipped += 1;
+      continue;
+    }
+    sessions.push({
+      source: t.source,
+      sessionId: t.id,
+      count: rows.length,
+      title: cached?.title ?? null,
+      parent_id: cached?.parent_id ?? null,
+      prompts: rows,
+    });
+  }
+
+  const off = offset || 0;
+  const sliced =
+    limit != null
+      ? sessions.slice(off, off + limit)
+      : off
+        ? sessions.slice(off)
+        : sessions;
+  return { sessions: sliced, total: sessions.length, skipped };
 }
 
 /** 标题审查候选：当前标题 + prompt count + truncated prompts（供 Agent 判断是否需重写） */

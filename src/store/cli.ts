@@ -16,6 +16,9 @@
  *   bun src/store/cli.ts resolve --source=all --cwd=. --ref="partial title"
  *   bun src/store/cli.ts list --cwd=. --days=7 --limit=20
  *   bun src/store/cli.ts prompts --source=kimi --id=<sessionId>
+ *   bun src/store/cli.ts prompts --id=a,b,c --source=kimi       # 同 source 批量
+ *   bun src/store/cli.ts prompts --source=kimi --days=7 --roots # 窗口批量 (默认 7 天)
+ *   bun src/store/cli.ts prompts --source=kimi --days=7 --jsonl # 每行一个 session
  *   bun src/store/cli.ts list --untitled --days=7
  *   bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
  *   bun src/store/cli.ts stats --source=all --days=7
@@ -48,7 +51,9 @@ import {
   queryCached,
   getCachedSession,
   getSessionPrompts,
+  listSessionPrompts,
   listTitleReview,
+  type ListSessionPromptsOptions,
 } from './query';
 import {
   buildTraceSteps,
@@ -333,7 +338,7 @@ Commands:
   handoff      Cross-agent resume summary (inert)  [alias: resume-summary]
   digest       Multi-session daily digest (roots → handoff 聚合; 默认 --days=1; --format=md)
   resolve      Resolve --ref= / --id= under filters (cwd/source/window)
-  prompts      Cached user prompts
+  prompts      Cached user prompts (单条 --id / 批量 --id=a,b / 窗口批量 + --jsonl)
   set-title    Cache overlay title (Agent/user; sync-safe)
   title-review Review title candidates: title + prompt count + truncated prompts
   stats        Aggregate counts / tokens (cache; P0 window clip + quality)
@@ -387,6 +392,8 @@ Custom title (cache overlay; sync-safe):
   list --untitled --days=7 --roots
   title-review --days=7 --roots            # Agent 判断依据: title + prompts
   prompts --source=kimi --id=<id>
+  prompts --source=kimi --id=a,b,c         # 同 source 批量 (逗号分隔 id)
+  prompts --source=kimi --days=7 --roots --limit=20   # 窗口批量 (默认 7 天; --jsonl 每行一条)
   set-title --source=kimi --id=<id> --title="知乎爬虫评审"
   set-title --source=opencode --id=ses_xxx --title="..." --write-source
   set-title --source=kimi --id=<id> --clear
@@ -394,7 +401,8 @@ Custom title (cache overlay; sync-safe):
 Options:
   --source=NAME       all|${ALL_SOURCES.join('|')}
   --days=N --start= --end=
-  --id=SESSION        detail/trace/tool-errors/prompts/children/handoff
+  --id=SESSION        detail/trace/tool-errors/prompts/children/handoff (prompts 支持逗号批量)
+  --prompts=SRC:ID    prompts legacy: source:sessionId (逗号分隔多 spec)
   --ref=REF           handoff/resolve: latest|id|path|title substring
   --cwd=PATH          list/handoff/resolve: filter by project path
   --parent=SESSION    list children of parent
@@ -425,7 +433,7 @@ Options:
   --text-preview=N    handoff: override user+assistant caps (default 500/3000);
                       trace: text_preview length
   --max-steps=N
-  --jsonl             trace: one JSON object per line
+  --jsonl             trace: one JSON object per line; prompts 批量: 每行一个 session
   --format=json|jsonl|md   export format (trace/handoff; default json)
   --out=PATH          write export to file (format from ext if unset)
   --full --reconcile  sync
@@ -1432,19 +1440,68 @@ async function cmdSetTitle(args: CliArgs) {
   }
 }
 
-async function cmdPrompts(args: CliArgs) {
-  let source: SourceId;
-  let sessionId: string;
-
+/**
+ * prompts 批量判定：
+ *  - --prompts=src:id1,src:id2       多 spec（逗号分隔）
+ *  - --id=a,b(同 source)             多 id
+ *  - 以上均未给                  → 窗口批量（--days/--roots/--limit, 默认 7 天）
+ *  单条（无逗号）返回 null，走原 cmdPrompts 单条逻辑
+ */
+function buildPromptsBatch(args: CliArgs): ListSessionPromptsOptions | null {
   if (args.promptsSpec) {
-    ({ source, sessionId } = parsePromptsSpec(args.promptsSpec));
-  } else {
-    sessionId = requireId(args, 'prompts');
-    source = requireOneSource(args, 'prompts');
+    if (!args.promptsSpec.includes(',')) return null;
+    return {
+      ids: args.promptsSpec.split(',').map((spec) => {
+        const { source, sessionId } = parsePromptsSpec(spec.trim());
+        return { source, id: sessionId };
+      }),
+    };
   }
+  if (args.id) {
+    if (!args.id.includes(',')) return null;
+    const source = requireOneSource(args, 'prompts');
+    return {
+      ids: args.id.split(',').map((id) => ({ source, id: id.trim() })),
+    };
+  }
+  // 窗口批量：无显式 id → 与 scan/tool-calls 一致默认 7 天
+  if (!args.startDate && !args.endDate && args.days == null) args.days = 7;
+  const { startDate, endDate } = resolveWindow(args);
+  return {
+    source: args.source,
+    startDate,
+    endDate,
+    rootsOnly: args.rootsOnly || undefined,
+    cwd: args.cwd,
+    limit: args.limit,
+    offset: args.offset,
+  };
+}
 
+async function cmdPrompts(args: CliArgs) {
   await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
   try {
+    const batch = buildPromptsBatch(args);
+    if (batch) {
+      const { sessions, total, skipped } = listSessionPrompts(batch);
+      if (args.jsonl) {
+        // 流式：每行一个 session 条目，管道 grep/jq 接管
+        for (const s of sessions) console.log(JSON.stringify(s));
+        return;
+      }
+      printJson({ count: sessions.length, total, skipped, sessions }, args.pretty);
+      return;
+    }
+
+    // 单条模式
+    let source: SourceId;
+    let sessionId: string;
+    if (args.promptsSpec) {
+      ({ source, sessionId } = parsePromptsSpec(args.promptsSpec));
+    } else {
+      sessionId = requireId(args, 'prompts');
+      source = requireOneSource(args, 'prompts');
+    }
     const rows = getSessionPrompts(source, sessionId);
     const cached = getCachedSession(source, sessionId);
     printJson(
