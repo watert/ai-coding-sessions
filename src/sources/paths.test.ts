@@ -6,6 +6,7 @@ import { resolveClaudeBase, encodeClaudeProjectDir, getProjectPath } from './cla
 import { resolveKimiBase } from './kimi-code';
 import { resolveCodexBase } from './codex-code';
 import { resolveGrokSessionsRoot } from './grok-code';
+import { resolvePiSessionsRoot } from './pi-code';
 import { resolveZcodeDbPath } from './zcode-code';
 import { resolveWorkbuddyRoot } from './workbuddy-code';
 import { resolveHomeDir, resolveDataRoot } from '../lib/home-paths';
@@ -86,6 +87,25 @@ describe('source path resolvers (Windows-friendly)', () => {
     expect(resolveWorkbuddyRoot({ HOME: home } as any)).toBe(path.join(home, '.workbuddy'));
     const g = path.join(os.tmpdir(), 'grok-root');
     expect(resolveGrokSessionsRoot({ GROK_HOME: g } as any)).toBe(path.join(path.resolve(g), 'sessions'));
+  });
+
+  test('resolvePiSessionsRoot defaults to ~/.pi/agent/sessions', () => {
+    const home = '/tmp/acs-pi-none';
+    expect(resolvePiSessionsRoot({ HOME: home } as any)).toBe(
+      path.join(home, '.pi', 'agent', 'sessions'),
+    );
+    // basename === sessions 时原样返回（不追加 agent/sessions）
+    const sessionsDir = path.join(os.tmpdir(), 'acs-pi-sessions-basename');
+    fs.mkdirSync(path.join(sessionsDir, 'sessions'), { recursive: true });
+    expect(resolvePiSessionsRoot({ PI_SESSIONS_DIR: path.join(sessionsDir, 'sessions') } as any)).toBe(
+      path.resolve(path.join(sessionsDir, 'sessions')),
+    );
+    // PI_HOME 父目录存在时拼 agent/sessions
+    const piHome = path.join(os.tmpdir(), 'acs-pi-home-2');
+    fs.mkdirSync(path.join(piHome, 'agent', 'sessions'), { recursive: true });
+    expect(resolvePiSessionsRoot({ PI_HOME: piHome } as any)).toBe(
+      path.join(path.resolve(piHome), 'agent', 'sessions'),
+    );
   });
 
   test('resolveHomeDir USERPROFILE fallback', () => {

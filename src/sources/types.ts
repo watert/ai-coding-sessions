@@ -149,7 +149,7 @@ export interface UnifiedSessionInfo {
     tokens?: number;
   }>;
 
-  source: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy' | 'cursor'; // 数据来源标识
+  source: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy' | 'cursor' | 'pi'; // 数据来源标识
 }
 
 /**
@@ -181,7 +181,7 @@ export interface UnifiedSessionDetail {
 // ==================== 接口参数定义 ====================
 
 export interface ListSessionsOptions {
-  source?: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy' | 'cursor' | 'all'; // 默认 'all'
+  source?: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy' | 'cursor' | 'pi' | 'all'; // 默认 'all'
   startDate?: string; // YYYY-MM-DD
   endDate?: string; // YYYY-MM-DD
   projectId?: string; // 按项目过滤
@@ -200,11 +200,12 @@ export interface ListSessionsResult {
     zcode: number;
     workbuddy: number;
     cursor: number;
+    pi: number;
   };
   lastUpdatedAt?: Date;
 }
 
 export interface GetSessionDetailOptions {
   sessionId: string;
-  source: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy' | 'cursor';
+  source: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy' | 'cursor' | 'pi';
 }

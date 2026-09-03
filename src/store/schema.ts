@@ -101,7 +101,8 @@ export type SourceId =
   | 'codex'
   | 'zcode'
   | 'workbuddy'
-  | 'cursor';
+  | 'cursor'
+  | 'pi';
 
 export const ALL_SOURCES: SourceId[] = [
   'claude',
@@ -112,6 +113,7 @@ export const ALL_SOURCES: SourceId[] = [
   'zcode',
   'workbuddy',
   'cursor',
+  'pi',
 ];
 
 export function isSourceId(s: string): s is SourceId {

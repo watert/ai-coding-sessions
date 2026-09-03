@@ -119,6 +119,7 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     zcode: 0,
     workbuddy: 0,
     cursor: 0,
+    pi: 0,
   };
 
   const dateRange = { startDate, endDate };

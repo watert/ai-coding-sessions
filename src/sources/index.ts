@@ -20,6 +20,7 @@ import {
   initWorkbuddyDb,
 } from './workbuddy-code';
 import { listCursorSessions, closeCursorDb, initCursorDb } from './cursor-code';
+import { convertPiSession, getPiSessionDetail, listPiSessionsForListing } from './pi-source';
 import {
   initOpencodeDb,
   closeOpencodeDb,
@@ -132,6 +133,7 @@ export async function listSessions(
   let zcodeCount = 0;
   let workbuddyCount = 0;
   let cursorCount = 0;
+  let piCount = 0;
 
   const dateRange = { startDate, endDate };
   /** 预筛：last_active >= start（放宽，精确重叠在 convert 后） */
@@ -378,6 +380,20 @@ export async function listSessions(
     }));
   }
 
+  if (source === 'pi' || source === 'all') {
+    tasks.push((async () => {
+      const piSessions = await listPiSessionsForListing();
+      const filtered = piSessions.filter(s => prefilterByLastActive(s.time_updated));
+      const converted = filtered
+        .filter(filterByModels)
+        .filter(filterBySessionOverlap);
+      sessions.push(...converted);
+      piCount = converted.length;
+    })().catch(e => {
+      console.warn('[ai-coding-stats] Pi sessions 获取失败:', e);
+    }));
+  }
+
   await Promise.all(tasks);
 
   // 按时间排序 (最新的在前)
@@ -395,6 +411,7 @@ export async function listSessions(
       zcode: zcodeCount,
       workbuddy: workbuddyCount,
       cursor: cursorCount,
+      pi: piCount,
     },
     lastUpdatedAt: new Date(),
   };
@@ -430,6 +447,8 @@ export async function getSessionDetail(
     return getWorkbuddySessionDetail(sessionId);
   } else if (source === 'cursor') {
     return getCursorSessionDetail(sessionId);
+  } else if (source === 'pi') {
+    return getPiSessionDetail(sessionId);
   } else {
     // OpenCode 直接透传
     const detail = getOpencodeSessionDetail(sessionId);

@@ -435,4 +435,131 @@ export function createCursorFixture(dir?: string) {
   return { root, appData, cursorHome, dbPath, sessionId };
 }
 
+// ---------- Pi (file-based jsonl: <cwd-slug>/<ISO-ts>_<uuid>.jsonl) ----------
+export function createPiFixture(dir?: string) {
+  const root = dir || mkFixtureDir('acs-pi-');
+  // PI_SESSIONS_DIR 直接指向 sessions 根，basename 命中即原样用
+  const sessionsRoot = path.join(root, 'agent', 'sessions');
+  const cwd = '/tmp/acs-pi-proj';
+  const cwdSlug = '--tmp-acs-pi-proj--';
+  const sessionId = 'pi-sess-fixture-001';
+  const sessDir = path.join(sessionsRoot, cwdSlug);
+  const jsonlPath = path.join(sessDir, '2026-09-03T02-02-57-168Z_pi-fixture-uuid.jsonl');
+
+  fs.mkdirSync(sessDir, { recursive: true });
+
+  const rows = [
+    {
+      type: 'session',
+      version: 3,
+      id: sessionId,
+      timestamp: new Date(T0).toISOString(),
+      cwd,
+    },
+    {
+      type: 'model_change',
+      id: 'pi-mc-1',
+      parentId: null,
+      timestamp: new Date(T0 + 50).toISOString(),
+      provider: 'opencode-go',
+      modelId: 'kimi-k2.6',
+    },
+    {
+      type: 'message',
+      id: 'pi-user-1',
+      parentId: 'pi-mc-1',
+      timestamp: new Date(T0 + 100).toISOString(),
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello pi fixture' }],
+      },
+    },
+    {
+      type: 'message',
+      id: 'pi-asst-1',
+      parentId: 'pi-user-1',
+      timestamp: new Date(T0 + 1000).toISOString(),
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'simple greeting → reply hi' },
+          { type: 'text', text: 'hi from pi fixture' },
+          {
+            type: 'toolCall',
+            id: 'call_pi_001',
+            name: 'read',
+            arguments: { path: '/tmp/acs-pi-proj/README.md' },
+          },
+        ],
+        api: 'openai-completions',
+        provider: 'opencode-go',
+        model: 'kimi-k2.6',
+        usage: {
+          input: 100,
+          output: 10,
+          cacheRead: 0,
+          cacheWrite: 0,
+          reasoning: 0,
+          totalTokens: 110,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.00042 },
+        },
+        stopReason: 'toolUse',
+        rawStopReason: 'tool_calls',
+        responseId: 'pi-fixture-resp-1',
+      },
+    },
+    {
+      type: 'message',
+      id: 'pi-toolres-1',
+      parentId: 'pi-asst-1',
+      timestamp: new Date(T0 + 1500).toISOString(),
+      message: {
+        role: 'toolResult',
+        toolCallId: 'call_pi_001',
+        toolName: 'read',
+        content: [{ type: 'text', text: '# pi fixture README\n' }],
+        isError: false,
+        timestamp: T0 + 1500,
+      },
+    },
+    {
+      type: 'message',
+      id: 'pi-asst-2',
+      parentId: 'pi-toolres-1',
+      timestamp: new Date(T0 + 2000).toISOString(),
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'all done' }],
+        api: 'openai-completions',
+        provider: 'opencode-go',
+        model: 'kimi-k2.6',
+        usage: {
+          input: 80,
+          output: 12,
+          cacheRead: 120,
+          cacheWrite: 0,
+          reasoning: 0,
+          totalTokens: 212,
+          cost: {
+            input: 0.0000112,
+            output: 0.0000034,
+            cacheRead: 0.000000336,
+            cacheWrite: 0,
+            total: 0.000014936,
+          },
+        },
+        stopReason: 'stop',
+        rawStopReason: 'stop',
+        responseId: 'pi-fixture-resp-2',
+      },
+    },
+    // 未知 type：容错跳过（v1 接受）
+    { type: 'future_event', data: { foo: 'bar' } },
+  ];
+
+  writeJsonl(jsonlPath, rows);
+
+  return { root, sessionsRoot, cwdSlug, sessDir, jsonlPath, cwd, sessionId };
+}
+
 export { createOpencodeFixtureDb } from './opencode';

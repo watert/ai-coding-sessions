@@ -23,6 +23,7 @@ import {
 } from '../sources/workbuddy-code';
 import fs from 'fs';
 import path from 'path';import { listCursorSessions, initCursorDb } from '../sources/cursor-code';
+import { listPiSessionRefs } from '../sources/pi-code';
 import { initOpencodeDb } from '../sources/opencode';
 import type { SourceId } from './schema';
 import { ALL_SOURCES } from './schema';
@@ -53,6 +54,7 @@ const SEMANTICS: Partial<Record<SourceId, string>> = {
   opencode: 'session.time_updated SQL',
   codex: 'thread updatedAt',
   cursor: 'composerHeaders lastUpdatedAt; activity prefers bubbles',
+  pi: 'jsonl mtime:size (cwd-slug/<ISO>_<uuid>.jsonl)',
 };
 
 export async function listRefs(options?: ListRefsOptions): Promise<SessionRef[]> {
@@ -164,6 +166,17 @@ async function listRefsForSource(source: SourceId): Promise<SessionRef[]> {
         dirty_mark: String(s.updatedAt || 0),
         time_updated: s.updatedAt || 0,
         title: s.title,
+        dirty_semantics: sem,
+      }));
+    }
+    case 'pi': {
+      const list = await listPiSessionRefs();
+      return list.map((s) => ({
+        source,
+        session_id: s.sessionId,
+        dirty_mark: s.dirtyMark,
+        time_updated: s.updatedAt || 0,
+        title: s.firstUserText,
         dirty_semantics: sem,
       }));
     }

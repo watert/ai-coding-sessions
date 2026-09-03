@@ -10,6 +10,7 @@ import {
   createZcodeFixture,
   createWorkbuddyFixture,
   createCursorFixture,
+  createPiFixture,
 } from './__fixtures__/sources';
 import { listClaudeCodeSessions } from './claude-code';
 import { convertClaudeSession } from './claude-source';
@@ -25,6 +26,8 @@ import { listWorkbuddySessions, closeWorkbuddyDb, initWorkbuddyDb } from './work
 import { convertWorkbuddySession } from './workbuddy-source';
 import { listCursorSessions, closeCursorDb, initCursorDb } from './cursor-code';
 import { convertCursorSession } from './cursor-source';
+import { listPiCodeSessions, getPiSession } from './pi-code';
+import { convertPiSession, getPiSessionDetail } from './pi-source';
 
 function withEnv(patch: Record<string, string | undefined>, fn: () => Promise<void> | void) {
   const prev: Record<string, string | undefined> = {};
@@ -148,5 +151,27 @@ describe('source fixtures list+convert', () => {
         expect(info.total_messages).toBeGreaterThanOrEqual(1);
       },
     );
+  });
+
+  test('pi', async () => {
+    const fx = createPiFixture();
+    await withEnv({ PI_SESSIONS_DIR: fx.sessionsRoot }, async () => {
+      const list = await listPiCodeSessions();
+      expect(list.some((s) => s.sessionId === fx.sessionId)).toBe(true);
+      const sess = list.find((s) => s.sessionId === fx.sessionId)!;
+      expect(sess.cwd).toBe(fx.cwd);
+      expect(sess.cwdSlug).toBe(fx.cwdSlug);
+      const info = await convertPiSession(sess);
+      expect(info.id).toBe(fx.sessionId);
+      expect(info.source).toBe('pi');
+      expect(info.total_messages).toBeGreaterThanOrEqual(2);
+      expect(info.title).toContain('hello pi');
+      expect(info.models_used).toContain('kimi-k2.6');
+      expect(info.usage_source).toBe('real');
+      // reported-cost rescale: pricing.usd 应等于两条 assistant cost.total 之和
+      // asst1=0.00042 + asst2=0.000014936 = 0.000434936
+      expect(info.pricing?.usd).toBeGreaterThan(0);
+      expect(info.pricing?.usd ?? 0).toBeLessThan(0.01);
+    });
   });
 });
