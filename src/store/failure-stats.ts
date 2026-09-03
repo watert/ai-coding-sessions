@@ -726,7 +726,11 @@ function extractWorkbuddyErrorText(ev: any): string {
  * - 多个 error 都达最大计数时，取最先遇到的那条（不取最末或随机）。
  * - 当前实现：`if (c > topErrorCount)` 严格大于，并列时保留首个命中。
  */
-export function aggregateSourceModelTool(events: FailureEvent[], top?: number): SourceModelToolRow[] {
+export function aggregateSourceModelTool(
+  events: FailureEvent[],
+  top?: number,
+  normalizeError?: (e: FailureEvent) => string,
+): SourceModelToolRow[] {
   type SmtBucket = { source: string; model: string; tool: string; count: number; errors: Map<string, number> };
   const smtBuckets = new Map<string, SmtBucket>();
   for (const e of events) {
@@ -741,7 +745,7 @@ export function aggregateSourceModelTool(events: FailureEvent[], top?: number): 
       smtBuckets.set(key, bucket);
     }
     bucket.count += 1;
-    const err = e.error || '(empty)';
+    const err = normalizeError ? normalizeError(e) : (e.error || '(empty)');
     bucket.errors.set(err, (bucket.errors.get(err) || 0) + 1);
   }
   const rows: SourceModelToolRow[] = Array.from(smtBuckets.values()).map((b) => {

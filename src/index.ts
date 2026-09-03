@@ -135,6 +135,8 @@ export {
   collectSessionFailures,
   collectFailureEvents,
   dailyTopFailedTools,
+  aggregateSourceModelTool,
+  wrapBashBreakdown,
   resolveFailureWindow,
 } from './store';
 
