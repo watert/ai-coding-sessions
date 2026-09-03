@@ -16,7 +16,8 @@ export function createTimingLists(): TimingLists {
 }
 
 export interface TimingSample {
-  latencyMs: number;
+  /** 首 token 延迟（TTFT）。无 TTFT 数据的 source 可缺省，仅用 decodeDurationMs 算 tps */
+  latencyMs?: number;
   outputTokens?: number;
   /** decode 阶段时长，缺省则用 latencyMs */
   decodeDurationMs?: number;
@@ -26,11 +27,13 @@ export interface TimingSample {
 /** 追加一条 assistant 样本（与 Claude/Kimi 原有过滤规则一致） */
 export function pushAssistantTimingSample(lists: TimingLists, sample: TimingSample): void {
   const { latencyMs, outputTokens = 0, decodeDurationMs, inputTokens = 0 } = sample;
-  if (latencyMs <= 0 || latencyMs >= MAX_LATENCY_MS) return;
+  const hasLatency = !!latencyMs && latencyMs > 0 && latencyMs < MAX_LATENCY_MS;
+  const decodeMs = decodeDurationMs && decodeDurationMs > 0 ? decodeDurationMs : (latencyMs || 0);
+  // 既无 latency 也无 decode 时长 → 无任何时序信息，丢弃
+  if (!hasLatency && decodeMs <= 0) return;
 
-  lists.latencyList.push(latencyMs);
+  if (hasLatency) lists.latencyList.push(latencyMs!);
 
-  const decodeMs = decodeDurationMs && decodeDurationMs > 0 ? decodeDurationMs : latencyMs;
   if (outputTokens > 0 && decodeMs > 0) {
     const tps = outputTokens / (decodeMs / 1000);
     if (tps > 0 && tps < MAX_TPS) {
@@ -38,8 +41,8 @@ export function pushAssistantTimingSample(lists: TimingLists, sample: TimingSamp
     }
   }
 
-  if (inputTokens > 0) {
-    lists.prefillTpsList.push(Number((inputTokens / (latencyMs / 1000)).toFixed(2)));
+  if (hasLatency && inputTokens > 0) {
+    lists.prefillTpsList.push(Number((inputTokens / (latencyMs! / 1000)).toFixed(2)));
   }
 }
 

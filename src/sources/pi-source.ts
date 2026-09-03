@@ -133,7 +133,12 @@ export function convertPiEventsToMessages(
     const m = env.message;
     if (!m || !m.role) continue;
 
-    const created = numTs(env.timestamp) || numTs(m.timestamp) || Date.now();
+    // pi 时间语义: m.timestamp(ms)=LLM 请求发起时刻; env.timestamp=本次写盘(完成)时刻
+    // assistant 用发起时刻作 created、完成时刻作 completed → 单次调用时长(对齐 grok decodeDuration)
+    const envMs = numTs(env.timestamp) || Date.now();
+    const msgMs = numTs(m.timestamp) || 0;
+    const created = m.role === 'assistant' && msgMs ? msgMs : envMs;
+    const completed = envMs >= created ? envMs : created;
     const envId = String(env.id || `ev-${out.length}`);
 
     if (m.role === 'user') {
@@ -200,7 +205,8 @@ export function convertPiEventsToMessages(
         sessionID: sessionId,
         role: 'assistant',
         parentID: lastUserId,
-        time: { created, completed: created },
+        // decodeStart = 发起时刻：detail 页前端用它推 tps/估 lag；无 TTFT 数据故 lag 恒 0（不误示 ttft）
+        time: { created, completed, decodeStart: created },
         path: { cwd: fallbackCwd, root: '' },
       };
       if (model) {
@@ -455,7 +461,6 @@ async function getPiSessionStats(
 
   try {
     let messages: UnifiedMessage[];
-    let lastStopReason: string | undefined;
     if (preloadedMessages) {
       messages = preloadedMessages;
     } else {
@@ -464,7 +469,6 @@ async function getPiSessionStats(
         fallbackCwd: session.cwd,
       });
       messages = r.messages;
-      lastStopReason = r.lastStopReason;
       // reported-cost 标记注入（list 路径已在 listPiSessionsForListing 注入；events 路径此处补齐）
       for (const ev of events) {
         if (!ev || (ev as any).type !== 'message') continue;
@@ -507,14 +511,12 @@ async function getPiSessionStats(
     const textParts: any[] = [];
     const userTextParts: any[] = [];
     const timingLists = createTimingLists();
-    let lastUserTs: number | null = null;
 
     for (const um of messages) {
       const role = um.info.role;
       const created = um.info.time?.created || 0;
       if (role === 'user') {
         stats.total_user_messages++;
-        lastUserTs = created;
       }
       for (const part of um.parts || []) {
         if (part.type !== 'tool') continue;
@@ -581,13 +583,17 @@ async function getPiSessionStats(
 
       if (role === 'assistant') {
         const tokens = um.info.tokens;
-        const latencyMs = lastUserTs && created > lastUserTs ? created - lastUserTs : 0;
-        pushAssistantTimingSample(timingLists, {
-          latencyMs,
-          outputTokens: (tokens?.output || 0) + (tokens?.reasoning || 0),
-          inputTokens: (tokens?.input || 0) + (tokens?.cache?.read || 0),
-        });
-        lastUserTs = null;
+        // 单次 LLM 调用时长 = 完成(env.ts) - 发起(m.ts)，每条 assistant 都采样（含工具循环）
+        // decodeDuration → tps；不传 latencyMs（pi 无 TTFT 字段，避免把完整调用时长当 ttft 展示）
+        const startTs = um.info.time?.created || 0;
+        const endTs = um.info.time?.completed || startTs;
+        const callMs = endTs > startTs ? endTs - startTs : 0;
+        if (callMs > 0) {
+          pushAssistantTimingSample(timingLists, {
+            outputTokens: (tokens?.output || 0) + (tokens?.reasoning || 0),
+            decodeDurationMs: callMs,
+          });
+        }
       }
     }
 

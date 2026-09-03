@@ -429,16 +429,72 @@ describe('convertPiSession / getPiSessionDetail', () => {
     });
   });
 
-  test('getPiSessionDetail returns full messages with tool merged', async () => {
-    const tmp = mkFixtureDir('acs-pi-detail-');
-    const fx = writePiSample(tmp);
+  test('tps sampling: every assistant sampled with per-call decode duration', () => {
+    // 模拟真实 pi 时序: user → assistant(toolUse) → toolResult → assistant(stop)
+    // envoy.timestamp = 落盘(完成)时刻; message.timestamp(ms) = LLM 发起时刻
+    const tmp = mkFixtureDir('acs-pi-tps-');
+    const fx = writePiSample(tmp, {
+      sessionId: 'pi-tps',
+      rows: [
+        { type: 'session', version: 3, id: 'pi-tps', timestamp: new Date(T0).toISOString(), cwd: '/tmp/p' },
+        {
+          type: 'message',
+          id: 'u1',
+          parentId: null,
+          timestamp: new Date(T0 + 100).toISOString(),
+          message: { role: 'user', content: [{ type: 'text', text: 'q1' }], timestamp: T0 + 100 },
+        },
+        {
+          type: 'message',
+          id: 'a1',
+          parentId: 'u1',
+          timestamp: new Date(T0 + 1000).toISOString(),
+          message: {
+            role: 'assistant',
+            content: [{ type: 'toolCall', id: 'tc1', name: 'bash', arguments: { command: 'ls' } }],
+            provider: 'opencode-go',
+            model: 'kimi-k2.6',
+            timestamp: T0 + 200, // 发起时刻（紧随 user 落盘）
+            usage: { input: 10, output: 100, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 110 },
+            stopReason: 'toolUse',
+          },
+        },
+        {
+          type: 'message',
+          id: 'tr1',
+          parentId: 'a1',
+          timestamp: new Date(T0 + 1100).toISOString(),
+          message: { role: 'toolResult', toolCallId: 'tc1', content: [{ type: 'text', text: 'ok' }] },
+        },
+        {
+          type: 'message',
+          id: 'a2',
+          parentId: 'tr1',
+          timestamp: new Date(T0 + 2500).toISOString(),
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'done' }],
+            provider: 'opencode-go',
+            model: 'kimi-k2.6',
+            timestamp: T0 + 1200, // 发起时刻（紧随 toolResult 落盘）
+            usage: { input: 10, output: 200, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 210 },
+            stopReason: 'stop',
+          },
+        },
+      ],
+    });
     withEnv({ PI_SESSIONS_DIR: fx.root }, async () => {
-      const detail = await getPiSessionDetail(fx.sessionId);
-      expect(detail).not.toBeNull();
-      expect(detail!.info.id).toBe(fx.sessionId);
-      expect(detail!.messages).toHaveLength(3);
-      const tool = detail!.messages[1].parts.find((p: any) => p.type === 'tool') as any;
-      expect(tool.state.output).toContain('Sample');
+      const list = await listPiCodeSessions();
+      const info = await convertPiSession(list[0]);
+      // 两条 assistant 都采样（旧实现只采 user 后首条）
+      expect(info.assistant_tps_list).toHaveLength(2);
+      // a1: 100 tokens / (1000-200)ms = 125; a2: 200 / (2500-1200)ms = 153.85
+      expect(info.assistant_tps_list![0]).toBeCloseTo(125, 1);
+      expect(info.assistant_tps_list![1]).toBeCloseTo(153.85, 1);
+      expect(info.avg_tps).toBeCloseTo(139.42, 1);
+      // pi 无 TTFT 数据：latency 缺省，不外示误导性的 ttft
+      expect(info.avg_latency_ms).toBeUndefined();
+      expect(info.latency_list).toBeUndefined();
     });
   });
 });
