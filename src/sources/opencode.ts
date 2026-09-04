@@ -20,6 +20,10 @@ import { inferDeliverableSignals } from './deliverable-signals';
 import { buildOpenCodeSoftErrorSql } from './tool-error-soft';
 import { isTimestamp } from '../lib/date-utils';
 
+// TPS/latency 护栏（与 lib/timing-stats.ts 一致）：过滤尖峰与失真样本
+const MAX_TPS = 1000; // decode TPS 上限，超过视为异常（含工具执行/等待噪声）
+const MAX_LATENCY_MS = 300_000; // 单步 TTFT 上限 5min
+
 // ==================== Zod Schema 定义 ====================
 
 const OpenCodeModelSchema = z.object({
@@ -49,7 +53,8 @@ const OpenCodeMessageInfoSchema = z.object({
   time: z.object({
     created: z.number(), // 创建时间戳 (毫秒)
     completed: z.number().optional(), // 完成时间戳 (毫秒)
-    decodeStart: z.number().optional(), // 首个 part 开始时间 (毫秒)
+    decodeStart: z.number().optional(), // 首个模型输出 part 开始时间 / 官方 decodeStart (毫秒)
+    decodeEnd: z.number().optional(), // 纯解码精确终点：最后模型输出 part 的 end (毫秒)，剔除消息尾部工具执行
   }),
   summary: z.object({
     diffs: z.array(z.unknown()), // diff 信息数组
@@ -491,6 +496,25 @@ export function getFirstPartStartTimes(messageIds: string[]): Map<string, number
   });
 
   return result;
+}
+
+/**
+ * 从消息 parts 提取模型输出时序窗口。
+ * 新版本 opencode 仅 text/reasoning 等输出类 part 在 data 内带 time；
+ * step-start/tool/patch/step-finish 一律无 time —— 故“带 time 的 part”即可视为模型解码段。
+ * @returns firstStart=首个输出 part 开始（decode 起点/TTFT 参考），lastEnd=末个输出 part 结束（纯 decode 终点）
+ */
+function pickPartTimingWindow(parts: OpenCodePart[]): { firstStart?: number; lastEnd?: number } {
+  let firstStart: number | undefined;
+  let lastEnd: number | undefined;
+  for (const p of parts) {
+    const s = p.time?.start;
+    if (typeof s !== 'number') continue;
+    if (firstStart === undefined || s < firstStart) firstStart = s;
+    const end = typeof p.time?.end === 'number' ? p.time.end! : s;
+    if (lastEnd === undefined || end > lastEnd) lastEnd = end;
+  }
+  return { firstStart, lastEnd };
 }
 
 /** 列表预览：按日头尾采样（见 user-part-list-preview） */
@@ -1015,13 +1039,14 @@ export function getSessionList(
         } else if (msg.role === 'assistant' && lastUserMsgTime) {
           const outputStartTime = msg.firstPartStart || msg.created;
           const latency = outputStartTime - msg.created;
-          if (latency > 0) {
+          const hasLatency = latency > 0 && latency < MAX_LATENCY_MS;
+          if (hasLatency) {
             latencySum += latency;
             latencyCount++;
           }
 
           const inputTokens = msg.input;
-          if (latency > 0 && inputTokens > 0) {
+          if (hasLatency && inputTokens > 0) {
             prefillTpsSum += inputTokens / (latency / 1000);
             prefillTpsCount++;
           }
@@ -1030,8 +1055,9 @@ export function getSessionList(
             const totalOutputTokens = msg.output + msg.reasoning;
             if (totalOutputTokens > 0) {
               const durationSeconds = (msg.completed - outputStartTime) / 1000;
-              if (durationSeconds > 0) {
-                tpsSum += totalOutputTokens / durationSeconds;
+              const tps = durationSeconds > 0 ? totalOutputTokens / durationSeconds : 0;
+              if (tps > 0 && tps < MAX_TPS) {
+                tpsSum += tps;
                 tpsCount++;
               }
             }
@@ -1191,23 +1217,25 @@ export function getSessionList(
         const firstPartStartTime = firstPartStartTimes.get(msg.id);
         const outputStartTime = firstPartStartTime || msg.created;
 
-        // latency = 输出开始时间 - 消息创建时间
+        // latency = 输出开始时间 - 消息创建时间（与 compact 分支同护栏：>0 且 <5min）
         const latency = outputStartTime - msg.created;
-        latencyList.push(latency);
+        const hasLatency = latency > 0 && latency < MAX_LATENCY_MS;
+        if (hasLatency) latencyList.push(latency);
 
         // prefill TPS = input tokens / latency
         const inputTokens = msg.tokens?.input || 0;
-        if (latency > 0 && inputTokens > 0) {
+        if (hasLatency && inputTokens > 0) {
           prefillTpsList.push(Number((inputTokens / (latency / 1000)).toFixed(2)));
         }
 
         // 如果有完成时间，计算 decode TPS: (output tokens + reasoning tokens) / (completed - outputStartTime)
+        // 上限 MAX_TPS：剔除工具执行/等待导致的失真尖峰
         if (msg.completed) {
           const totalOutputTokens = (msg.tokens?.output || 0) + (msg.tokens?.reasoning || 0);
           if (totalOutputTokens > 0) {
             const durationSeconds = (msg.completed - outputStartTime) / 1000;
-            if (durationSeconds > 0) {
-              const tps = totalOutputTokens / durationSeconds;
+            const tps = durationSeconds > 0 ? totalOutputTokens / durationSeconds : 0;
+            if (tps > 0 && tps < MAX_TPS) {
               tpsList.push(tps);
             }
           }
@@ -1391,14 +1419,20 @@ export function getSessionDetail(sessionId: string): OpenCodeSessionExport | nul
     partsByMessageId.set(part.message_id, existing);
   }
 
+  // 记录各消息在 part 表的最早落库时间：decodeStart 的第三级兑底（纯工具/step-start 类 part 的 data 无 time）
+  const partDbFirstByMsg = new Map<string, number>();
+  for (const part of partRows) {
+    const cur = partDbFirstByMsg.get(part.message_id);
+    if (cur === undefined || part.time_created < cur) partDbFirstByMsg.set(part.message_id, part.time_created);
+  }
+
   const messages: OpenCodeMessage[] = messageRows.map(row => {
     const msgData = JSON.parse(row.data);
     let msgParts = partsByMessageId.get(row.id) || [];
-    // 取该消息首个 part 的开始时间作为 decodeStart
-    const decodeStart = msgParts
-      .map(p => p.time?.start)
-      .filter((t): t is number => typeof t === 'number')
-      .sort((a, b) => a - b)[0];
+    // 模型输出时序窗口：仅认 data 自带 time 的 part（text/reasoning 等）
+    const { firstStart: modelFirstStart, lastEnd: modelLastEnd } = pickPartTimingWindow(msgParts);
+    // decodeStart 三级兑底：官方 data.decodeStart > 首个模型输出 part.start > part 表最早落库；纯工具轮也用 step-start 近似
+    const decodeStart = msgData.time?.decodeStart ?? modelFirstStart ?? partDbFirstByMsg.get(row.id);
 
     // OpenCode manual/auto compact: user 侧 part.type=compaction；assistant 侧 agent/mode=compaction
     const compactPart = msgParts.find((p: any) => p.type === 'compaction');
@@ -1416,20 +1450,27 @@ export function getSessionDetail(sessionId: string): OpenCodeSessionExport | nul
       time: {
         ...msgData.time,
         decodeStart,
+        // 纯 decode 精确终点：最后模型输出 part 的 end（剔尾工具执行）；无输出段则不设
+        ...(modelLastEnd ? { decodeEnd: modelLastEnd } : {}),
       },
       ...(isCompactionMsg ? { compaction: true } : {}),
     };
 
     // assistant 消息计算 prefill / decode TPS
     if (messageInfo.role === 'assistant' && messageInfo.tokens) {
-      const { created, completed, decodeStart: ds } = messageInfo.time || {};
+      const { created, decodeStart: ds, decodeEnd } = messageInfo.time || {};
       const { input = 0, output = 0, reasoning = 0 } = messageInfo.tokens;
       const tps: { prefill?: number; decode?: number } = {};
       if (created && ds && ds > created && input > 0) {
         tps.prefill = Number((input / ((ds - created) / 1000)).toFixed(2));
       }
-      if (ds && completed && completed > ds && (output + reasoning) > 0) {
-        tps.decode = Number(((output + reasoning) / ((completed - ds) / 1000)).toFixed(2));
+      // decode 窗口 = decodeEnd - decodeStart（模型输出段），不把消息尾部工具执行/等待当解码时长；
+      // 老版本单 part start==end 等窗口过窄的样本会被 MAX_TPS 过滤掉
+      if (ds && decodeEnd && decodeEnd > ds && (output + reasoning) > 0) {
+        const tpsVal = (output + reasoning) / ((decodeEnd - ds) / 1000);
+        if (tpsVal > 0 && tpsVal < MAX_TPS) {
+          tps.decode = Number(tpsVal.toFixed(2));
+        }
       }
       if (tps.prefill || tps.decode) {
         messageInfo.tps = tps;

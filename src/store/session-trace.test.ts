@@ -311,6 +311,28 @@ describe('P2: timing · tool-errors · export', () => {
     expect(t.decode_tps).toBe(50);
   });
 
+  test('extractStepTiming: decodeEnd 优先于 completed（剔尾工具执行）', () => {
+    // OpenCode 工具轮：decodeStart 后模型输出段在 decodeEnd 截止，completed 含工具执行更晚
+    const t = extractStepTiming({
+      time: { created: 1100, decodeStart: 1200, decodeEnd: 1600, completed: 5000 },
+      tokens: { input: 10, output: 50 },
+    });
+    expect(t.lag_ms).toBe(100);
+    expect(t.decode_ms).toBe(400); // decodeEnd-decodeStart，而非 completed-decodeStart
+    expect(t.decode_tps).toBe(125); // 50 / 0.4s
+    expect(t.prefill_tps).toBe(100);
+  });
+
+  test('extractStepTiming: 无 decodeEnd 时回退 completed-decodeStart', () => {
+    const t = extractStepTiming({
+      time: { created: 1100, decodeStart: 1200, completed: 2100 },
+      tokens: { input: 10, output: 20 },
+    });
+    expect(t.lag_ms).toBe(100);
+    expect(t.decode_ms).toBe(900);
+    expect(t.decode_tps).toBeCloseTo(22.22, 1);
+  });
+
   test('buildTraceSteps 暴露 lag_ms / prefill_tps', () => {
     const steps = buildTraceSteps(sampleMessages);
     const a1 = steps.find((s) => s.id === 'a1')!;

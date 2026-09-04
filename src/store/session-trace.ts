@@ -166,15 +166,18 @@ function numOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function msgTime(info: any): { t: number | null; done: number | null; decodeStart: number | null } {
+function msgTime(info: any): { t: number | null; done: number | null; decodeStart: number | null; decodeEnd: number | null } {
   const time = info.time || {};
   const t = time.created ?? time.start ?? info.created_at ?? null;
   const done = time.completed ?? time.end ?? null;
   const decodeStart = time.decodeStart ?? time.decode_start ?? null;
+  // decode 精确终点（可选）：剔除消息尾部工具执行/等待，仅统计纯解码时段
+  const decodeEnd = time.decodeEnd ?? time.decode_end ?? null;
   return {
     t: numOrNull(t),
     done: numOrNull(done),
     decodeStart: numOrNull(decodeStart),
+    decodeEnd: numOrNull(decodeEnd),
   };
 }
 
@@ -197,7 +200,7 @@ function msgTokens(info: any): TraceStep['tokens'] {
  * - prefill/decode tps：优先 info.tps 对象/数字，否则 tokens/时长推算
  */
 export function extractStepTiming(info: any): StepTiming & { tps: number | null } {
-  const { t, done, decodeStart } = msgTime(info);
+  const { t, done, decodeStart, decodeEnd } = msgTime(info);
   const tokens = msgTokens(info);
   const input = tokens?.input ?? 0;
   const output = tokens?.output ?? 0;
@@ -208,7 +211,10 @@ export function extractStepTiming(info: any): StepTiming & { tps: number | null 
   }
 
   let decode_ms: number | null = null;
-  if (decodeStart != null && done != null && done >= decodeStart) {
+  if (decodeStart != null && decodeEnd != null && decodeEnd > decodeStart) {
+    // 有显式 decode 终点：decodeEnd - decodeStart（尾部工具执行等非解码耗时不计入）
+    decode_ms = decodeEnd - decodeStart;
+  } else if (decodeStart != null && done != null && done >= decodeStart) {
     decode_ms = done - decodeStart;
   } else if (t != null && done != null && done >= t && decodeStart == null) {
     // 无 TTFT 拆分时，整段当 decode（Grok 等）
