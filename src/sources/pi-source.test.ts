@@ -497,6 +497,107 @@ describe('convertPiSession / getPiSessionDetail', () => {
       expect(info.latency_list).toBeUndefined();
     });
   });
+  test('pi-timing custom entry → real TTFT / decode window / tps', () => {
+    // 扩展落盘：custom entry 紧邻 assistant message 之前（扩展先于持久化）
+    // t0=请求发起(=assistant m.timestamp) / t1=首 token / t2=流结束
+    const tmp = mkFixtureDir('acs-pi-timing-');
+    const T1a = T0 + 300; // a1 首 token
+    const T2a = T0 + 800; // a1 流结束
+    const T1b = T0 + 1250;
+    const T2b = T0 + 1750;
+    const fx = writePiSample(tmp, {
+      sessionId: 'pi-timing',
+      rows: [
+        { type: 'session', version: 3, id: 'pi-timing', timestamp: new Date(T0).toISOString(), cwd: '/tmp/p' },
+        {
+          type: 'message',
+          id: 'u1',
+          parentId: null,
+          timestamp: new Date(T0 + 100).toISOString(),
+          message: { role: 'user', content: [{ type: 'text', text: 'q1' }], timestamp: T0 + 100 },
+        },
+        {
+          type: 'custom',
+          id: 'c1',
+          parentId: 'u1',
+          timestamp: new Date(T0 + 810).toISOString(),
+          customType: 'pi-timing',
+          data: { t0: T0 + 200, t1: T1a, t2: T2a, ttftMs: 100, streamDurationMs: 500 },
+        },
+        {
+          type: 'message',
+          id: 'a1',
+          parentId: 'u1',
+          timestamp: new Date(T0 + 900).toISOString(),
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'r1' }],
+            provider: 'opencode-go',
+            model: 'kimi-k2.6',
+            timestamp: T0 + 200,
+            usage: { input: 10, output: 100, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 110 },
+            stopReason: 'stop',
+          },
+        },
+        {
+          type: 'custom',
+          id: 'c2',
+          parentId: 'a1',
+          timestamp: new Date(T0 + 1760).toISOString(),
+          customType: 'pi-timing',
+          data: { t0: T0 + 1200, t1: T1b, t2: T2b, ttftMs: 50, streamDurationMs: 500 },
+        },
+        {
+          type: 'message',
+          id: 'a2',
+          parentId: 'a1',
+          timestamp: new Date(T0 + 1800).toISOString(),
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'done' }],
+            provider: 'opencode-go',
+            model: 'kimi-k2.6',
+            timestamp: T0 + 1200,
+            usage: { input: 20, output: 200, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 220 },
+            stopReason: 'stop',
+          },
+        },
+        // 尾部孤儿 custom（坏数据 + 无后续 assistant）→ 忽略不崩溃
+        {
+          type: 'custom',
+          id: 'c3',
+          parentId: 'a2',
+          timestamp: new Date(T0 + 1900).toISOString(),
+          customType: 'pi-timing',
+          data: { broken: true },
+        },
+      ],
+    });
+    withEnv({ PI_SESSIONS_DIR: fx.root }, async () => {
+      const events = readPiSessionEvents(fx.jsonlPath);
+      const { messages } = convertPiEventsToMessages('pi-timing', events);
+      const a1 = messages.find((m) => m.info.id === 'a1');
+      const a2 = messages.find((m) => m.info.id === 'a2');
+      // 真 TTFT：decodeStart = 首 token（t1），decodeEnd = 流结束（t2）
+      expect(a1!.info.time!.decodeStart).toBe(T1a);
+      expect(a1!.info.time!.decodeEnd).toBe(T2a);
+      expect(a2!.info.time!.decodeStart).toBe(T1b);
+      // lag = t1 - t0；a1: 300-200=100ms
+      expect(a1!.info.time!.decodeStart! - a1!.info.time!.created!).toBe(100);
+      // tps：a1 prefill=10/0.1s=100, decode=100/0.5s=200；a2 prefill=20/0.05s=400, decode=200/0.5s=400
+      expect(a1!.info.tps).toEqual({ prefill: 100, decode: 200 });
+      expect(a2!.info.tps).toEqual({ prefill: 400, decode: 400 });
+
+      const list = await listPiCodeSessions();
+      const info = await convertPiSession(list[0]);
+      // stats 采样用真 TTFT + 流式窗口（不再是整段 call 时长）
+      expect(info.latency_list).toEqual([100, 50]);
+      expect(info.avg_latency_ms).toBe(75);
+      expect(info.assistant_tps_list![0]).toBeCloseTo(200, 1);
+      expect(info.assistant_tps_list![1]).toBeCloseTo(400, 1);
+      expect(info.avg_prefill_tps).toBe(250);
+    });
+  });
 });
 
 describe('derivePiTitle', () => {

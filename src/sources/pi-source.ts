@@ -6,6 +6,9 @@
  * - message.role: user / assistant / toolResult
  * - toolCall 与 toolResult 分属两条 message envelope，按 toolCallId 配对
  * - usage/cost 为 agent 真实上报（对齐 grok usage_source='real'）
+ * - custom entry（extensions/pi-timing.ts 落盘）→ 真 TTFT/流式时长：
+ *   jsonl 顺序为 custom 紧邻 assistant message 之前（扩展先于持久化），FIFO 配对
+ *   t0=请求发起 / t1=首 token / t2=流结束 → decodeStart=t1、decodeEnd=t2、tps {prefill,decode}
  *
  * 映射语义:
  * - assistant.content[thinking] → reasoning part
@@ -25,6 +28,7 @@ import {
   getPiSession,
   type PiSessionItem,
   type PiMessageEnvelope,
+  type PiCustomEnvelope,
   type PiEvent,
 } from './pi-code';
 import { checkSessionStatus } from './opencode';
@@ -103,6 +107,28 @@ function mapPiStatus(
 
 type PendingTool = { messageIndex: number; partIndex: number };
 
+/** pi-timing custom entry data（extensions/pi-timing.ts schema） */
+type PiTimingData = {
+  t0: number;
+  t1: number;
+  t2: number;
+  ttftMs: number;
+  streamDurationMs: number;
+};
+
+/** 与 opencode/kimi 一致的 TPS 护栏：超限视为工具执行/等待噪声 */
+const MAX_TPS = 1000;
+const MAX_LATENCY_MS = 300_000;
+
+function validPiTiming(raw: unknown): PiTimingData | null {
+  const d = raw as PiTimingData | undefined;
+  if (!d || typeof d !== 'object') return null;
+  if (typeof d.t0 !== 'number' || typeof d.t1 !== 'number' || typeof d.t2 !== 'number') return null;
+  if (!(d.t1 > d.t0) || !(d.t2 > d.t1)) return null;
+  if (typeof d.ttftMs !== 'number' || typeof d.streamDurationMs !== 'number') return null;
+  return d;
+}
+
 /**
  * 把整段 pi events 转成 unified messages。
  *
@@ -120,6 +146,8 @@ export function convertPiEventsToMessages(
   const fallbackCwd = opts.fallbackCwd || '';
   const out: UnifiedMessage[] = [];
   const pendingTools = new Map<string, PendingTool>();
+  // pi-timing custom entry 队列：jsonl 中紧邻其 assistant message 之前，FIFO 配对
+  const pendingTiming: PiTimingData[] = [];
   let lastUserId: string | undefined;
   let lastStopReason: string | undefined;
 
@@ -128,6 +156,17 @@ export function convertPiEventsToMessages(
 
   for (const ev of events) {
     if (!ev || typeof ev !== 'object') continue;
+
+    // 扩展时序数据：custom entry 先于其 assistant message 持久化，先入队
+    if ((ev as PiCustomEnvelope).type === 'custom') {
+      const custom = ev as PiCustomEnvelope;
+      if (custom.customType === 'pi-timing') {
+        const timing = validPiTiming(custom.data);
+        if (timing) pendingTiming.push(timing);
+      }
+      continue;
+    }
+
     if (ev.type !== 'message') continue;
     const env = ev as PiMessageEnvelope;
     const m = env.message;
@@ -198,6 +237,8 @@ export function convertPiEventsToMessages(
     }
 
     if (m.role === 'assistant') {
+      // FIFO 取本消息的扩展时序（无则 legacy：decodeStart=created，lag 恒 0）
+      const timing = pendingTiming.shift();
       const model = normalizeProviderModel(m.provider, m.model);
       const parts: any[] = [];
       const messageInfo: any = {
@@ -205,7 +246,7 @@ export function convertPiEventsToMessages(
         sessionID: sessionId,
         role: 'assistant',
         parentID: lastUserId,
-        // decodeStart = 发起时刻：detail 页前端用它推 tps/估 lag；无 TTFT 数据故 lag 恒 0（不误示 ttft）
+        // decodeStart 兜底 = 发起时刻（lag 恒 0 不误示 ttft）；有 pi-timing 时被真首 token 覆盖
         time: { created, completed, decodeStart: created },
         path: { cwd: fallbackCwd, root: '' },
       };
@@ -221,7 +262,8 @@ export function convertPiEventsToMessages(
         const rawInput = usage.input || 0;
         const cacheRead = usage.cacheRead || 0;
         const cacheWrite = usage.cacheWrite || 0;
-        const input = Math.max(0, rawInput - cacheRead);
+        // pi-ai 的 usage.input 已剔除 cacheRead/cacheWrite（pi-ai openai-completions.ts:1534 等），勿再扣
+        const input = rawInput;
         const output = usage.output || 0;
         const reasoning = usage.reasoning || 0;
         const total = usage.totalTokens || (input + output);
@@ -238,6 +280,26 @@ export function convertPiEventsToMessages(
         if (typeof costTotal === 'number' && Number.isFinite(costTotal) && costTotal > 0) {
           (messageInfo as any).piUsageCost = costTotal;
         }
+      }
+
+      // 扩展时序（pi-timing）：真 TTFT → lag_ms；流式窗口 → decode tps
+      // （与 opencode/kimi 同构：prefill 用非 cache input，decode 用 output+reasoning）
+      if (timing) {
+        messageInfo.time.decodeStart = timing.t1;
+        if (timing.t2 > timing.t1) messageInfo.time.decodeEnd = timing.t2;
+        const tok = messageInfo.tokens || {};
+        const input = tok.input || 0;
+        const output = tok.output || 0;
+        const reasoning = tok.reasoning || 0;
+        const tps: { prefill?: number; decode?: number } = {};
+        if (timing.ttftMs > 0 && timing.ttftMs < MAX_LATENCY_MS && input > 0) {
+          tps.prefill = Number((input / (timing.ttftMs / 1000)).toFixed(2));
+        }
+        if (timing.streamDurationMs > 0 && output + reasoning > 0) {
+          const v = (output + reasoning) / (timing.streamDurationMs / 1000);
+          if (v > 0 && v < MAX_TPS) tps.decode = Number(v.toFixed(2));
+        }
+        if (tps.prefill || tps.decode) messageInfo.tps = tps;
       }
 
       if (m.stopReason) {
@@ -583,16 +645,31 @@ async function getPiSessionStats(
 
       if (role === 'assistant') {
         const tokens = um.info.tokens;
-        // 单次 LLM 调用时长 = 完成(env.ts) - 发起(m.ts)，每条 assistant 都采样（含工具循环）
-        // decodeDuration → tps；不传 latencyMs（pi 无 TTFT 字段，避免把完整调用时长当 ttft 展示）
-        const startTs = um.info.time?.created || 0;
-        const endTs = um.info.time?.completed || startTs;
-        const callMs = endTs > startTs ? endTs - startTs : 0;
-        if (callMs > 0) {
+        // 真 TTFT（pi-timing 扩展）：latency = 首 token - 发起；decode 窗口 = 流结束 - 首 token
+        const time = (um.info.time || {}) as { created?: number; decodeStart?: number; decodeEnd?: number; completed?: number };
+        const startTs = time.created || 0;
+        const decodeStartTs = time.decodeStart || 0;
+        const latencyMs = decodeStartTs > startTs ? decodeStartTs - startTs : 0;
+        const decodeEnd = time.decodeEnd || time.completed || 0;
+        const decodeMs = latencyMs > 0 && decodeEnd > decodeStartTs ? decodeEnd - decodeStartTs : 0;
+        if (latencyMs > 0) {
           pushAssistantTimingSample(timingLists, {
+            latencyMs,
             outputTokens: (tokens?.output || 0) + (tokens?.reasoning || 0),
-            decodeDurationMs: callMs,
+            decodeDurationMs: decodeMs > 0 ? decodeMs : undefined,
+            inputTokens: (tokens?.input || 0) + (tokens?.cache?.read || 0),
           });
+        } else {
+          // legacy 无扩展：单次调用时长 = 完成(env.ts) - 发起(m.ts)，每条 assistant 都采样（含工具循环）
+          // decodeDuration → tps；不传 latencyMs（避免把完整调用时长当 ttft 展示）
+          const endTs = time.completed || startTs;
+          const callMs = endTs > startTs ? endTs - startTs : 0;
+          if (callMs > 0) {
+            pushAssistantTimingSample(timingLists, {
+              outputTokens: (tokens?.output || 0) + (tokens?.reasoning || 0),
+              decodeDurationMs: callMs,
+            });
+          }
         }
       }
     }

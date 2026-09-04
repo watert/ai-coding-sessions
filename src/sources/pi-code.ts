@@ -3,7 +3,7 @@
  *
  * 数据落盘: ~/.pi/agent/sessions/<cwd-slug>/<ISO-ts>_<uuid>.jsonl
  * - 首行: {type:"session", version:3, id, timestamp, cwd}
- * - 事件流: session | model_change | thinking_level_change | message
+ * - 事件流: session | model_change | thinking_level_change | message | custom
  * - 未知 type 事件容错跳过（v3 格式仍在快速迭代）
  * 无原生 title；title 用首条 user text 截断（v1 接受 isWeakTitle 不认现状）
  */
@@ -105,7 +105,17 @@ export type PiMessageEnvelope = {
   };
 };
 
-export type PiEvent = PiMessageEnvelope | { type: string; [k: string]: any };
+export type PiEvent = PiMessageEnvelope | PiCustomEnvelope | { type: string; [k: string]: any };
+
+/** pi 扩展 custom entry（extensions/pi-timing.ts 落盘的时序数据等；不进 LLM context） */
+export type PiCustomEnvelope = {
+  type: 'custom';
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  customType: string;
+  data?: unknown;
+};
 
 /** list / listRefs 返回的最少元数据（懒解析 jsonl 内容） */
 export type PiSessionItem = {
