@@ -67,6 +67,13 @@ function formatMd(hits: AgentHit[], home: string, all: boolean): string {
         const trunc = r.truncated ? ' (truncated)' : '';
         lines.push(`  - \`${displayPath(r.path, home)}\` ${r.files} / ${formatBytes(r.bytes)}${trunc}`);
       }
+      for (const e of h.extras) {
+        const label = e.status === 'present'
+          ? `\`${e.status}\` → \`${displayPath(e.target ?? '', home)}\``
+          : `\`${e.status}\``;
+        lines.push(`  - ext ${e.name}: ${label}`);
+        if (e.status !== 'present' && e.install) lines.push(`    - install: \`${e.install}\``);
+      }
     }
     lines.push('');
   }
@@ -94,6 +101,11 @@ function toJson(hits: AgentHit[], home: string) {
           newest: r.newestMs ? new Date(r.newestMs).toISOString() : null,
           truncated: r.truncated,
         })),
+      extras: h.extras.map((e) => ({
+        ...e,
+        path: displayPath(e.path, home),
+        target: e.target ? displayPath(e.target, home) : undefined,
+      })),
     })),
   };
 }

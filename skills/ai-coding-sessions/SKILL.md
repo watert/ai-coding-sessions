@@ -38,7 +38,7 @@ metadata:
 
 ```
 src/core/       同构协议、静态单价、列表预览
-src/sources/    8 source + listSessions / getSessionDetail
+src/sources/    9 source + listSessions / getSessionDetail
 src/store/      schema · sync · queryCached · session-trace · CLI
 src/pricing.ts  configurePricing 钩子
 skills/ai-coding-sessions/   本 skill
@@ -46,10 +46,15 @@ skills/ai-coding-sessions/   本 skill
 
 ## Source
 
-`opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor`  
+`opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor | pi`  
 本地路径与适配见 [references/sources.md](./references/sources.md)。  
 未实现 agent 目录与落盘形态 → [other-agents.md](./references/other-agents.md)。  
-本机探测：`bun skills/ai-coding-sessions/scripts/check-local-agents.ts`（`--format=md` · `--kind=other` · `--all`）。  
+本机探测：`bun skills/ai-coding-sessions/scripts/check-local-agents.ts`（`--format=md` · `--kind=other` · `--all`；pi 行会附带 **pi-timing extension** 检查）。  
+**pi-timing extension**（pi source 真 TTFT/流式时长 → TPS 的数据源，缺了则回退整段 call 时长估算）：
+
+```bash
+ln -sf packages/ai-coding-sessions/extensions/pi-timing.ts ~/.pi/agent/extensions/pi-timing.ts
+```  
 新 source：`*-code` + `*-source` → `sources/index.ts` 注册。
 
 ## 数据模型要点

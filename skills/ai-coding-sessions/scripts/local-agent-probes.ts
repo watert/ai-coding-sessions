@@ -26,6 +26,18 @@ export type AgentProbe = {
   glob: string;
   env?: string[];
   roots: (ctx: ProbeCtx) => string[];
+  /** 附加单文件检查 (如 pi-timing extension), 输出在 agent 行之后 */
+  extras?: (ctx: ProbeCtx) => ExtraHit[];
+};
+
+/** extension 等附加检查结果; missing/mislinked 时带 install 修复命令 */
+export type ExtraHit = {
+  name: string;
+  path: string;
+  status: 'present' | 'missing' | 'mislinked';
+  /** symlink resolved target (abs) */
+  target?: string;
+  install?: string;
 };
 
 export type RootHit = {
@@ -48,6 +60,7 @@ export type AgentHit = {
   bytes: number;
   newestMs: number | null;
   roots: RootHit[];
+  extras: ExtraHit[];
 };
 
 const FILE_CAP = 80_000;
@@ -88,11 +101,42 @@ function p(
   glob: string,
   roots: AgentProbe['roots'],
   env?: string[],
+  extras?: AgentProbe['extras'],
 ): AgentProbe {
-  return { id, display, kind, format, glob, roots, env };
+  return { id, display, kind, format, glob, roots, env, extras };
 }
 
-/** ACS 8 source + 未实现 extras. 权威路径以本表为准 */
+/** pi-timing extension: TTFT/流式时长落盘 (ACS pi source 的 TPS 数据源) */
+function piExtras(ctx: ProbeCtx): ExtraHit[] {
+  // 包内源文件: probe 脚本自身位于 <pkg>/skills/ai-coding-sessions/scripts/
+  const src = path.resolve(import.meta.dir, '../../extensions/pi-timing.ts');
+  const dest = path.join(ctx.home, '.pi/agent/extensions/pi-timing.ts');
+  const install = `ln -sf ${src} ${dest}`;
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(dest);
+  } catch {
+    return [{ name: 'pi-timing', path: dest, status: 'missing', install }];
+  }
+  if (st.isSymbolicLink()) {
+    let target: string;
+    try {
+      target = fs.realpathSync(dest);
+    } catch {
+      return [{ name: 'pi-timing', path: dest, status: 'mislinked', install }];
+    }
+    return [{ name: 'pi-timing', path: dest, status: 'present', target }];
+  }
+  // 普通文件 (拷贝安装): 内容含标记即视为可用
+  try {
+    const head = fs.readFileSync(dest, 'utf8').slice(0, 500);
+    return [{ name: 'pi-timing', path: dest, status: head.includes('pi-timing') ? 'present' : 'mislinked', install: head.includes('pi-timing') ? undefined : install }];
+  } catch {
+    return [{ name: 'pi-timing', path: dest, status: 'mislinked', install }];
+  }
+}
+
+/** ACS 9 source + 未实现 extras. 权威路径以本表为准 */
 export const AGENT_PROBES: AgentProbe[] = [
   p('opencode', 'OpenCode', 'acs', 'sqlite', '**/*.{db,json}', (c) => [
     path.join(c.xdgData, 'opencode'),
@@ -148,7 +192,7 @@ export const AGENT_PROBES: AgentProbe[] = [
   p('openclaw', 'OpenClaw', 'other', 'jsonl', '**/*.jsonl*', (c) =>
     ['.openclaw', '.clawdbot', '.moltbot', '.moldbot'].map((n) => path.join(c.home, n, 'agents')),
   ),
-  p('pi', 'Pi', 'other', 'jsonl', '**/*.jsonl', (c) => [path.join(c.home, '.pi/agent/sessions')]),
+  p('pi', 'Pi', 'other', 'jsonl', '**/*.jsonl', (c) => [path.join(c.home, '.pi/agent/sessions')], undefined, piExtras),
   p('omp', 'Oh My Pi', 'other', 'jsonl', '**/*.jsonl', (c) => [
     path.join(c.home, '.omp/agent/sessions'),
   ]),
@@ -383,6 +427,7 @@ function uniqPaths(paths: string[]): string[] {
 }
 
 export function probeAgent(probe: AgentProbe, ctx: ProbeCtx, cap = FILE_CAP): AgentHit {
+  const extras = probe.extras?.(ctx) ?? [];
   const roots = uniqPaths(probe.roots(ctx)).map((r) => measureRoot(r, probe.glob, cap));
   const files = roots.reduce((n, r) => n + r.files, 0);
   const bytes = roots.reduce((n, r) => n + r.bytes, 0);
@@ -392,7 +437,7 @@ export function probeAgent(probe: AgentProbe, ctx: ProbeCtx, cap = FILE_CAP): Ag
   }, null);
   const anyExists = roots.some((r) => r.exists);
   const status: AgentHit['status'] = files > 0 ? 'present' : anyExists ? 'empty' : 'missing';
-  return { id: probe.id, display: probe.display, kind: probe.kind, format: probe.format, status, files, bytes, newestMs, roots };
+  return { id: probe.id, display: probe.display, kind: probe.kind, format: probe.format, status, files, bytes, newestMs, roots, extras };
 }
 
 export type CheckOptions = {

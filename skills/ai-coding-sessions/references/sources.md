@@ -12,6 +12,7 @@
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` + `.../<sid>/subagents/agent-*.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts`（`Agent` tool → 虚拟 subagent，`parent_id` / `spawn_group_id`） |
 | `cursor` | Desktop `state.vscdb`（composerHeaders + bubbleId）+ `~/.cursor/projects/*/agent-transcripts` | `cursor-code.ts` + `cursor-source.ts` |
+| `pi` | `~/.pi/agent/sessions/*.jsonl` + **pi-timing extension** 落盘的 custom entry（TTFT/流式时长，T0/1/2） | `pi-code.ts` + `pi-source.ts`（extension: `extensions/pi-timing.ts`，装到 `~/.pi/agent/extensions/pi-timing.ts`） |
 
 路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
 

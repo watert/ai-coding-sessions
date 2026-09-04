@@ -7,7 +7,7 @@ date: 2026-09-01T12:00:00+08:00
 
 # 其它 coding agent 本地目录 (补充参考)
 
-ACS 已实现 8 source 的路径与字段口径以 [sources.md](./sources.md) 为准。本页只补 **尚未做成 source** 的 agent: 常见落盘根、文件形态、以及和已实现 source 重叠处的差异。**对照目录与思路, 不要把用量扫描器的 parser 直接搬进来。**
+ACS 已实现 9 source 的路径与字段口径以 [sources.md](./sources.md) 为准。本页只补 **尚未做成 source** 的 agent: 常见落盘根、文件形态、以及和已实现 source 重叠处的差异。**对照目录与思路, 不要把用量扫描器的 parser 直接搬进来。**
 
 本地是否有数据: `bun skills/ai-coding-sessions/scripts/check-local-agents.ts` (默认 JSON, 只报 present)。`--format=md` / `--kind=other` / `--all`。路径 catalog 在 `scripts/local-agent-probes.ts`。
 
