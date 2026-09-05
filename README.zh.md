@@ -172,6 +172,9 @@ bun src/store/cli.ts list --untitled --days=7 --roots
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
 bun src/store/cli.ts stats --source=all --days=7   # 裁剪合计 + quality（issue #2）
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
+bun src/store/cli.ts tool-calls --build --days=90  # 物化 tool calls（cache-first 导出 / grep）
+bun src/store/cli.ts skill-reads --build --days=90 # 物化 skill 读取（Skill tool + skills/ 文件读取）
+bun src/store/cli.ts perf                          # 性能检查：list(×2)/detail/extract 采样 + 阈值警告
 bun src/store/cli.ts help
 ```
 
@@ -188,7 +191,10 @@ bun src/store/cli.ts help
 | `prompts` | 缓存 | 仅 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl` 每行一个 session） |
 | `set-title` | 写缓存 | `custom_title` overlay（sync 不覆盖）；`--clear`；OpenCode `--write-source` |
 | `stats` | 缓存 | **P0** 裁剪 + split + quality（[#2](https://github.com/watert/ai-coding-sessions/issues/2)）；**P1** `by_model` · 可选成本 · `costByDay` · `tool_fail`（[#3](https://github.com/watert/ai-coding-sessions/issues/3)） |
-| `sync` | 写缓存 | `--full` / `--reconcile` |
+| `sync` | 写缓存 | `--full` / `--reconcile`；对本次 upsert 的 session 自动顺手物化 `skill_reads`（`skillReads: false` 关闭） |
+| `tool-calls` | 缓存（build）/ live | 跨 session tool call jsonl 导出；`--build` 增量物化，`--tool=`/`--status=` 过滤 |
+| `skill-reads` | 缓存（build）/ live | skill 使用轨迹：Skill tool 调用 + `skills/<name>/` 下文件读取；`--skill=NAME`（支持 `%` 模糊），sqlite 中 session 级 JSON 行 |
+| `perf` | live | 性能检查：各 source list(×2)/detail/extract 采样 + 阈值警告——见[性能检查](#性能检查performance-check) |
 | `refs` | live refs | 不 convert / 不写库 |
 
 **Trace / detail 标志：** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=`（`error`/`soft`/`hard`/`completed`） · `--jsonl` · `--format=json\|jsonl\|md` · `--out=PATH` · `--with-children` · `--max-steps=`
@@ -216,6 +222,25 @@ detail --tools-only --max-output-chars=500 --from=N --to=M
 更重的宿主分析（`export-weekly-prompts`、跨 session `analyze-tool-errors`、完整 token-stats）暂不在本包。
 
 npm scripts：`bun run cli` · `bun run sync` · `bun run sync:reconcile`。
+
+## 性能检查（Performance check）
+
+**任何涉及 `sources/*`（list / detail 路径）、`store/sync.ts` 或物化表（`tool_calls`、`skill_reads`）的变更，合入前必须跑性能检查：**
+
+```bash
+bun src/store/cli.ts perf                 # 全 source，14 天窗口，各采样 5 个
+bun src/store/cli.ts perf --days=30 --limit=8 --source=grok   # 定向检查
+```
+
+输出解读：
+
+- `list_ms` / `list2_ms` —— live `listSessions` 连跑两次。`list2_ms` 应显著低于 `list_ms`（命中进程内缓存）。若 list 慢**且** `list2_ms ≈ list_ms`，说明 list 层缺缓存、或 TTL 比单次 list 还短。
+- `detail_avg_ms` / `detail_max_ms` —— live detail 采样。偏高通常是 detail 内部逐 session 重跑全量 list（典型 O(N²) 放大）或后置重计算。
+- `slowest` —— 采样内最慢 detail 任务 top5（session_id + 耗时 + 消息数），把最贵的任务点名而不是被平均掩盖。默认各 source 只采样最近 5 个；`--all` 扫全窗口（如 `perf --all --days=30`）。
+- `extract_avg_ms` —— 对采样 messages 跑 `extractSkillReads`；纯 CPU 遍历，应接近 0。
+- 内置警告阈值：`list_ms > 1000`、`detail_avg_ms > 300`、`list2_ms` 无改善。注意 live `listSessions` 设计上含全量 convert（宿主对外服务应走 SQLite 缓存）；「慢但稳定」是已知取舍，**相对变更前基线的回退不是**。
+
+真实机器基线参考（2026-09，约 850 个缓存 session）：总耗时 < 60s；opencode/kimi/grok `list_ms` 秒级（全量 convert），其余亚秒级；所有 `detail_avg_ms` < 150ms；`extract_avg_ms` ≈ 0。
 
 ## 支持的数据源（Supported Sources）
 

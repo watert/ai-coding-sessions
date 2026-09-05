@@ -172,6 +172,9 @@ bun src/store/cli.ts list --untitled --days=7 --roots
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="Review zhihu crawler"
 bun src/store/cli.ts stats --source=all --days=7   # clipped totals + quality (issue #2)
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
+bun src/store/cli.ts tool-calls --build --days=90  # materialize tool calls (cache-first export / grep)
+bun src/store/cli.ts skill-reads --build --days=90 # materialize skill reads (Skill tool + skills/ file reads)
+bun src/store/cli.ts perf                          # perf check: list(×2)/detail/extract sampling + thresholds
 bun src/store/cli.ts help
 ```
 
@@ -188,7 +191,10 @@ bun src/store/cli.ts help
 | `prompts` | cache | user prompts only (single `--id`; batch `--id=a,b` / window filter; `--jsonl` one session per line) |
 | `set-title` | cache write | `custom_title` overlay (sync-safe); `--clear`; OpenCode `--write-source` |
 | `stats` | cache | **P0** clip + split + quality ([#2](https://github.com/watert/ai-coding-sessions/issues/2)); **P1** `by_model` · optional cost · `costByDay` · `tool_fail` ([#3](https://github.com/watert/ai-coding-sessions/issues/3)) |
-| `sync` | write cache | `--full` / `--reconcile` |
+| `sync` | write cache | `--full` / `--reconcile`; auto-backfills `skill_reads` for upserted sessions (`skillReads: false` to opt out) |
+| `tool-calls` | cache (build) / live | cross-session tool-call jsonl export; `--build` materializes (incremental), `--tool=`/`--status=` filters |
+| `skill-reads` | cache (build) / live | skill usage trail: Skill tool calls + reads under `skills/<name>/`; `--skill=NAME` (`%` fuzzy), session-level JSON rows in sqlite |
+| `perf` | live | perf check: per-source list(×2)/detail/extract sampling with threshold warnings — see [Performance check](#performance-check) |
 | `refs` | live refs | no convert/write |
 
 **Trace / detail flags:** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=json\|jsonl\|md` · `--out=PATH` · `--with-children` · `--max-steps=`
@@ -214,6 +220,25 @@ Common flags: `--source=` · `--days=` · `--start=` · `--end=` · `--limit=` �
 Heavier host analysis (`export-weekly-prompts`, cross-session `analyze-tool-errors`, full token-stats) stays out of this package for now.
 
 npm scripts: `bun run cli` · `bun run sync` · `bun run sync:reconcile`.
+
+## Performance check
+
+**Any change touching `sources/*` (list / detail paths), `store/sync.ts`, or the materialized tables (`tool_calls`, `skill_reads`) must pass the perf check before shipping:**
+
+```bash
+bun src/store/cli.ts perf                 # all sources, 14d window, 5 samples each
+bun src/store/cli.ts perf --days=30 --limit=8 --source=grok   # targeted
+```
+
+How to read the output:
+
+- `list_ms` / `list2_ms` — live `listSessions` run twice back-to-back. `list2_ms` should be well below `list_ms` (in-process cache hit). If list is slow **and** `list2_ms ≈ list_ms`, a list-level cache is missing or its TTL is shorter than one list run.
+- `detail_avg_ms` / `detail_max_ms` — live detail sampling. High values usually mean detail re-runs a full list per session (the classic O(N²) amplification) or heavy post-processing.
+- `slowest` — top-5 slowest detail sessions in the sample (id + ms + message count), so the most expensive tasks are named, not averaged away. Default samples the newest 5 per source; pass `--all` to walk the whole window (e.g. `perf --all --days=30`).
+- `extract_avg_ms` — `extractSkillReads` over sampled messages; should stay ~0 (pure CPU walk).
+- Built-in warnings fire at `list_ms > 1000`, `detail_avg_ms > 300`, or when `list2_ms` fails to improve. Note that live `listSessions` includes full conversion by design (hosts should prefer the SQLite cache for serving); a slow-but-stable `list` is a known trade-off, a **regression vs. your pre-change baseline is not**.
+
+Typical baseline on a real machine (Sep 2026, ~850 cached sessions): total run < 60s, opencode/kimi/grok `list_ms` in the seconds (full conversion), everything else sub-second, all `detail_avg_ms` < 150ms, `extract_avg_ms` ~0.
 
 ## Supported Sources
 

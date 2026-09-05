@@ -124,6 +124,7 @@ const COMMANDS = [
   'scan',
   'tool-calls',
   'skill-reads',
+  'perf',
   'sync',
   'refs',
   'help',
@@ -204,6 +205,8 @@ interface CliArgs {
   build: boolean;
   /** skill-reads: skill 名过滤 (= / 前缀模糊 %) */
   skill?: string;
+  /** perf: detail 扫描窗口全部 session (找最慢任务, 默认只采样) */
+  all: boolean;
 }
 
 function parseSource(s: string): SourceId | 'all' {
@@ -239,6 +242,7 @@ function parseArgs(argv: string[]): CliArgs {
     truncateChars: PROMPTS_TRUNCATE_DEFAULT,
     regex: false,
     build: false,
+    all: false,
   };
 
   let i = 0;
@@ -276,6 +280,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--include-empty') out.includeEmptyReview = true;
     else if (a === '--regex') out.regex = true;
     else if (a === '--build') out.build = true;
+    else if (a === '--all') out.all = true;
     else if (a.startsWith('--grep=')) out.grep = a.slice('--grep='.length);
     else if (a.startsWith('--prompt-count=')) {
       out.promptPreviewCount = Number(a.slice('--prompt-count='.length));
@@ -363,6 +368,7 @@ Commands:
   scan         跨 session prompt 检索 (缓存 prompts 表, cache-first)
   tool-calls   跨 session tool call 导出 jsonl (--build 物化 / --live 直读)
   skill-reads  skill 读取抽取 (Skill tool + SKILL.md 等 skills/ 文件; --build 物化)
+  perf         性能检查: 各 source list(×2)/detail/extract 分阶段采样 + 阈值警告
   sync         Incremental sync → SQLite
   refs         listRefs only
   help
@@ -412,6 +418,13 @@ Skill reads (skill 使用轨迹: Skill tool 调用 + read 类工具读 skills/<n
   skill-reads --days=90 --out=skills.jsonl             # cache-first 导出 jsonl (每事件一行)
   skill-reads --days=30 --skill=vault-ops              # 按 skill 名过滤
   skill-reads --days=30 --skill='ai-%' --format=json   # 前缀模糊 + JSON 包装
+
+Perf check (变更 sources/store 后的性能回归; 详见 README「Performance check」):
+  perf                                                 # 全 source: list×2 + detail/extract 采样
+  perf --days=30 --limit=8                             # 30 天窗口, 每 source 采样 8 个
+  perf --source=grok                                   # 单 source
+  perf --all --days=30                                 # detail 扫全窗口, 输出最慢 session top5
+  # list2_ms 应显著低于 list_ms (list 缓存生效); detail_avg_ms>300 / list_ms>1000 → WARN
 
 Custom title (cache overlay; sync-safe):
   list --untitled --days=7 --roots
@@ -1149,6 +1162,97 @@ async function cmdSkillReads(args: CliArgs) {
   }
 }
 
+/**
+ * perf: 性能检查（sources list / detail / skill-read extract 分阶段采样）。
+ * 设计动机: list 无缓存时 detail 逐 session 调用会 O(N²) 放大 (list 每次全量扫描)。
+ * - list_ms / list2_ms: live list 两次, list2 命中进程内缓存应显著更低
+ * - detail_avg/max: cache 窗口最近 N 个 session 的 live detail 采样
+ * 阈值: list_ms > 1000 或 detail_avg > 300 → WARN (见 README「Performance check」)
+ */
+async function cmdPerf(args: CliArgs) {
+  const days = args.days ?? 14;
+  const t0 = Date.now();
+
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  await initAiCodingStats();
+  try {
+    const results: Array<Record<string, unknown>> = [];
+    for (const source of ALL_SOURCES) {
+      if (args.source !== 'all' && args.source !== source) continue;
+
+      // live list ×2: 第二次应命中进程内缓存 (TTL 内)
+      let t = Date.now();
+      let liveCount = 0;
+      let listError: string | null = null;
+      try {
+        liveCount = (await listSessions({ source })).sessions.length;
+      } catch (e) {
+        listError = e instanceof Error ? e.message : String(e);
+      }
+      const listMs = Date.now() - t;
+
+      t = Date.now();
+      if (!listError) {
+        try {
+          await listSessions({ source });
+        } catch { /* 二次失败同 listError 处理, 忽略 */ }
+      }
+      const list2Ms = Date.now() - t;
+
+      // detail 采样: cache 窗口最近 N 个 (cache-first 拿 id, 不依赖 live list); --all 扫全窗口找最慢
+      const { startDate } = resolveWindow({ days } as CliArgs);
+      const { sessions } = queryCached({ source, startDate });
+      const cap = args.all ? sessions.length : Math.min(args.limit ?? 5, 20);
+      const detailTimes: number[] = [];
+      const extractTimes: number[] = [];
+      const detailRows: Array<{ session_id: string; ms: number; msgs: number }> = [];
+      for (let i = 0; i < Math.min(cap, sessions.length); i++) {
+        const s = sessions[i];
+        let dt = Date.now();
+        let detail: UnifiedSessionDetail | null = null;
+        try {
+          detail = await getSessionDetail({ sessionId: s.id, source });
+        } catch { /* 计时照收 */ }
+        const detailMs = Date.now() - dt;
+        detailTimes.push(detailMs);
+
+        dt = Date.now();
+        extractSkillReads(detail?.messages);
+        extractTimes.push(Date.now() - dt);
+        detailRows.push({ session_id: s.id, ms: detailMs, msgs: detail?.messages?.length ?? 0 });
+      }
+      const slowest = [...detailRows].sort((a, b) => b.ms - a.ms).slice(0, 5);
+
+      const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+      const max = (xs: number[]) => (xs.length ? Math.max(...xs) : null);
+      const detailAvg = avg(detailTimes);
+      const warnings: string[] = [];
+      if (listMs > 1000) warnings.push(`list_ms=${listMs} > 1000: live list(含全量 convert)过重, 检查扫描与 convert 是否有缓存/增量路径`);
+      if (list2Ms >= listMs * 0.8 && listMs > 300) warnings.push(`list2_ms=${list2Ms} 未显著低于 list_ms: 进程内 list 缓存疑似未生效 (或单次 list 已超 TTL)`);
+      if (detailAvg != null && detailAvg > 300) warnings.push(`detail_avg_ms=${detailAvg} > 300: detail 内部存在重复 list 或重计算`);
+
+      results.push({
+        source,
+        live_count: liveCount,
+        list_ms: listMs,
+        list2_ms: list2Ms,
+        detail_samples: detailTimes.length,
+        detail_avg_ms: detailAvg,
+        detail_max_ms: max(detailTimes),
+        extract_avg_ms: avg(extractTimes),
+        // 最高消耗 detail 任务 (降序前 5; --all 时覆盖全窗口)
+        slowest,
+        ...(listError ? { error: listError } : {}),
+        ...(warnings.length ? { warnings } : {}),
+      });
+    }
+    printJson({ ok: true, days, samples: args.all ? 'all' : Math.min(args.limit ?? 5, 20), results, total_ms: Date.now() - t0 }, args.pretty);
+  } finally {
+    closeAiCodingStats();
+    closeStoreDb();
+  }
+}
+
 async function cmdDetail(args: CliArgs) {
   const id = requireId(args, 'detail');
   const source = requireOneSource(args, 'detail');
@@ -1877,6 +1981,9 @@ async function main() {
       break;
     case 'skill-reads':
       await cmdSkillReads(args);
+      break;
+    case 'perf':
+      await cmdPerf(args);
       break;
     case 'refs':
       await cmdRefs(args);
