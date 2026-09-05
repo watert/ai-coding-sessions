@@ -13,6 +13,7 @@ import {
   initAiCodingStats,
   listSessions,
   closeAiCodingStats,
+  getSessionDetail,
 } from '../sources/index';
 import type { UnifiedSessionInfo } from '../sources/types';
 import type { SourceId } from './schema';
@@ -27,6 +28,7 @@ import {
   getCachedDirtyMark,
 } from './upsert';
 import { queryCached, getCachedSession } from './query';
+import { extractSkillReads, replaceSkillReads, getSkillReadsBuiltAt } from './session-skill-reads';
 import { getGrokSessionItemsByIds } from '../sources/grok-code';
 import { convertGrokSession } from '../sources/grok-source';
 import { getKimiSessionItemsByIds, listKimiSubagentsFromMainWire } from '../sources/kimi-code';
@@ -50,6 +52,8 @@ export interface SyncOptions {
   metaPath?: string;
   /** 同步后关闭源 DB（CLI 用） */
   closeAfter?: boolean;
+  /** upsert 后顺带物化 skill-reads (增量 query 顺手补; 默认 true) */
+  skillReads?: boolean;
 }
 
 export interface SyncSourceResult {
@@ -60,6 +64,8 @@ export interface SyncSourceResult {
   updated: number;
   skipped: number;
   orphaned: number;
+  /** 本次顺手物化 skill-reads 的 session 数 */
+  skill_reads_built?: number;
   duration_ms: number;
   error?: string;
 }
@@ -168,7 +174,7 @@ export async function syncSessions(options: SyncOptions = {}): Promise<SyncResul
 
 async function syncOneSource(
   source: SourceId,
-  opts: { startDate?: string; endDate?: string; full: boolean; reconvert?: boolean },
+  opts: { startDate?: string; endDate?: string; full: boolean; reconvert?: boolean; skillReads?: boolean },
 ): Promise<SyncSourceResult> {
   const t0 = Date.now();
   const result: SyncSourceResult = {
@@ -189,6 +195,7 @@ async function syncOneSource(
     const dirtyById = new Map(refs.map((r) => [r.session_id, r.dirty_mark]));
 
     const dirtyIds: string[] = [];
+    const upsertedIds: string[] = [];
     for (const r of refs) {
       const cached = getCachedDirtyMark(source, r.session_id);
       if (opts.full || cached == null || cached !== r.dirty_mark) {
@@ -243,6 +250,12 @@ async function syncOneSource(
       if (ur.action === 'insert') result.inserted++;
       else if (ur.action === 'update') result.updated++;
       else result.skipped++;
+      if (ur.action !== 'skip' && opts.skillReads !== false) upsertedIds.push(s.id);
+    }
+
+    // 顺手补 skill-reads（仅本次有内容变化的 session; live detail 读取, list 已走 TTL 缓存）
+    if (upsertedIds.length) {
+      result.skill_reads_built = await backfillSkillReads(source, upsertedIds);
     }
 
     // full：对整源扫 orphan；增量：仅 un-orphan 已见（upsert 已清），不新增 orphan
@@ -265,6 +278,25 @@ function mergeParentFromCache(s: UnifiedSessionInfo): UnifiedSessionInfo {
     return { ...s, parent_id: prev.parent_id };
   }
   return s;
+}
+
+/** 顺手补: 对本次 upsert 的 session 增量物化 skill-reads (last_active 晚于 built_at 才重提, 失败不阻塞 sync) */
+async function backfillSkillReads(source: SourceId, ids: string[]): Promise<number> {
+  let built = 0;
+  for (const id of ids) {
+    try {
+      const s = getCachedSession(source, id);
+      const lastActiveMs = s?.last_active_at_iso ? Date.parse(s.last_active_at_iso) : 0;
+      const builtAt = getSkillReadsBuiltAt(source, id);
+      if (builtAt != null && lastActiveMs <= builtAt) continue;
+      const detail = await getSessionDetail({ sessionId: id, source });
+      replaceSkillReads(source, id, extractSkillReads(detail?.messages));
+      built++;
+    } catch (e) {
+      console.warn(`[sync] skill-reads ${source}/${id} failed:`, e);
+    }
+  }
+  return built;
 }
 
 /** grok/kimi：只 convert 指定 root session ids（含 kimi subagent 展开） */
