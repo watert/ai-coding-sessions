@@ -230,6 +230,32 @@ export interface ListSessionPromptsOptions {
   cwd?: string;
   limit?: number;
   offset?: number;
+  /** 每条 prompt 截断预览字符上限（默认 300, 0 = 全量原文）; 超长时前后各取一半用 `...` join, 并折叠空白 */
+  truncateChars?: number;
+}
+
+/**
+ * prompt 截断预览: 超过 maxChars 时前后各取一半（300 → 150+150）用 `...` join; 同时折叠空白省 context
+ */
+export function truncatePromptHeadTail(
+  text: string,
+  maxChars: number,
+): { text: string; truncated: boolean } {
+  const t = String(text).replace(/\s+/g, ' ').trim();
+  if (maxChars <= 0 || t.length <= maxChars) return { text: t, truncated: false };
+  const head = Math.ceil(maxChars / 2);
+  const tail = maxChars - head;
+  return { text: `${t.slice(0, head)}...${t.slice(-tail)}`, truncated: true };
+}
+
+/** prompts 默认截断上限; 识别会话场景省 context */
+export const PROMPTS_TRUNCATE_DEFAULT = 300;
+
+export function truncatePromptRows(rows: SessionPromptRow[], maxChars: number): SessionPromptRow[] {
+  return rows.map((r) => {
+    const { text, truncated } = truncatePromptHeadTail(r.text, maxChars);
+    return truncated ? { ...r, text, truncated: true } : r;
+  });
 }
 
 /**
@@ -242,6 +268,7 @@ export function listSessionPrompts(options: ListSessionPromptsOptions = {}): {
   skipped: number;
 } {
   const { ids, source = 'all', startDate, endDate, rootsOnly, cwd, limit, offset } = options;
+  const maxChars = options.truncateChars ?? PROMPTS_TRUNCATE_DEFAULT;
 
   const targets: Array<{ source: SourceId; id: string }> = ids?.length
     ? ids
@@ -264,7 +291,7 @@ export function listSessionPrompts(options: ListSessionPromptsOptions = {}): {
       count: rows.length,
       title: cached?.title ?? null,
       parent_id: cached?.parent_id ?? null,
-      prompts: rows,
+      prompts: maxChars > 0 ? truncatePromptRows(rows, maxChars) : rows,
     });
   }
 

@@ -2,7 +2,7 @@
 name: ai-coding-sessions
 description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.9.1
+  version: 1.10.0
 ---
 
 # AI Coding Sessions
@@ -18,6 +18,7 @@ metadata:
 ## 触发场景
 
 - 列表 / 详情 / **轨迹 trace** / **handoff 续作摘要** / prompts / stats
+- Agent 对话中自识别当前会话（`list --cwd` + `in-progress` + prompts 比对）
 - 成本、token、TPS、latency、cache、subagent
 - 缓存 sync / reconcile / 脏检
 - 弱标题 / Untitled / 生成或改 session title（`set-title`）/ 批量标题审查（`title-review`）
@@ -86,7 +87,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `digest` | **多 session 日度 digest**（roots → handoff 聚合；默认当天 roots-only；`--format=md` 按 project 分组，可 append memory） |
 | `resolve` | 解析 `latest` / id / path / 标题（歧义 exit 2） |
 | `detail` | 详情 live + 体量控制 + `timing` |
-| `prompts` | 缓存 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl` 每行一个 session） |
+| `prompts` | 缓存 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl`；**默认每条截断 300 字符**——前后各 150 用 `...` join, `--truncate-chars=0` 全量原文） |
 | `set-title` | 缓存 `custom_title`（`--clear` · OpenCode `--write-source`） |
 | `title-review` | 标题审查候选：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
 | `stats` | token / bySource 聚合 |
@@ -94,6 +95,20 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含 session 归因; `--build` 物化 / `--live` 直读 / `--tool=` / `--out=`; 落盘后 grep/jq/python 接管分析） |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |
+
+**识别当前会话**（Agent 在对话中定位"我"是哪条 session；**标题不可信**——各 agent 标题生成机制不同，主要靠 prompts 识别）：
+
+```bash
+bun src/store/cli.ts sync --days=1 --source=all           # cache-first, 先保证当前会话已落缓存 (增量很快)
+bun src/store/cli.ts list --cwd=. --days=0 --compact | jq '[.sessions[] | select(.session_status=="in-progress")]'
+bun src/store/cli.ts resolve --cwd=. --ref=latest          # 多数场景: 最近活跃一条就是当前会话
+bun src/store/cli.ts prompts --source=<s> --id=<id>        # 默认截断 300, 用 prompt 内容比对确认
+```
+
+- 判定顺序：`--cwd=` 圈定项目 → `session_status=="in-progress"` 且 `last_active_at_iso` 最新 → `prompts` 首条预览比对（当前会话的首条 prompt 就是你正在处理的请求）
+- 缓存可能滞后于本轮对话，拿不准就先 `sync --days=1`
+- `list --compact` 输出含 `session_status`（`in-progress`/`done`/`error`/`aborted`/`unknown`），无服务端 running 筛选参数，jq 客户端过滤即可
+- 不要用 `title-review` 做自识别：它排除已有 `custom_title` 的 session，恰好会漏掉当前会话
 
 **轨迹推荐**（#1）：
 
@@ -154,9 +169,10 @@ bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --wr
 
 - **机械弱标题**（`isWeakTitle`，`list --untitled` 过滤）：空 / `Untitled` / `New Session` / `New session - <ISO>` 前缀
 - **Agent 审查**（`title-review`）：非弱标题也可疑——源自动标题可能是整段 prompt、英文占位、词不达意。候选输出 `title + prompt_count + prompts_preview`（默认前 3 条 × 300 字符，`--prompt-count=` / `--prompt-chars=` 可调），由 Agent 依据 prompts 判断是否重写
+- `prompts` 默认每条截断 300 字符（`--truncate-chars=` 可调，`0` = 全量原文）；标题生成用途够用，逐字核对时才关
 - 一次最多改约 5 条。标题短、可检索，不要整段 prompt。
 
-标志速查：`--cwd=` · `--ref=` · `--untitled` · `--title=` · `--clear` · `--write-source` · `--prompt-count=` · `--prompt-chars=` · `--include-empty` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
+标志速查：`--cwd=` · `--ref=` · `--untitled` · `--title=` · `--clear` · `--write-source` · `--prompt-count=` · `--prompt-chars=` · `--include-empty` · `--truncate-chars=` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
 完整说明 → [references/cli.md](./references/cli.md)
 
 ## 库 API 摘要

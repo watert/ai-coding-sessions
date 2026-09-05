@@ -138,6 +138,8 @@ export interface SessionPromptRow {
   idx: number;
   created_at: number | null;
   text: string;
+  /** 截断预览标记（prompts 默认截断, --truncate-chars=0 关闭） */
+  truncated?: boolean;
 }
 
 export interface CachedSessionRow {

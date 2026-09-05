@@ -134,4 +134,32 @@ describe('listSessionPrompts', () => {
     expect(paged.sessions.length).toBe(1);
     expect(paged.sessions[0].sessionId).toBe(all[0].sessionId);
   });
+
+  test('truncateChars: 默认 300 超长前后各取 150 用 ... join; 0 = 全量原文', () => {
+    const long = `长${'x'.repeat(500)}尾`;
+    upsertSession(
+      makeSession({
+        id: 'p-trunc',
+        title: '截断',
+        userParts: [
+          { text: long, startTime: 1_700_000_000_000 },
+          { text: '短 prompt', startTime: 1_700_000_001_000 },
+        ],
+      }),
+    );
+
+    const { sessions } = listSessionPrompts({ ids: [{ source: 'kimi', id: 'p-trunc' }] });
+    const rows = sessions[0].prompts;
+    expect(rows[0].truncated).toBe(true);
+    expect(rows[0].text.length).toBe(150 + 3 + 150);
+    expect(rows[0].text.startsWith('长')).toBe(true);
+    expect(rows[0].text.endsWith('尾')).toBe(true);
+    expect(rows[0].text.includes('...')).toBe(true);
+    expect(rows[1].truncated).toBeUndefined();
+    expect(rows[1].text).toBe('短 prompt');
+
+    const full = listSessionPrompts({ ids: [{ source: 'kimi', id: 'p-trunc' }], truncateChars: 0 });
+    expect(full.sessions[0].prompts[0].truncated).toBeUndefined();
+    expect(full.sessions[0].prompts[0].text).toBe(long);
+  });
 });

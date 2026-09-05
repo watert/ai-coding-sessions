@@ -53,6 +53,8 @@ import {
   getSessionPrompts,
   listSessionPrompts,
   listTitleReview,
+  truncatePromptRows,
+  PROMPTS_TRUNCATE_DEFAULT,
   type ListSessionPromptsOptions,
 } from './query';
 import {
@@ -184,6 +186,8 @@ interface CliArgs {
   promptPreviewChars: number;
   /** title-review: 无 prompt 的 session 也列出 */
   includeEmptyReview: boolean;
+  /** prompts: 每条截断预览字符上限 (默认 300, 0 = 全量原文) */
+  truncateChars: number;
   /** scan: 匹配 pattern */
   grep?: string;
   /** scan: pattern 按 RegExp 匹配 */
@@ -222,6 +226,7 @@ function parseArgs(argv: string[]): CliArgs {
     promptPreviewCount: 3,
     promptPreviewChars: 300,
     includeEmptyReview: false,
+    truncateChars: PROMPTS_TRUNCATE_DEFAULT,
     regex: false,
     build: false,
   };
@@ -266,6 +271,8 @@ function parseArgs(argv: string[]): CliArgs {
       out.promptPreviewCount = Number(a.slice('--prompt-count='.length));
     } else if (a.startsWith('--prompt-chars=')) {
       out.promptPreviewChars = Number(a.slice('--prompt-chars='.length));
+    } else if (a.startsWith('--truncate-chars=')) {
+      out.truncateChars = Number(a.slice('--truncate-chars='.length));
     }
     else if (a.startsWith('--days=')) out.days = Number(a.slice('--days='.length));
     else if (a.startsWith('--start=')) out.startDate = a.slice('--start='.length);
@@ -413,6 +420,8 @@ Options:
   --write-source      set-title: also write OpenCode source DB
   --prompt-count=N    title-review: preview prompt count per session (default 3)
   --prompt-chars=N    title-review: preview chars per prompt (default 300)
+  --truncate-chars=N  prompts: truncate each prompt (default 300; head/tail halves joined by
+                      '...', whitespace collapsed); 0 = full raw text
   --include-empty     title-review: also list sessions with no prompts
   --limit=N --offset=N
   --live              list: live convert
@@ -1483,6 +1492,7 @@ async function cmdPrompts(args: CliArgs) {
   try {
     const batch = buildPromptsBatch(args);
     if (batch) {
+      batch.truncateChars = args.truncateChars;
       const { sessions, total, skipped } = listSessionPrompts(batch);
       if (args.jsonl) {
         // 流式：每行一个 session 条目，管道 grep/jq 接管
@@ -1511,7 +1521,7 @@ async function cmdPrompts(args: CliArgs) {
         count: rows.length,
         title: cached?.title ?? null,
         parent_id: cached?.parent_id ?? null,
-        prompts: rows,
+        prompts: args.truncateChars > 0 ? truncatePromptRows(rows, args.truncateChars) : rows,
       },
       args.pretty,
     );
