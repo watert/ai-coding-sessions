@@ -46,6 +46,7 @@ import {
   closeAiCodingStats,
   listSessions,
   getSessionDetail,
+  warmSourceListCache,
 } from '../sources/index';
 import {
   queryCached,
@@ -986,6 +987,8 @@ async function cmdToolCalls(args: CliArgs) {
   // ---- build: live 提取 → 物化表 (session 级增量, last_active 晚于 built_at 才重提) ----
   if (args.build) {
     await initAiCodingStats();
+    // 批量扫描前 warm list 缓存 (长 TTL), 避免 TTL 过期重扫尖刺混入 detail 计时
+    await warmSourceListCache(args.source);
     try {
       let built = 0;
       let skipped = 0;
@@ -1084,6 +1087,8 @@ async function cmdSkillReads(args: CliArgs) {
   // ---- build: live 提取 → 物化 (session 级增量, last_active 晚于 built_at 才重提) ----
   if (args.build) {
     await initAiCodingStats();
+    // 批量扫描前 warm list 缓存 (长 TTL), 避免 TTL 过期重扫尖刺混入 detail 计时
+    await warmSourceListCache(args.source);
     try {
       let built = 0;
       let skipped = 0;
@@ -1198,6 +1203,9 @@ async function cmdPerf(args: CliArgs) {
         } catch { /* 二次失败同 listError 处理, 忽略 */ }
       }
       const list2Ms = Date.now() - t;
+
+      // 批量 detail 扫描前 warm list 缓存 (长 TTL), 避免过期重扫尖刺污染采样
+      await warmSourceListCache(args.source);
 
       // detail 采样: cache 窗口最近 N 个 (cache-first 拿 id, 不依赖 live list); --all 扫全窗口找最慢
       const { startDate } = resolveWindow({ days } as CliArgs);

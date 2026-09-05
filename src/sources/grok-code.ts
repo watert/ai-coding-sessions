@@ -430,15 +430,17 @@ export async function scanGrokSubagentRelations(): Promise<{
 
 /**
  * list 结果进程内 TTL 缓存: 全量扫描 (subagent relations + 逐 session summary) 代价 ~800ms,
- * detail 逐 session 调用会 O(N²) 放大; sync 增量脏检测走 listRefs 不受影响, fresh 逃生口留给 full。
+ * detail 逐 session 调用会 O(N²) 放大。TTL 归属缓存条目 (写入时声明): 默认 3s,
+ * 批量扫描入口可 warm 更长 ttlMs (fresh: true 强制重扫); sync 脏检测走 listRefs 不受影响。
  */
 const GROK_LIST_TTL_MS = 3000;
-let grokListCache: { at: number; root: string; sessions: GrokSessionItem[] } | null = null;
+let grokListCache: { at: number; ttl: number; root: string; sessions: GrokSessionItem[] } | null = null;
 
-export async function listGrokCodeSessions(opts?: { fresh?: boolean }): Promise<GrokSessionItem[]> {
+export async function listGrokCodeSessions(opts?: { fresh?: boolean; ttlMs?: number }): Promise<GrokSessionItem[]> {
   const root = grokSessionsRoot();
-  if (!opts?.fresh && grokListCache?.root === root && Date.now() - grokListCache.at < GROK_LIST_TTL_MS) {
-    return grokListCache.sessions;
+  const cached = grokListCache;
+  if (!opts?.fresh && cached?.root === root && Date.now() - cached.at < cached.ttl) {
+    return cached.sessions;
   }
   if (!fs.existsSync(root)) return [];
 
@@ -498,7 +500,7 @@ export async function listGrokCodeSessions(opts?: { fresh?: boolean }): Promise<
     }
   }
 
-  return (grokListCache = { at: Date.now(), root, sessions }).sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  return (grokListCache = { at: Date.now(), ttl: opts?.ttlMs ?? GROK_LIST_TTL_MS, root, sessions }).sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**

@@ -235,6 +235,7 @@ bun src/store/cli.ts perf --days=30 --limit=8 --source=grok   # 定向检查
 输出解读：
 
 - `list_ms` / `list2_ms` —— live `listSessions` 连跑两次。`list2_ms` 应显著低于 `list_ms`（命中进程内缓存）。若 list 慢**且** `list2_ms ≈ list_ms`，说明 list 层缺缓存、或 TTL 比单次 list 还短。
+- list 缓存 TTL **归属缓存条目、由调用方声明**：默认 3s；批量入口（`skill-reads --build`、`tool-calls --build`、`perf`）通过 `warmSourceListCache(source, ttlMs)` 以长 TTL 预热，避免扫描中途 TTL 过期重扫（grok 一次 ~800ms）把尖刺打进某个 session 的 detail 计时。
 - `detail_avg_ms` / `detail_max_ms` —— live detail 采样。偏高通常是 detail 内部逐 session 重跑全量 list（典型 O(N²) 放大）或后置重计算。
 - `slowest` —— 采样内最慢 detail 任务 top5（session_id + 耗时 + 消息数），把最贵的任务点名而不是被平均掩盖。默认各 source 只采样最近 5 个；`--all` 扫全窗口（如 `perf --all --days=30`）。
 - `extract_avg_ms` —— 对采样 messages 跑 `extractSkillReads`；纯 CPU 遍历，应接近 0。

@@ -479,6 +479,16 @@ export {
   OpenCodeSessionExportSchema,
 };
 
+/**
+ * 预热 source 侧 list 缓存并声明长 TTL (grok/kimi 有进程内 list TTL 缓存, 其余 source no-op)。
+ * 批量 detail 扫描入口 (skill-reads/tool-calls --build、perf --all) 应先调用,
+ * 避免 TTL 过期重扫的 ~800ms 尖刺被打进某个 session 的 detail 计时。
+ */
+export async function warmSourceListCache(source: string, ttlMs = 60_000): Promise<void> {
+  if (source === 'grok' || source === 'all') await listGrokCodeSessions({ fresh: true, ttlMs });
+  if (source === 'kimi' || source === 'all') await listKimiCodeSessions({ fresh: true, ttlMs });
+}
+
 // Re-export types
 export type {
   UnifiedSessionInfo,

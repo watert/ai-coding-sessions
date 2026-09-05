@@ -233,6 +233,7 @@ bun src/store/cli.ts perf --days=30 --limit=8 --source=grok   # targeted
 How to read the output:
 
 - `list_ms` / `list2_ms` — live `listSessions` run twice back-to-back. `list2_ms` should be well below `list_ms` (in-process cache hit). If list is slow **and** `list2_ms ≈ list_ms`, a list-level cache is missing or its TTL is shorter than one list run.
+- List cache TTL is **per-entry, declared by the caller**: default 3s; batch entry points (`skill-reads --build`, `tool-calls --build`, `perf`) warm the cache with a long TTL via `warmSourceListCache(source, ttlMs)` so mid-scan TTL expiry doesn't inject an extra full re-scan (~800ms for grok) into some session's detail timing.
 - `detail_avg_ms` / `detail_max_ms` — live detail sampling. High values usually mean detail re-runs a full list per session (the classic O(N²) amplification) or heavy post-processing.
 - `slowest` — top-5 slowest detail sessions in the sample (id + ms + message count), so the most expensive tasks are named, not averaged away. Default samples the newest 5 per source; pass `--all` to walk the whole window (e.g. `perf --all --days=30`).
 - `extract_avg_ms` — `extractSkillReads` over sampled messages; should stay ~0 (pure CPU walk).
