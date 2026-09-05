@@ -220,7 +220,17 @@ export async function getKimiSessionActivityMark(
   };
 }
 
-export async function listKimiCodeSessions(): Promise<KimiSessionItem[]> {
+/**
+ * list 结果进程内 TTL 缓存: 全量 index+state 扫描代价 ~85-200ms,
+ * detail 逐 session 调用会 O(N²) 放大; fresh 逃生口留给需要强实时的调用方。
+ */
+const KIMI_LIST_TTL_MS = 3000;
+let kimiListCache: { at: number; sessions: KimiSessionItem[] } | null = null;
+
+export async function listKimiCodeSessions(opts?: { fresh?: boolean }): Promise<KimiSessionItem[]> {
+  if (!opts?.fresh && kimiListCache && Date.now() - kimiListCache.at < KIMI_LIST_TTL_MS) {
+    return kimiListCache.sessions;
+  }
   if (!fs.existsSync(sessionIndexPath())) {
     return [];
   }
@@ -268,7 +278,7 @@ export async function listKimiCodeSessions(): Promise<KimiSessionItem[]> {
     }
   }
 
-  return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  return (kimiListCache = { at: Date.now(), sessions }).sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**

@@ -428,8 +428,19 @@ export async function scanGrokSubagentRelations(): Promise<{
 
 // ==================== Session 列表 ====================
 
-export async function listGrokCodeSessions(): Promise<GrokSessionItem[]> {
-  if (!fs.existsSync(grokSessionsRoot())) return [];
+/**
+ * list 结果进程内 TTL 缓存: 全量扫描 (subagent relations + 逐 session summary) 代价 ~800ms,
+ * detail 逐 session 调用会 O(N²) 放大; sync 增量脏检测走 listRefs 不受影响, fresh 逃生口留给 full。
+ */
+const GROK_LIST_TTL_MS = 3000;
+let grokListCache: { at: number; root: string; sessions: GrokSessionItem[] } | null = null;
+
+export async function listGrokCodeSessions(opts?: { fresh?: boolean }): Promise<GrokSessionItem[]> {
+  const root = grokSessionsRoot();
+  if (!opts?.fresh && grokListCache?.root === root && Date.now() - grokListCache.at < GROK_LIST_TTL_MS) {
+    return grokListCache.sessions;
+  }
+  if (!fs.existsSync(root)) return [];
 
   // 提前扫描所有 session 的 updates.jsonl，建立 subagent 元数据映射
   const { metaByChild, childrenByParent } = await scanGrokSubagentRelations();
@@ -487,7 +498,7 @@ export async function listGrokCodeSessions(): Promise<GrokSessionItem[]> {
     }
   }
 
-  return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  return (grokListCache = { at: Date.now(), root, sessions }).sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**
