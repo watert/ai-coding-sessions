@@ -138,6 +138,12 @@ export {
   aggregateSourceModelTool,
   wrapBashBreakdown,
   resolveFailureWindow,
+  // skill-read 抽取与物化
+  extractSkillReads,
+  replaceSkillReads,
+  getSkillReads,
+  getSkillReadsBuiltAt,
+  querySkillReads,
 } from './store';
 
 export type {
@@ -185,4 +191,6 @@ export type {
   FailureSource,
   FailureCollectOptions,
   FailureAnalyzeResult,
+  SkillReadEvent,
+  SkillReadsRecord,
 } from './store';

@@ -40,8 +40,8 @@ function safeStringify(v: unknown): string {
   }
 }
 
-/** 与 session-trace 同口径识别 tool part（统一消息格式, 7 source 通用） */
-function parseToolPart(p: any): { name: string; status: string; input: unknown } | null {
+/** 与 session-trace 同口径识别 tool part（统一消息格式, 7 source 通用）；skill-reads 抽取复用 */
+export function parseToolPart(p: any): { name: string; status: string; input: unknown } | null {
   if (p.type !== 'tool' && !p.tool) return null;
   const name = String(p.tool || p.name || p.toolName || p.call?.name || '?');
   const status = String(p.state?.status ?? p.status ?? (typeof p.state === 'string' ? p.state : '?'));
