@@ -29,6 +29,7 @@ import {
   type PiSessionItem,
   type PiMessageEnvelope,
   type PiCustomEnvelope,
+  type PiCompactionEnvelope,
   type PiEvent,
 } from './pi-code';
 import { checkSessionStatus } from './opencode';
@@ -164,6 +165,45 @@ export function convertPiEventsToMessages(
         const timing = validPiTiming(custom.data);
         if (timing) pendingTiming.push(timing);
       }
+      continue;
+    }
+
+    if (ev.type === 'compaction') {
+      // compaction entry → 合成 assistant 消息（对齐 kimi [Context Compacted]）；usage 为生成 summary 的真实调用
+      const cp = ev as PiCompactionEnvelope;
+      const tsMs = numTs(cp.timestamp) || Date.now();
+      const envId = String(cp.id || `cp-${out.length}`);
+      const text = [`[Context Compacted]${cp.fromHook ? '（hook 自动）' : ''}`, cp.summary || '']
+        .filter(Boolean).join('\n');
+      const info: any = {
+        id: envId,
+        sessionID: sessionId,
+        role: 'assistant',
+        parentID: lastUserId,
+        time: { created: tsMs, completed: tsMs },
+        path: { cwd: fallbackCwd, root: '' },
+        compaction: true,
+        finish: 'stop',
+      };
+      const u = cp.usage;
+      if (u) {
+        const input = u.input || 0;
+        const output = u.output || 0;
+        info.tokens = {
+          total: u.totalTokens || (input + output),
+          input,
+          output,
+          reasoning: u.reasoning || 0,
+          cache: { read: u.cacheRead || 0, write: u.cacheWrite || 0 },
+        };
+        const costTotal = u.cost?.total;
+        if (typeof costTotal === 'number' && costTotal > 0) info.piUsageCost = costTotal;
+      }
+      out.push({
+        info,
+        parts: [{ id: newPartId(envId, 't'), type: 'text', text, sessionID: sessionId, messageID: envId }],
+      });
+      lastStopReason = 'stop';
       continue;
     }
 
@@ -486,6 +526,8 @@ async function getPiSessionStats(
     usage_source?: 'real' | 'estimate';
     cost_is_partial?: boolean;
     usage_is_incomplete?: boolean;
+    compact_count?: number;
+    time_compacting?: number;
     usage_by_model?: Array<{
       provider: string;
       model: string;
@@ -519,6 +561,8 @@ async function getPiSessionStats(
     usage_source: 'real' as const,
     cost_is_partial: true,
     usage_is_incomplete: false,
+    compact_count: 0,
+    time_compacting: undefined as number | undefined,
   };
 
   try {
@@ -677,6 +721,13 @@ async function getPiSessionStats(
     stats.total_tokens = stats.total_input + stats.total_cache_read + stats.total_output;
     stats.models_used = Array.from(models).join(',');
     stats.max_context_tokens = maxContextFromUnifiedMessages(messages) || undefined;
+
+    // compaction 合成消息 → compact 次数与最近一次压缩时间
+    const compactMsgs = messages.filter((m) => (m.info as any).compaction);
+    if (compactMsgs.length) {
+      stats.compact_count = compactMsgs.length;
+      stats.time_compacting = compactMsgs[compactMsgs.length - 1].info.time?.created;
+    }
 
     // 用 usage_by_model 构造 pricing（calculate 内部会读 messages.tokens；这里也直接现算）
     let pricing = calculateSessionPricingFromUnifiedMessages(messages);
@@ -874,6 +925,8 @@ export async function convertPiSession(
     models_used: stats.models_used,
     usage_by_model: stats.usage_by_model,
     session_status,
+    compact_count: stats.compact_count || undefined,
+    time_compacting: stats.time_compacting ?? null,
     last_message_tokens: stats.last_message_tokens,
     max_context_tokens: stats.max_context_tokens,
     last_message: stats.last_message,

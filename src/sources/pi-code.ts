@@ -3,7 +3,7 @@
  *
  * 数据落盘: ~/.pi/agent/sessions/<cwd-slug>/<ISO-ts>_<uuid>.jsonl
  * - 首行: {type:"session", version:3, id, timestamp, cwd}
- * - 事件流: session | model_change | thinking_level_change | message | custom
+ * - 事件流: session | model_change | thinking_level_change | message | compaction | custom
  * - 未知 type 事件容错跳过（v3 格式仍在快速迭代）
  * 无原生 title；title 用首条 user text 截断（v1 接受 isWeakTitle 不认现状）
  */
@@ -106,6 +106,27 @@ export type PiMessageEnvelope = {
 };
 
 export type PiEvent = PiMessageEnvelope | PiCustomEnvelope | { type: string; [k: string]: any };
+
+/** pi compaction entry（context 压缩；usage 为生成 summary 的 LLM 调用） */
+export type PiCompactionEnvelope = {
+  type: 'compaction';
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  summary: string;
+  firstKeptEntryId?: string;
+  tokensBefore?: number;
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    reasoning: number;
+    totalTokens: number;
+    cost?: { total?: number };
+  };
+  fromHook?: boolean;
+};
 
 /** pi 扩展 custom entry（extensions/pi-timing.ts 落盘的时序数据等；不进 LLM context） */
 export type PiCustomEnvelope = {

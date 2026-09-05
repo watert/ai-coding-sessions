@@ -600,6 +600,103 @@ describe('convertPiSession / getPiSessionDetail', () => {
   });
 });
 
+describe('pi compaction', () => {
+  const cpRow = (over: Partial<any> = {}) => ({
+    type: 'compaction',
+    id: 'cp1',
+    parentId: 'a1',
+    timestamp: new Date(T0 + 3000).toISOString(),
+    summary: '## Goal\n继续之前的活',
+    firstKeptEntryId: 'a1',
+    tokensBefore: 50357,
+    fromHook: false,
+    usage: {
+      input: 120, output: 30, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 150,
+      cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 },
+    },
+    ...over,
+  });
+
+  test('compaction entry → 合成 assistant 消息（compaction 标记 + usage + cost rescale）', () => {
+    const events: PiEvent[] = [
+      { type: 'session', version: 3, id: 's', timestamp: new Date(T0).toISOString(), cwd: '/tmp/p' } as any,
+      {
+        type: 'message', id: 'u1', parentId: null, timestamp: new Date(T0 + 100).toISOString(),
+        message: { role: 'user', content: [{ type: 'text', text: '干活' }] },
+      },
+      {
+        type: 'message', id: 'a1', parentId: 'u1', timestamp: new Date(T0 + 1000).toISOString(),
+        message: {
+          role: 'assistant', content: [{ type: 'text', text: 'ok' }],
+          provider: 'opencode-go', model: 'kimi-k2.6',
+          usage: { input: 50, output: 10, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 60,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } },
+          stopReason: 'stop',
+        },
+      },
+      cpRow(),
+    ] as any;
+
+    const r = convertPiEventsToMessages('s', events);
+    const cp = r.messages.find((m: any) => m.info?.compaction) as any;
+    expect(cp).toBeDefined();
+    expect(cp.info.role).toBe('assistant');
+    expect(cp.info.parentID).toBe('u1');
+    expect(cp.info.finish).toBe('stop');
+    expect(cp.parts[0].text).toContain('[Context Compacted]');
+    expect(cp.parts[0].text).toContain('继续之前的活');
+    // compact 自身 usage 要计入 tokens
+    expect(cp.info.tokens.total).toBe(150);
+    expect(cp.info.tokens.input).toBe(120);
+    // piUsageCost 进 reported-cost 汇总（在 convert 内部）
+    const lastMsg = r.messages[r.messages.length - 1];
+    expect(lastMsg.info.id).toBe('cp1');
+  });
+
+  test('compact_count / time_compacting / total_tokens 含 compact usage', () => {
+    const tmp = mkFixtureDir('acs-pi-compact-');
+    const fx = writePiSample(tmp, {
+      sessionId: 'pi-cp-001',
+      rows: [
+        { type: 'session', version: 3, id: 'pi-cp-001', timestamp: new Date(T0).toISOString(), cwd: '/tmp/p' },
+        {
+          type: 'message', id: 'u1', parentId: null, timestamp: new Date(T0 + 100).toISOString(),
+          message: { role: 'user', content: [{ type: 'text', text: '干活' }] },
+        },
+        {
+          type: 'message', id: 'a1', parentId: 'u1', timestamp: new Date(T0 + 1000).toISOString(),
+          message: {
+            role: 'assistant', content: [{ type: 'text', text: 'ok' }],
+            provider: 'opencode-go', model: 'kimi-k2.6',
+            usage: { input: 50, output: 10, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 60,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } },
+            stopReason: 'stop',
+          },
+        },
+        cpRow(),
+      ],
+    });
+    withEnv({ PI_SESSIONS_DIR: fx.root }, async () => {
+      const list = await listPiCodeSessions();
+      const info = await convertPiSession(list[0]);
+      expect(info.compact_count).toBe(1);
+      expect(info.time_compacting).toBe(T0 + 3000);
+      // compact 的 usage 计入总 token（input 50+120 / output 10+30 / total 60+150）
+      expect(info.total_input).toBe(170);
+      expect(info.total_output).toBe(40);
+      expect(info.total_tokens).toBe(210);
+      // pricing 应被 reported cost 重标定（0.001 + 0.003）
+      expect(info.pricing?.usd).toBeCloseTo(0.004, 6);
+    });
+  });
+
+  test('hook 自动压缩 → 文案带标记', () => {
+    const r = convertPiEventsToMessages('s', [cpRow({ fromHook: true })] as any);
+    const cp = r.messages.find((m: any) => m.info?.compaction) as any;
+    expect(cp.parts[0].text).toContain('hook');
+  });
+});
+
 describe('derivePiTitle', () => {
   test('truncates long user text', () => {
     const t = derivePiTitle('a'.repeat(200), 'sid-xyz');
