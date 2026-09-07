@@ -14,6 +14,8 @@ import { listSessions, getSessionDetail as getUnifiedSessionDetail } from './ind
 import {
   createOpencodeFixtureDb,
   OC_SESSION_ID,
+  OC_ERR_SESSION_ID,
+  OC_NORESP_SESSION_ID,
   type OpencodeFixture,
 } from './__fixtures__/opencode';
 
@@ -64,6 +66,18 @@ describe('OpenCode SQLite (fixture)', () => {
     const { list } = getSessionList(undefined, undefined, true);
     const item = list.find((s) => s.session_id === OC_SESSION_ID)!;
     expect(item.session_status).toBe('done');
+  });
+
+  it('0-token error session (429) 经 fallback 判 error 而非 done', () => {
+    const { list } = getSessionList();
+    const item = list.find((s) => s.session_id === OC_ERR_SESSION_ID)!;
+    expect(item.session_status).toBe('error');
+  });
+
+  it('无回复 user-only session 经 fallback 判 in-progress', () => {
+    const { list } = getSessionList();
+    const item = list.find((s) => s.session_id === OC_NORESP_SESSION_ID)!;
+    expect(item.session_status).toBe('in-progress');
   });
 
   it('listSessions convert 透传 session_status（勿漏映射成 unknown）', async () => {

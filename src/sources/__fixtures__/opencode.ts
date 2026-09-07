@@ -9,6 +9,11 @@ export const OC_SESSION_ID = 'ses_fixture_001';
 export const OC_PROJECT_ID = 'proj_fixture_001';
 export const OC_MSG_USER = 'msg_fixture_user';
 export const OC_MSG_ASST = 'msg_fixture_asst';
+/** 异常样本: 全程 0 token, assistant 带 429 APIError (复刻 MiniMax rate limit 形态) */
+export const OC_ERR_SESSION_ID = 'ses_fixture_err';
+export const OC_MSG_ERR_ASST = 'msg_fixture_err_asst';
+/** 异常样本: 只有 user 消息, 无任何回复 */
+export const OC_NORESP_SESSION_ID = 'ses_fixture_noresp';
 
 /** 2026-07-15 12:00 UTC */
 export const OC_T0 = Date.UTC(2026, 6, 15, 12, 0, 0);
@@ -164,6 +169,52 @@ export function createOpencodeFixtureDb(dir?: string): OpencodeFixture {
       },
     }),
   );
+
+  const t3 = t0 + 10_000;
+  const t4 = t0 + 80_000;
+
+  db.prepare(
+    `INSERT INTO session (
+      id, project_id, parent_id, slug, directory, title, version,
+      time_created, time_updated, summary_additions, summary_deletions, summary_files
+    ) VALUES (?, ?, NULL, 'fixture-err', ?, 'Fixture Err Session', '1.0.0-test', ?, ?, 0, 0, 0)`,
+  ).run(OC_ERR_SESSION_ID, OC_PROJECT_ID, '/tmp/acs-fixture-proj', t3, t4);
+
+  const errUserData = { ...userData, time: { created: t3 } };
+  // 429 error assistant: 无 tokens / 无 finish / 无 cost, 仅 error + time.completed
+  const errAsstData = {
+    role: 'assistant',
+    time: { created: t3 + 300, completed: t4 },
+    agent: 'build',
+    model: { providerID: 'minimaxi', modelID: 'MiniMax-M3' },
+    error: {
+      name: 'APIError',
+      data: {
+        message: '当前已达到 Token Plan 用量上限。(2067)',
+        statusCode: 429,
+        isRetryable: true,
+      },
+    },
+  };
+
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run(OC_MSG_USER + '_err', OC_ERR_SESSION_ID, t3, t3, JSON.stringify(errUserData));
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run(OC_MSG_ERR_ASST, OC_ERR_SESSION_ID, t3 + 300, t4, JSON.stringify(errAsstData));
+
+  db.prepare(
+    `INSERT INTO session (
+      id, project_id, parent_id, slug, directory, title, version,
+      time_created, time_updated, summary_additions, summary_deletions, summary_files
+    ) VALUES (?, ?, NULL, 'fixture-noresp', ?, 'Fixture Noresp Session', '1.0.0-test', ?, ?, 0, 0, 0)`,
+  ).run(OC_NORESP_SESSION_ID, OC_PROJECT_ID, '/tmp/acs-fixture-proj', t3 + 1000, t3 + 1000);
+
+  const norespUserData = { ...userData, time: { created: t3 + 1000 } };
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run(OC_MSG_USER + '_noresp', OC_NORESP_SESSION_ID, t3 + 1000, t3 + 1000, JSON.stringify(norespUserData));
 
   db.close();
   return {

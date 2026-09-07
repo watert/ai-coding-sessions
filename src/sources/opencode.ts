@@ -893,6 +893,24 @@ export function getSessionList(
           )
         GROUP BY session_id
       ) latest ON m.session_id = latest.session_id AND m.time_created = latest.max_time
+    ),
+    -- 异常 session (429/API error/被杀) 全程 0 token, 上面的 tokens 过滤取不到 → 裸 NULL 会被判 done;
+    -- fallback 到字面最后一条消息, error/未回复 user 才能被识别
+    last_msg_fallback AS (
+      SELECT
+        m.session_id,
+        json(m.data) AS last_message_json
+      FROM message m
+      INNER JOIN (
+        SELECT session_id, MAX(time_created) AS max_time
+        FROM message
+        WHERE session_id IN (
+          SELECT s.id FROM session s
+          WHERE ${whereClause}
+        )
+        GROUP BY session_id
+      ) latest ON m.session_id = latest.session_id AND m.time_created = latest.max_time
+      WHERE m.session_id NOT IN (SELECT session_id FROM last_msg)
     )
     SELECT
       s.id AS session_id,
@@ -919,7 +937,7 @@ export function getSessionList(
       s.time_created AS session_time_created,
       s.time_updated AS session_time_updated,
       datetime(s.time_updated / 1000, 'unixepoch', 'localtime') AS last_active_at,
-      lm.last_message_json,
+      COALESCE(lm.last_message_json, lf.last_message_json) AS last_message_json,
       ms.models_used,
       ms.message_ids
     FROM session s
@@ -927,6 +945,7 @@ export function getSessionList(
     LEFT JOIN msg_stats ms ON ms.session_id = s.id
     LEFT JOIN part_stats ps ON ps.session_id = s.id
     LEFT JOIN last_msg lm ON lm.session_id = s.id
+    LEFT JOIN last_msg_fallback lf ON lf.session_id = s.id
     WHERE ${whereClause}
     ${modelFilter}
     GROUP BY s.id, p.id
