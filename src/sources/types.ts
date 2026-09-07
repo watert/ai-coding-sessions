@@ -77,6 +77,9 @@ export interface UnifiedSessionInfo {
   avg_tps?: number;
   avg_latency_ms?: number;
   avg_prefill_tps?: number;
+  /** 429 等限流重试总次数与 backoff 总等待（Kimi） */
+  rate_limit_retries?: number;
+  rate_limit_wait_ms?: number;
   assistant_tps_list?: number[];
   latency_list?: number[];
   prefill_tps_list?: number[];

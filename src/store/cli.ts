@@ -559,6 +559,8 @@ function compactSession(s: UnifiedSessionInfo) {
     total_tool_calls_failed: s.total_tool_calls_failed ?? 0,
     avg_tps: s.avg_tps ?? null,
     avg_latency_ms: s.avg_latency_ms ?? null,
+    rate_limit_retries: s.rate_limit_retries ?? null,
+    rate_limit_wait_ms: s.rate_limit_wait_ms ?? null,
     last_active_at_iso: s.last_active_at_iso ?? null,
     first_active_at_iso: s.first_active_at_iso ?? null,
     usage_source: s.usage_source ?? null,

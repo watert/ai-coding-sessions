@@ -82,6 +82,12 @@ const OpenCodeMessageInfoSchema = z.object({
   compaction: z.boolean().optional(), // context compact 消息（OpenCode agent=compaction / Kimi）
   /** thinking effort（Kimi 等）：on / low / high / max */
   thinkingEffort: z.string().optional(),
+  /** 限流重试（Kimi 429 等）：该逻辑 step 前的失败重试聚合 */
+  retry: z.object({
+    count: z.number(), // 重试次数
+    waitMs: z.number(), // 重试 backoff 总等待 (毫秒)
+    rateLimit: z.boolean().optional(), // 是否含 429 限流
+  }).optional(),
 });
 
 const OpenCodePartSchema = z.object({
