@@ -179,6 +179,10 @@ export type KimiMessageItem = {
   latencyMs?: number;
   streamDurationMs?: number;
   finishReason?: string;
+  /** 本逻辑 step 前的限流/失败重试聚合（429 等） */
+  retryCount?: number;
+  retryWaitMs?: number;
+  rateLimit429?: boolean;
   cwd?: string;
   parentID?: string;
 };
@@ -686,14 +690,16 @@ export async function listKimiSubagentsFromMainWire(sessionDir: string, rootSess
   const loopEvents = events.filter(e => e.type === 'context.append_loop_event') as any[];
   const callById = new Map<string, any>();
   const resultByParentId = new Map<string, any>();
+  // tool.call 可能同时带 toolCallId(call_*) 与内部 uuid 且二者不同,
+  // tool.result 的 parentUuid 指向的是内部 uuid —— 两套键都要索引, 否则 result 配不上 call
   for (const row of loopEvents) {
     const evt = row.event;
     if (evt?.type === 'tool.call') {
-      const id = evt.toolCallId || evt.uuid;
-      if (id) callById.set(id, evt);
+      if (evt.toolCallId) callById.set(evt.toolCallId, evt);
+      if (evt.uuid && evt.uuid !== evt.toolCallId) callById.set(evt.uuid, evt);
     } else if (evt?.type === 'tool.result') {
-      const parentId = evt.parentUuid || evt.toolCallId;
-      if (parentId) resultByParentId.set(parentId, evt.result);
+      if (evt.parentUuid) resultByParentId.set(evt.parentUuid, evt.result);
+      if (evt.toolCallId && evt.toolCallId !== evt.parentUuid) resultByParentId.set(evt.toolCallId, evt.result);
     }
   }
 
@@ -773,7 +779,9 @@ export async function listKimiSubagentsFromMainWire(sessionDir: string, rootSess
     const subagentType = String(args.subagent_type || display.agent_name || 'swarm');
     const promptTemplate = String(args.prompt_template || '');
     const toolCallId = callEvt.toolCallId || callEvt.uuid;
-    const swarmResult = toolCallId ? resultByParentId.get(toolCallId) : undefined;
+    const swarmResult = toolCallId
+      ? (resultByParentId.get(toolCallId) ?? (callEvt.uuid ? resultByParentId.get(callEvt.uuid) : undefined))
+      : undefined;
     const outcomeMap = typeof swarmResult?.output === 'string'
       ? parseAgentSwarmResult(swarmResult.output)
       : ({} as Record<string, SwarmOutcomeInfo>);
@@ -954,6 +962,19 @@ export async function listKimiCodeMessages(params: {
   const loopEvents = events.filter(e => e.type === 'context.append_loop_event') as any[];
   const usageRecords = events.filter(e => e.type === 'usage.record') as any[];
 
+  // 顶层 turn.step.retrying 事件：失败 attempt 的重试记录（不在 loopEvents 内）
+  const retryByAttemptId = new Map<string, { count: number; waitMs: number; rateLimit429: boolean }>();
+  for (const e of events as any[]) {
+    if (e.type !== 'turn.step.retrying') continue;
+    const id = String(e.stepId || '');
+    if (!id) continue;
+    const cur = retryByAttemptId.get(id) || { count: 0, waitMs: 0, rateLimit429: false };
+    cur.count += 1;
+    cur.waitMs += e.delayMs || 0;
+    if (e.statusCode === 429 || e.errorName === 'APIProviderRateLimitError') cur.rateLimit429 = true;
+    retryByAttemptId.set(id, cur);
+  }
+
   // thinkingEffort: llm.request.turnStep → effort；config.update 作 fallback
   // model: usage.record 的 model 可能是别名 (如 subagent 的 __secondary__)，真实 model 在 llm.request
   const effortByTurnStep = new Map<string, string>();
@@ -1028,6 +1049,10 @@ export async function listKimiCodeMessages(params: {
     stepUsage: KimiUsage;
     model?: string;
     thinkingEffort?: string;
+    /** 本 attempt 触发的重试次数（turn.step.retrying 挂在失败 attempt 的 uuid 上） */
+    retryCount?: number;
+    retryWaitMs?: number;
+    rateLimit429?: boolean;
   };
 
   const allSteps: StepBuilder[] = [];
@@ -1038,6 +1063,8 @@ export async function listKimiCodeMessages(params: {
     const endEvt = stepEvents.find(e => e.type === 'step.end');
     const beginTime = beginEvt?._outerTime || stepEvents[0]?._outerTime || 0;
     const endTime = endEvt?._outerTime;
+    // 顶层 turn.step.retrying: 429 限流等失败重试, stepId 指向失败 attempt 的 uuid
+    const retry = retryByAttemptId.get(uuid);
     allSteps.push({
       uuid,
       turnId,
@@ -1045,16 +1072,23 @@ export async function listKimiCodeMessages(params: {
       beginTime,
       endTime,
       stepUsage: { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 },
+      retryCount: retry?.count,
+      retryWaitMs: retry?.waitMs,
+      rateLimit429: retry?.rateLimit429,
     });
   }
 
   // 将 usage.record 按最近 step.end / step.begin 时间匹配到 step，每条记录只使用一次。
   // 这样 messages 累加结果才会与 wire.jsonl 直接累加一致。
+  // 距离阈值：正常 usage 紧跟 step.end (<2s)；无阈值时进行中/中断的 step 可能抢走远处 usage
+  const USAGE_MATCH_MAX_DIFF_MS = 10_000;
   const sortedSteps = allSteps.sort((a, b) => a.beginTime - b.beginTime);
   const sortedUsage = normalUsageRecords.sort((a, b) => (a.time || 0) - (b.time || 0));
   const usedUsage = new Set<number>();
 
   for (const step of sortedSteps) {
+    // 429 限流失败 attempt 必然无 usage 返回，不参与抢夺（否则会抢走重试后成功 attempt 的 usage）
+    if (step.retryCount) continue;
     const targetTime = step.endTime || step.beginTime;
     let bestIdx = -1;
     let bestDiff = Infinity;
@@ -1066,7 +1100,7 @@ export async function listKimiCodeMessages(params: {
         bestIdx = i;
       }
     }
-    if (bestIdx >= 0) {
+    if (bestIdx >= 0 && bestDiff <= USAGE_MATCH_MAX_DIFF_MS) {
       usedUsage.add(bestIdx);
       const u = sortedUsage[bestIdx].usage;
       step.stepUsage = {
@@ -1082,12 +1116,14 @@ export async function listKimiCodeMessages(params: {
   }
 
   // 剩余未匹配的 usage record 归到时间最近的 step（保证 wire 总量全部被 messages 覆盖）
+  // 失败 attempt（带 retry）不参与抢孤儿 usage，除非无其他候选
   for (let i = 0; i < sortedUsage.length; i++) {
     if (usedUsage.has(i)) continue;
     const u = sortedUsage[i];
-    let bestStep = sortedSteps[0];
+    let bestStep: StepBuilder | undefined;
     let bestDiff = Infinity;
     for (const step of sortedSteps) {
+      if (step.retryCount && bestStep !== undefined) continue;
       const targetTime = step.endTime || step.beginTime;
       const diff = Math.abs((u.time || 0) - targetTime);
       if (diff < bestDiff) {
@@ -1166,11 +1202,20 @@ export async function listKimiCodeMessages(params: {
   // 每个 step 生成一条独立的 assistant message，与 opencode 多 step 消息语义对齐
   const assistantMessages: KimiMessageItem[] = [];
 
+  // 同 turn 内连续失败 attempt（429 重试）的 retry 数据先聚合，归入下一条真实 assistant message
+  // turn 全失败时带不到载体 → carriedRetry 延迟到下一个有输出的 turn
+  let carriedRetry = { count: 0, waitMs: 0, rateLimit429: false };
+
   for (const [turnId, steps] of stepsByTurn) {
     if (turnId === 'unknown') continue;
 
     const turnIdx = parseInt(turnId, 10);
     const parentUserUuid = !isNaN(turnIdx) && turnIdx >= 0 && turnIdx < userMessageUuids.length ? userMessageUuids[turnIdx] : undefined;
+
+    // 同 turn 内连续失败 attempt（429 重试）的 retry 数据先聚合，归入下一条真实 assistant message
+    let pendingRetry = carriedRetry;
+    carriedRetry = { count: 0, waitMs: 0, rateLimit429: false };
+    let lastTurnAssistantMsg: KimiMessageItem | undefined;
 
     for (const step of steps) {
       const stepEvents = step.events;
@@ -1266,7 +1311,21 @@ export async function listKimiCodeMessages(params: {
       const stepUsage = step.stepUsage;
       model = unifyKimiModelId(preferKimiModel(model, step.model), preferredModels);
 
-      assistantMessages.push({
+      // 合并本 attempt 与前面连续失败 attempt 的 retry 数据
+      const mergedRetry = {
+        count: pendingRetry.count + (step.retryCount || 0),
+        waitMs: pendingRetry.waitMs + (step.retryWaitMs || 0),
+        rateLimit429: pendingRetry.rateLimit429 || !!step.rateLimit429,
+      };
+      pendingRetry = { count: 0, waitMs: 0, rateLimit429: false };
+      // 429 重试的失败 attempt 无任何流式输出/用量 → 不生成 message，retry 数据传给下一个 attempt
+      const isFailedAttempt = !!step.retryCount && !stepUsage?.output && toolCalls.length === 0 && parts.length === 0 && !latencyMs;
+      if (isFailedAttempt) {
+        pendingRetry = mergedRetry;
+        continue;
+      }
+
+      const assistantMsg: KimiMessageItem = {
         // 稳定 uuid：stepUuid 来自 wire 事件，轮询重拉保持一致
         uuid: `kimi-step-${step.uuid}`,
         sessionId: messageSessionId,
@@ -1283,8 +1342,26 @@ export async function listKimiCodeMessages(params: {
         latencyMs,
         streamDurationMs,
         finishReason,
+        ...(mergedRetry.count ? {
+          retryCount: mergedRetry.count,
+          retryWaitMs: Math.round(mergedRetry.waitMs),
+          rateLimit429: mergedRetry.rateLimit429 || undefined,
+        } : {}),
         parentID: parentUserUuid,
-      });
+      };
+      assistantMessages.push(assistantMsg);
+      lastTurnAssistantMsg = assistantMsg;
+    }
+
+    // turn 末尾残留的失败重试：有 assistant message 则归并到最后一条；否则延迟到下一个 turn
+    if (pendingRetry.count && lastTurnAssistantMsg) {
+      const m = lastTurnAssistantMsg;
+      m.retryCount = (m.retryCount || 0) + pendingRetry.count;
+      m.retryWaitMs = (m.retryWaitMs || 0) + Math.round(pendingRetry.waitMs);
+      if (pendingRetry.rateLimit429) m.rateLimit429 = true;
+      pendingRetry = { count: 0, waitMs: 0, rateLimit429: false };
+    } else if (pendingRetry.count) {
+      carriedRetry = pendingRetry;
     }
   }
 

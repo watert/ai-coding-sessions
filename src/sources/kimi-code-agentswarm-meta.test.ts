@@ -2,10 +2,14 @@
  * Agent / AgentSwarm tool metadata 构建
  */
 import { describe, it, expect } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import {
   buildKimiSubagentToolMetadata,
   parseAgentSwarmResult,
   buildKimiSubagentSessionId,
+  listKimiSubagentsFromMainWire,
 } from './kimi-code';
 
 const ROOT = 'session_test-root';
@@ -90,5 +94,31 @@ describe('buildKimiSubagentToolMetadata', () => {
       toolName: 'Bash',
       args: { command: 'ls' },
     })).toBeUndefined();
+  });
+});
+
+describe('listKimiSubagentsFromMainWire tool.result 配对', () => {
+  it('toolCallId 与 uuid 不同时, result 按 parentUuid(uuid) 仍能配到 call, outcome 不丢', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kimi-swarm-'));
+    const callUuid = 'uuid-aaaa-bbbb';
+    const wireRows = [
+      { type: 'context.append_loop_event', time: 1000, event: {
+        type: 'tool.call', uuid: callUuid, toolCallId: 'call_swarm_01', name: 'AgentSwarm',
+        args: { items: ['a', 'b'], description: 'd', prompt_template: 'x {{item}}' },
+      } },
+      { type: 'context.append_loop_event', time: 2000, event: {
+        type: 'tool.result', parentUuid: callUuid, toolCallId: 'call_swarm_01',
+        result: { output: SWARM_XML },
+      } },
+    ];
+    mkdirSync(path.join(dir, 'agents', 'main'), { recursive: true });
+    writeFileSync(path.join(dir, 'agents', 'main', 'wire.jsonl'), wireRows.map(r => JSON.stringify(r)).join('\n'));
+    const metas = await listKimiSubagentsFromMainWire(dir, ROOT);
+    expect(metas.map(m => [m.agentDir, m.outcome])).toEqual([
+      ['agent-0', 'completed'],
+      ['agent-1', 'failed'],
+      ['agent-2', 'completed'],
+    ]);
+    expect(metas.find(m => m.agentDir === 'agent-1')?.errorInfo).toContain('boom');
   });
 });

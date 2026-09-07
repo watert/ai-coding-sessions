@@ -159,6 +159,9 @@ function convertKimiMessage(
     path: { cwd: msg.cwd || '', root: '' },
     ...(finish ? { finish } : {}),
     ...(isCompaction ? { compaction: true } : {}),
+    ...(msg.retryCount ? {
+      retry: { count: msg.retryCount, waitMs: msg.retryWaitMs || 0, ...(msg.rateLimit429 ? { rateLimit: true } : {}) },
+    } : {}),
   };
 
   if (msg.model) {
@@ -402,6 +405,9 @@ async function getKimiSessionStats(
     assistant_tps_list?: number[];
     latency_list?: number[];
     prefill_tps_list?: number[];
+    /** 429 等限流重试总次数与 backoff 总等待（assistant message 聚合） */
+    rate_limit_retries?: number;
+    rate_limit_wait_ms?: number;
     time_compacting?: number;
     compact_count?: number;
   };
@@ -424,6 +430,8 @@ async function getKimiSessionStats(
     models_used: '',
     editDiffs: { additions: 0, deletions: 0, filesChanged: 0 },
     bashSignals: EMPTY_BASH_SIGNALS,
+    rate_limit_retries: 0,
+    rate_limit_wait_ms: 0,
   };
 
   try {
@@ -476,6 +484,11 @@ async function getKimiSessionStats(
           decodeDurationMs: msg.streamDurationMs && msg.streamDurationMs > 0 ? msg.streamDurationMs : undefined,
           inputTokens: msg.usage?.inputOther || 0,
         });
+      }
+
+      if (msg.role === 'assistant' && msg.retryCount) {
+        stats.rate_limit_retries = (stats.rate_limit_retries || 0) + msg.retryCount;
+        stats.rate_limit_wait_ms = (stats.rate_limit_wait_ms || 0) + (msg.retryWaitMs || 0);
       }
     }
 
@@ -676,6 +689,8 @@ export async function convertKimiSubagentSession(
     assistant_tps_list: stats.assistant_tps_list,
     latency_list: stats.latency_list,
     prefill_tps_list: stats.prefill_tps_list,
+    rate_limit_retries: stats.rate_limit_retries,
+    rate_limit_wait_ms: stats.rate_limit_wait_ms,
     editDiffs: stats.editDiffs,
     bashSignals: stats.bashSignals,
     deliverableSignals: inferDeliverableSignals({ messages: unifiedMessages }),
@@ -760,6 +775,8 @@ export async function convertKimiSession(
     assistant_tps_list: stats.assistant_tps_list,
     latency_list: stats.latency_list,
     prefill_tps_list: stats.prefill_tps_list,
+    rate_limit_retries: stats.rate_limit_retries,
+    rate_limit_wait_ms: stats.rate_limit_wait_ms,
     editDiffs: stats.editDiffs,
     bashSignals: stats.bashSignals,
     deliverableSignals: inferDeliverableSignals({ messages: unifiedMessages }),
