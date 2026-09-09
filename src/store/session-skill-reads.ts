@@ -111,7 +111,13 @@ export function extractSkillReads(messages: any[] | undefined | null): SkillRead
 
 // ==================== 物化表读写 ====================
 
-/** 全量替换某 session 的物化行（事务内 DELETE + INSERT） */
+/**
+ * 全量替换某 session 的物化行（事务内 DELETE + INSERT）。
+ *
+ * 首次 build 空 events 时**不写 built_at**——留给下次增量重提，
+ * 避免「某次 build 漏 extractor / live 失败」造成的死循环跳过。
+ * 其它情况（有旧行 / events 非空）仍正常写 built_at。
+ */
 export function replaceSkillReads(
   source: SourceId,
   sessionId: string,
@@ -119,8 +125,13 @@ export function replaceSkillReads(
   builtAt = Date.now(),
 ): number {
   const db = getStoreDb();
+  // 事务外 SELECT: 拿 DELETE 前的旧行存在性 (同事务内 SELECT 会看到 DELETE 后的 0)
+  const existed = !!db
+    .prepare('SELECT 1 AS x FROM skill_reads WHERE source = ? AND session_id = ?')
+    .get(source, sessionId);
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM skill_reads WHERE source = ? AND session_id = ?').run(source, sessionId);
+    if (events.length === 0 && !existed) return;
     db.prepare(
       'INSERT INTO skill_reads (source, session_id, read_count, reads, built_at) VALUES (?, ?, ?, ?, ?)',
     ).run(source, sessionId, events.length, JSON.stringify(events), builtAt);

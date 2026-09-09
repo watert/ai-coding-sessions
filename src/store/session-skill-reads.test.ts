@@ -127,3 +127,91 @@ describe('session-skill-reads', () => {
     expect(querySkillReads({ skill: 'token-%' })[0].session_id).toBe('s-b');
   });
 });
+
+/**
+ * ①A 修复验证：空 events 在「表里无旧行」时不写 built_at，避免增量死循环跳过；
+ * 其它情况（有旧行 / events 非空）仍正常写 built_at。
+ */
+describe('replaceSkillReads 空 events 死循环', () => {
+  const SRC = 'zcode';
+  const S_EMPTY = 's-empty';
+  const S_RICH = 's-rich';
+  const T1 = 1_700_000_100_000;
+  const T2 = 1_700_000_200_000;
+  const T3 = 1_700_000_300_000;
+
+  const richEvents: import('./session-skill-reads').SkillReadEvent[] = [
+    { idx: 0, kind: 'skill-tool', skill: 'vault-ops', tool: 'Skill', status: 'completed', msg_idx: 1, turn: 0, created_at: T1 },
+  ];
+
+  test('(a) 首次 build 空 events → 表里无行, built_at 不写', () => {
+    // 确认前置无残留
+    expect(getSkillReadsBuiltAt(SRC, S_EMPTY)).toBeNull();
+
+    replaceSkillReads(SRC, S_EMPTY, [], T1);
+
+    expect(getSkillReads(SRC, S_EMPTY)).toBeNull();
+    expect(getSkillReadsBuiltAt(SRC, S_EMPTY)).toBeNull();
+  });
+
+  test('(b) 首次 build 非空 events → 表里有行 + built_at', () => {
+    expect(getSkillReadsBuiltAt(SRC, S_RICH)).toBeNull();
+
+    replaceSkillReads(SRC, S_RICH, richEvents, T1);
+
+    const rec = getSkillReads(SRC, S_RICH);
+    expect(rec).not.toBeNull();
+    expect(rec!.read_count).toBe(1);
+    expect(rec!.reads).toHaveLength(1);
+    expect(getSkillReadsBuiltAt(SRC, S_RICH)).toBe(T1);
+  });
+
+  test('(c) 重 build 空 events → 旧行 reads 清空 + built_at 仍刷新', () => {
+    // 上一 case 已在 S_RICH 写入 richEvents@T1
+    expect(getSkillReadsBuiltAt(SRC, S_RICH)).toBe(T1);
+
+    replaceSkillReads(SRC, S_RICH, [], T2);
+
+    const rec = getSkillReads(SRC, S_RICH);
+    expect(rec).not.toBeNull();
+    expect(rec!.read_count).toBe(0);
+    expect(rec!.reads).toEqual([]);
+    expect(getSkillReadsBuiltAt(SRC, S_RICH)).toBe(T2);
+  });
+
+  test('(d) 重 build 非空 events → 表里正常更新 reads + built_at', () => {
+    // 上一 case S_RICH 现在是 read_count=0, built_at=T2
+    expect(getSkillReadsBuiltAt(SRC, S_RICH)).toBe(T2);
+
+    replaceSkillReads(SRC, S_RICH, richEvents, T3);
+
+    const rec = getSkillReads(SRC, S_RICH);
+    expect(rec).not.toBeNull();
+    expect(rec!.read_count).toBe(1);
+    expect(rec!.reads).toHaveLength(1);
+    expect(rec!.reads[0]).toMatchObject({ skill: 'vault-ops' });
+    expect(getSkillReadsBuiltAt(SRC, S_RICH)).toBe(T3);
+  });
+
+  test('(a+c 组合) 多次「首次空」+「重 build 仍空」最终仍然不写 built_at', () => {
+    const S = 's-retry-empty';
+    expect(getSkillReadsBuiltAt(SRC, S)).toBeNull();
+
+    replaceSkillReads(SRC, S, [], T1);
+    expect(getSkillReadsBuiltAt(SRC, S)).toBeNull();
+
+    // 第二次还是空: 依然「无旧行」语义 → 仍不写
+    replaceSkillReads(SRC, S, [], T2);
+    expect(getSkillReadsBuiltAt(SRC, S)).toBeNull();
+
+    // 第三次非空: 走正常 INSERT
+    replaceSkillReads(SRC, S, richEvents, T3);
+    expect(getSkillReadsBuiltAt(SRC, S)).toBe(T3);
+    expect(getSkillReads(SRC, S)!.read_count).toBe(1);
+
+    // 第四次重 build 空: 「有旧行」→ 清空 reads + 刷新 built_at
+    replaceSkillReads(SRC, S, [], T3 + 1000);
+    expect(getSkillReadsBuiltAt(SRC, S)).toBe(T3 + 1000);
+    expect(getSkillReads(SRC, S)!.read_count).toBe(0);
+  });
+});
