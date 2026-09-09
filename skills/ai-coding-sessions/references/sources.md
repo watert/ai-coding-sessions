@@ -56,6 +56,7 @@
 |------|------|
 | subagent | kimi/opencode/workbuddy 有 `parent_id` + `spawn_group_id`；用 `children` / `list --parent=` |
 | grok usage | 新会话 real；旧 estimate；trace 时间戳可能偏序号化（见 #1 P1） |
+| grok TTFT | **events.jsonl** `loop_started` → `first_token`。updates 里 thought chunk 会被 grok-shell 合成一条，`agentTimestampMs` 是思考结束不是首 token，不能当 ttft |
 | 成本 | 缓存不写 pricing；detail 依赖 `configurePricing` 或源内 cost 字段 |
 | step 边界 | opencode 有 `step-start`/`step-finish`；其它多条 assistant 拼一轮 |
 | **Claude 主链**（[#5](https://github.com/watert/ai-coding-sessions/issues/5)） | `parentUuid` leaf 链；`compact_boundary` / snip；跳过 `isSidechain`；并行 tool sibling 回收 → 避免长会话 token **重复计入** |
