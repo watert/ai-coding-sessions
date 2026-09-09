@@ -1,6 +1,6 @@
 ---
 name: ai-coding-sessions
-description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
+description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题、skill 使用频次盘点 / 审计。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
   version: 1.10.0
 ---
@@ -23,6 +23,7 @@ metadata:
 - 缓存 sync / reconcile / 脏检
 - 弱标题 / Untitled / 生成或改 session title（`set-title`）/ 批量标题审查（`title-review`）
 - 新 source 适配或字段不对
+- **技能使用频次盘点 / 审计 / skill 命中统计 / 哪个 session 触发了某 skill**（`skill-reads`；详见「审计 / 盘点」段）
 - 未实现 agent 本地目录 / 本机有哪些 CLI 落盘数据（check 脚本, **不实现解析**）
 
 ## 数据流
@@ -57,6 +58,37 @@ skills/ai-coding-sessions/   本 skill
 ln -sf packages/ai-coding-sessions/extensions/pi-timing.ts ~/.pi/agent/extensions/pi-timing.ts
 ```  
 新 source：`*-code` + `*-source` → `sources/index.ts` 注册。
+
+## 审计 / 盘点（skill-reads）
+
+**口径**：Skill tool 调用 + read 类工具命中 `skills/<name>/`（含 `SKILL.md` 主文件）。每个 session 级物化为一行 `reads` JSON 列，导出时打平 jsonl。  
+**典型场景**：30 天 skill 使用频次、跨 source 命中分布、按 skill / session 反查、回放某次会话实际读了哪几个 skill。
+
+**三阶段语义**：`--build`（物化，**不写文件**）→ 默认 cache-first 导出 → `--live`（跳过物化表直读）。
+
+```bash
+# 第一步：物化（增量；已 built 且 last_active 未超过 built_at 的 session 跳过）
+bun src/store/cli.ts skill-reads --build --days=30
+
+# 第二步：导出（默认 cache-first 读物化表打平 jsonl；每行 self-contained 含 source/session_id/skill/path）
+bun src/store/cli.ts skill-reads --days=30 --out=/tmp/skills.jsonl
+
+# 兜底：跳过物化表 live 直读（适合物化错过 / 临时抽样；不写 sqlite skill_reads）
+bun src/store/cli.ts skill-reads --days=30 --live --out=/tmp/skills-live.jsonl
+
+# 强制重建（绕过 built_at 短路；适合新 source extractor 接入后 / 怀疑识别漏数据）
+bun src/store/cli.ts skill-reads --build --days=30 --full
+```
+
+- `--build`：live 提取并物化到 sqlite `skill_reads` 表（**增量，不写文件**，必须分两步）
+- `--out=PATH`：导出到文件（独立步骤；默认按 `--format=jsonl` 每行一个 event，stdout 直读时同样 jsonl）
+- `--live`：跳过物化表，直接 `getSessionDetail` + `extractSkillReads` 兜底导出（**不读写 sqlite `skill_reads`**，适合排查"为什么某 session 没物化到"）
+- `--full` / `--force-rebuild`：`--build` 时跳过 `builtAt != null && lastActiveMs <= builtAt` 短路，强制重提窗口内所有 session（参考 sync `--full` 语义）
+- `--skill=NAME`：精确匹配（`--skill=vault-ops`）/ 前缀模糊（`--skill='ai-%'`，`%` 替换通配语义）
+- `--format=json`：包装为 `{ok, count, records: [...]}` 数组（适合直接 pipe 给 `jq` / `python -m json.tool`）；默认 `jsonl` 每行一 record
+- `--limit=N`：行数上限（默认 5000）
+
+> ⚠️ `--build --out=` 合在同一行 **不会** 落盘：build 只物化表，写文件请单独再跑导出。常见踩坑见 issue #14。
 
 ## 数据模型要点
 
@@ -93,6 +125,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `stats` | token / bySource 聚合 |
 | `scan` | **跨 session prompt 检索**（缓存 prompts 表, cache-first; `--grep=` · `--regex` · `--days=`） |
 | `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含 session 归因; `--build` 物化 / `--live` 直读 / `--tool=` / `--out=`; 落盘后 grep/jq/python 接管分析） |
+| `skill-reads` | **skill 使用频次盘点**（`--build` 物化 / 默认 cache 导出 / `--live` 直读 / `--full` 强制重建 / `--skill=` / `--out=`; 三阶段见「审计 / 盘点」段） |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |
 
