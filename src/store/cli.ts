@@ -106,19 +106,6 @@ import {
 import { initOpencodeDb, updateSessionTitle } from '../sources/opencode';
 import type { UnifiedSessionInfo, UnifiedSessionDetail } from '../sources/types';
 
-// issue #14 ③: pipe 模式 (--format=json | python3 -c json.loads) 下, stderr (unbuffered)
-// 会抢在 stdout (buffered) flush 前输出, 把 JSON 撕碎。
-// 在非 TTY 模式下给 stdout.write 套层 wrapper: 每次写前先写一个空串到 stderr, 把残留
-// stderr 排空; 主防线是 sqlite.ts 的 isSqliteQuiet() 关闭 [sqlite] close 日志, 此 wrapper
-// 仅作为兜底防止其它 stderr 旁路 (例如 sync reconcile 的 [cli] 进度日志) 污染 JSON。
-if (!process.stdout.isTTY) {
-  const origStdoutWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk, ...rest) => {
-    process.stderr.write('');
-    return origStdoutWrite(chunk, ...(rest as []));
-  }) as typeof process.stdout.write;
-}
-
 const COMMANDS = [
   'list',
   'detail',
