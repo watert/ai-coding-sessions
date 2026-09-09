@@ -16,6 +16,13 @@ interface SqliteInstance {
 
 const instances = new Map<string, SqliteInstance>();
 
+// issue #14 ③: 关闭 sqlite close 日志污染 stdout (--format=json | python3 json.loads)
+// 用函数读取 (非 const) 是为了让测试能动态切换 env
+export function isSqliteQuiet(): boolean {
+  const v = process.env.AI_CODING_SESSIONS_QUIET;
+  return v === '1' || v === 'true';
+}
+
 /**
  * WAL 库在 bun:sqlite 下 `new Database(path, { readonly: true })` 会 SQLITE_CANTOPEN
  * （prepare 阶段）；URI `file:…?mode=ro` 可正常只读打开。
@@ -65,12 +72,12 @@ export async function initSqliteDb(
         instance.db = new Database(dbPath, { readwrite: true, create: false });
       }
     }
-    console.error(`[sqlite:${instanceId}] 运行时: Bun | 驱动: bun:sqlite | 路径: ${dbPath}`);
+    if (!isSqliteQuiet()) console.error(`[sqlite:${instanceId}] 运行时: Bun | 驱动: bun:sqlite | 路径: ${dbPath}`);
   } else {
     try {
       const Database = (await import('better-sqlite3')).default;
       instance.db = new Database(dbPath, { readonly });
-      console.error(`[sqlite:${instanceId}] 运行时: Node | 驱动: better-sqlite3 | 路径: ${dbPath}`);
+      if (!isSqliteQuiet()) console.error(`[sqlite:${instanceId}] 运行时: Node | 驱动: better-sqlite3 | 路径: ${dbPath}`);
     } catch (e) {
       throw new Error('Node 环境下请安装 better-sqlite3: npm install better-sqlite3');
     }
@@ -104,6 +111,6 @@ export function closeSqliteDb(instanceId: string): void {
     instance.db = null;
     instance.dbPath = null;
     instances.delete(instanceId);
-    console.error(`[sqlite:${instanceId}] 数据库连接已关闭`);
+    if (!isSqliteQuiet()) console.error(`[sqlite:${instanceId}] 数据库连接已关闭`);
   }
 }
