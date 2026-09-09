@@ -409,23 +409,21 @@ function convertGrokSessionFromSummary(session: GrokSessionItem): UnifiedSession
 
 /**
  * 从 turn_completed.usage 聚合 session Performance。
- * TTFT 用 updates 实测（streamStartMs → 该流首 chunk），每次模型流调用一条样本；
- * 无实测样本的旧 turn 退化为整段 apiDurationMs 占位过 filter。
- * decode 吞吐 = 累计 output / apiDurationMs；每 turn 一条样本，与其它 source 的 per-assistant 均值语义接近。
+ * TTFT 用 events.jsonl（loop_started → first_token），每次模型调用一条样本；
+ * 无 events 时宁缺（updates 里 coalesced thought 的时间戳是思考结束，不是首 token；
+ * 也不再用 apiDurationMs 顶 ttft）。
+ * decode 吞吐 = 累计 output / apiDurationMs；每 turn 一条样本。
  */
 export function timingFromGrokRealUsage(real: GrokRealUsage): TimingSummary {
   const lists = createTimingLists();
+  for (const latencyMs of real.ttftMsList || []) {
+    pushAssistantTimingSample(lists, { latencyMs });
+  }
   for (const turn of real.turns || []) {
     const durationMs = turn.apiDurationMs || 0;
     if (durationMs <= 0) continue;
-    const outputTokens = turn.outputTokens || 0;
-    const ttfts = (turn.ttftMsList || []).filter((v) => Number.isFinite(v) && v > 0);
-    const latencyMs = ttfts.length > 0
-      ? Math.round(ttfts.reduce((a, b) => a + b, 0) / ttfts.length)
-      : Math.min(durationMs, 299_999);
     pushAssistantTimingSample(lists, {
-      latencyMs,
-      outputTokens,
+      outputTokens: turn.outputTokens || 0,
       decodeDurationMs: durationMs,
       // 不传 inputTokens：turn 级 input 与单次流 TTFT 不匹配，prefill tps 无意义
     });
@@ -647,7 +645,7 @@ function grokSessionInfoWithMessages(
   let total_reasoning: number;
   let pricing: SessionPricing;
 
-  // Performance：仅 real usage 有 apiDurationMs；TTFT 来自 streamStartMs→首 chunk 实测
+  // Performance：仅 real usage 有 apiDurationMs；TTFT 来自 events.jsonl first_token
   let timing: TimingSummary | undefined;
   if (usage?.usageSource === 'real') {
     total_tokens = usage.total;

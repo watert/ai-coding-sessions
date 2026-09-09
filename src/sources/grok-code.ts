@@ -15,6 +15,7 @@
  * 数据通路:
  * - 真实: params.update.sessionUpdate=turn_completed → params.update.usage
  * - 估算: params._meta.totalTokens 上下文窗口快照 + GROK_CONTEXT_TOKEN_SPLIT_PCT
+ * - TTFT: events.jsonl `loop_started` → `first_token`（勿用 updates coalesced thought 时间戳）
  */
 
 import { readJsonlCached, readJsonlCachedAsync } from '../lib/jsonl-cache';
@@ -163,8 +164,6 @@ export type GrokTurnRealUsage = GrokPromptUsageModel & {
   stopReason?: string;
   timestamp?: number;
   numTurns?: number;
-  /** 实测 TTFT 样本：updates _meta.streamStartMs → 该流首 chunk 的间隔（每次模型调用一条） */
-  ttftMsList?: number[];
   modelUsage: Record<string, GrokPromptUsageModel>;
 };
 
@@ -188,6 +187,12 @@ export type GrokRealUsage = {
   turnCount: number;
   modelUsage: Record<string, GrokPromptUsageModel>;
   turns: GrokTurnRealUsage[];
+  /**
+   * 实测 TTFT（每次模型调用一条）：events.jsonl `loop_started` → `first_token`。
+   * 不要用 updates 里 coalesced thought 的 agentTimestampMs - streamStartMs，
+   * 那是思考结束时刻（整段 thought 合成一条），会把 ttft 抬成 thinking duration。
+   */
+  ttftMsList?: number[];
 };
 
 export type GrokMessageItem = {
@@ -713,38 +718,41 @@ function parseUsageModel(raw: any): GrokPromptUsageModel | null {
   };
 }
 
-/**
- * 从 updates 提取各 turn 的 TTFT 样本。
- * 每次模型流调用对应一个 _meta.streamStartMs；该流内首条 chunk 的
- * agentTimestampMs - streamStartMs 即该次调用的 time-to-first-token。
- * 按 promptId 归组，与 turn_completed.usage 对齐（update.prompt_id）。
- */
-function collectGrokTurnTtftMs(rows: any[]): Map<string, number[]> {
-  const byPrompt = new Map<string, Map<number, number>>();
-  for (const row of rows) {
-    if (!isGrokSessionUpdateMethod(row?.method)) continue;
-    const meta = row?.params?._meta;
-    if (!meta) continue;
-    const promptId = meta.promptId;
-    if (typeof promptId !== 'string' || !promptId) continue;
-    const streamStartMs = Number(meta.streamStartMs);
-    if (!Number.isFinite(streamStartMs) || streamStartMs <= 0) continue;
-    const ts = grokWireTsToMs(meta.agentTimestampMs) || grokWireTsToMs(row?.timestamp);
-    if (ts <= 0 || ts <= streamStartMs) continue;
-    let byStream = byPrompt.get(promptId);
-    if (!byStream) {
-      byStream = new Map();
-      byPrompt.set(promptId, byStream);
-    }
-    // 同一流内多条 chunk，取首条时间
-    const prev = byStream.get(streamStartMs);
-    if (prev == null || ts < prev) byStream.set(streamStartMs, ts);
+const GROK_TTFT_MAX_MS = 300_000;
+
+function grokEventTsMs(ts: unknown): number {
+  if (typeof ts === 'number' && Number.isFinite(ts) && ts > 0) {
+    return ts < 1e12 ? ts * 1000 : ts;
   }
-  const out = new Map<string, number[]>();
-  for (const [pid, byStream] of byPrompt) {
-    const list = Array.from(byStream, ([streamStartMs, ts]) => ts - streamStartMs)
-      .filter((v) => Number.isFinite(v) && v > 0);
-    if (list.length) out.set(pid, list);
+  if (typeof ts === 'string' && ts) {
+    const n = Date.parse(ts);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+/**
+ * 从 events.jsonl 提取每次模型调用的 TTFT。
+ * 配对 `loop_started` → 随后第一条 `first_token`（新 loop_started 覆盖未配对的起点）。
+ * grok-shell 会把 AgentThoughtChunk 合成一条再落 updates.jsonl，meta 是最后一包的
+ * agentTimestampMs，不能当首 token。
+ */
+export function readGrokEventsTtftMs(sessionDir: string): number[] {
+  if (!sessionDir) return [];
+  const rows = readJsonlCached(path.join(sessionDir, 'events.jsonl')) ?? [];
+  const out: number[] = [];
+  let loopStart = 0;
+  for (const row of rows) {
+    const type = row?.type;
+    const t = grokEventTsMs(row?.ts);
+    if (type === 'loop_started' && t > 0) {
+      loopStart = t;
+      continue;
+    }
+    if (type !== 'first_token' || loopStart <= 0 || t <= loopStart) continue;
+    const ttft = t - loopStart;
+    if (ttft > 0 && ttft < GROK_TTFT_MAX_MS) out.push(ttft);
+    loopStart = 0;
   }
   return out;
 }
@@ -758,7 +766,7 @@ export function tryReadGrokRealUsage(sessionDir: string): GrokRealUsage | null {
   if (!sessionDir || !fs.existsSync(sessionDir)) return null;
   const rows = readUpdatesJsonl(sessionDir);
   const turns: GrokTurnRealUsage[] = [];
-  const ttftByPrompt = collectGrokTurnTtftMs(rows);
+  const ttftMsList = readGrokEventsTtftMs(sessionDir);
 
   for (const row of rows) {
     if (!isGrokSessionUpdateMethod(row?.method)) continue;
@@ -779,7 +787,6 @@ export function tryReadGrokRealUsage(sessionDir: string): GrokRealUsage | null {
       }
     }
 
-    const ttftList = ttftByPrompt.get(String(update.prompt_id ?? ''));
     turns.push({
       ...base,
       promptId: typeof update.prompt_id === 'string' ? update.prompt_id : undefined,
@@ -790,7 +797,6 @@ export function tryReadGrokRealUsage(sessionDir: string): GrokRealUsage | null {
           ? row.params._meta.agentTimestampMs
           : undefined),
       numTurns: Number(rawUsage.numTurns) || undefined,
-      ...(ttftList && ttftList.length ? { ttftMsList: ttftList } : {}),
       modelUsage,
     });
   }
@@ -857,6 +863,7 @@ export function tryReadGrokRealUsage(sessionDir: string): GrokRealUsage | null {
     turnCount: turns.length,
     modelUsage: Object.fromEntries(modelUsageAcc),
     turns,
+    ...(ttftMsList.length ? { ttftMsList } : {}),
   };
 }
 

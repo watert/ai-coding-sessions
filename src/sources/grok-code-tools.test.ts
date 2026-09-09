@@ -13,6 +13,7 @@ import {
   attachGrokWallClockTimestamps,
   readGrokWallClockEvents,
   tryReadGrokRealUsage,
+  readGrokEventsTtftMs,
   type GrokMessageItem,
 } from './grok-code';
 import { calculateEditDiffsFromGrokMessages, timingFromGrokRealUsage } from './grok-source';
@@ -600,77 +601,75 @@ describe('calculateEditDiffsFromGrokMessages (P1)', () => {
   });
 });
 
-describe('tryReadGrokRealUsage TTFT (streamStartMs → 首 chunk)', () => {
-  it('按 promptId 归组提取每次模型流调用的 TTFT', () => {
-    const updates = [
-      // turn p1：两次模型流（streamStart 1000 / 5000），各取首条 chunk；
-      // wire 结构：_meta 在 params 层（promptId 与 turn_completed.update.prompt_id 对齐）
-      {
-        method: 'session/update',
-        timestamp: 100,
-        params: {
-          update: { sessionUpdate: 'user_message_chunk' },
-          _meta: { agentTimestampMs: 1787889448000 },
-        },
-      },
-      {
-        method: 'session/update',
-        timestamp: 100,
-        params: {
-          update: { sessionUpdate: 'agent_thought_chunk' },
-          _meta: { promptId: 'p1', streamStartMs: 1787889449284, agentTimestampMs: 1787889451099 },
-        },
-      },
-      {
-        method: 'session/update',
-        timestamp: 100,
-        params: {
-          update: { sessionUpdate: 'tool_call' },
-          _meta: { promptId: 'p1', streamStartMs: 1787889449284, agentTimestampMs: 1787889453099 },
-        },
-      },
-      {
-        method: 'session/update',
-        timestamp: 100,
-        params: {
-          update: { sessionUpdate: 'agent_message_chunk' },
-          _meta: { promptId: 'p1', streamStartMs: 1787889633527, agentTimestampMs: 1787889636627 },
-        },
-      },
-      {
-        method: 'session/update',
-        timestamp: 100,
-        params: {
-          update: {
-            sessionUpdate: 'turn_completed',
-            prompt_id: 'p1',
-            stop_reason: 'end_turn',
-            usage: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200, modelCalls: 2, apiDurationMs: 9000 },
+describe('tryReadGrokRealUsage TTFT (events.jsonl loop_started → first_token)', () => {
+  const t0 = Date.parse('2026-09-07T07:26:43.000Z');
+  function ev(type: string, offsetMs: number, extra: Record<string, unknown> = {}) {
+    return { ts: new Date(t0 + offsetMs).toISOString(), type, ...extra };
+  }
+  function turnCompleted(promptId: string, apiDurationMs: number) {
+    return {
+      method: 'session/update',
+      timestamp: 100,
+      params: {
+        update: {
+          sessionUpdate: 'turn_completed',
+          prompt_id: promptId,
+          usage: {
+            inputTokens: 1000, outputTokens: 200, totalTokens: 1200,
+            modelCalls: 1, apiDurationMs,
           },
         },
       },
-      // turn p2：无 chunk，不应有 ttftMsList
+    };
+  }
+
+  it('用 events first_token，不用 coalesced thought 时间戳，也不用 apiDuration 顶 ttft', () => {
+    const dir = writeSession('ttft-events', [], [
+      // coalesced thought：streamStart→末包 90s，旧逻辑会当成 ttft
       {
         method: 'session/update',
         timestamp: 100,
         params: {
-          update: {
-            sessionUpdate: 'turn_completed',
-            prompt_id: 'p2',
-            usage: { inputTokens: 500, outputTokens: 100, totalTokens: 600, modelCalls: 1, apiDurationMs: 3000 },
-          },
+          update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'long thought' } },
+          _meta: { promptId: 'p1', streamStartMs: t0, agentTimestampMs: t0 + 90_000, chunkId: 72 },
         },
       },
-    ];
-    const dir = writeSession('ttft-session', [], updates);
+      turnCompleted('p1', 12_000),
+      turnCompleted('p2', 8_000),
+    ]);
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), [
+      ev('loop_started', 0, { loop_index: 0 }),
+      ev('first_token', 2100),
+      ev('loop_started', 5000, { loop_index: 1 }),
+      ev('first_token', 8600),
+      ev('loop_started', 20_000, { loop_index: 0 }), // 未配对，丢弃
+    ].map((x) => JSON.stringify(x)).join('\n') + '\n');
+
+    expect(readGrokEventsTtftMs(dir)).toEqual([2100, 3600]);
     const usage = tryReadGrokRealUsage(dir);
     expect(usage).not.toBeNull();
-    expect(usage!.turns.length).toBe(2);
-    expect(usage!.turns[0].ttftMsList).toEqual([1815, 3100]);
-    expect(usage!.turns[1].ttftMsList).toBeUndefined();
+    expect(usage!.ttftMsList).toEqual([2100, 3600]);
     const timing = timingFromGrokRealUsage(usage!);
-    // 每 turn 一条样本：p1 = TTFT 均值 2458，p2 无样本退化为 apiDurationMs 3000 → 2729
-    expect(timing.avg_latency_ms).toBe(2729);
-    expect(timing.latency_list).toEqual([2458, 3000]);
+    expect(timing.avg_latency_ms).toBe(2850);
+    expect(timing.latency_list).toEqual([2100, 3600]);
+  });
+
+  it('无 events.jsonl 时不把 apiDurationMs 当 ttft', () => {
+    const dir = writeSession('ttft-no-events', [], [turnCompleted('p1', 9000)]);
+    const usage = tryReadGrokRealUsage(dir);
+    expect(usage!.ttftMsList).toBeUndefined();
+    const timing = timingFromGrokRealUsage(usage!);
+    expect(timing.avg_latency_ms).toBeUndefined();
+    expect(timing.latency_list).toBeUndefined();
+  });
+
+  it('新 loop_started 覆盖未配对起点', () => {
+    const dir = writeSession('ttft-overwrite', [], [turnCompleted('p1', 1000)]);
+    fs.writeFileSync(path.join(dir, 'events.jsonl'), [
+      ev('loop_started', 0, { loop_index: 0 }),
+      ev('loop_started', 400, { loop_index: 1 }),
+      ev('first_token', 1900),
+    ].map((x) => JSON.stringify(x)).join('\n') + '\n');
+    expect(readGrokEventsTtftMs(dir)).toEqual([1500]);
   });
 });
