@@ -1090,6 +1090,40 @@ async function cmdToolCalls(args: CliArgs) {
  * 三阶段: --build 物化 (增量; --force-rebuild 强制重提); --live 跳过物化表直接 export; 默认 cache-first。
  * 口径: Skill tool 调用 + read 类工具命中 skills/<name>/ (含 SKILL.md 主文件)。
  */
+
+/**
+ * --build 阶段核心循环 (单独 export 便于单元测试):
+ * 边界语义 — `detail === null` (getSessionDetail transient 失败 / 找不到) → **skip 本次 replace**, 让下次增量重试;
+ * `detail` 有值但 `extractSkillReads` 返回 `[]` (extractor 真没找到 skill) → **仍走 replace** (清旧 reads + 刷 built_at, 与 ①A 语义一致)。
+ */
+export async function runSkillReadsBuild(
+  sessions: UnifiedSessionInfo[],
+  opts: { full?: boolean } = {},
+): Promise<{ built: number; skipped: number; total_events: number }> {
+  let built = 0;
+  let skipped = 0;
+  let totalRows = 0;
+  for (const s of sessions) {
+    if (!isSourceId(String(s.source))) continue;
+    const source = s.source as SourceId;
+    const lastActiveMs = s.last_active_at_iso ? Date.parse(s.last_active_at_iso) : 0;
+    const builtAt = getSkillReadsBuiltAt(source, s.id);
+    if (!opts.full && builtAt != null && lastActiveMs <= builtAt) {
+      skipped += 1;
+      continue;
+    }
+    const detail = await getSessionDetail({ sessionId: s.id, source });
+    if (detail == null) {
+      // getSessionDetail transient 失败: 不调 replace, 让下次增量重试 (issue #14 ①)
+      skipped += 1;
+      continue;
+    }
+    totalRows += replaceSkillReads(source, s.id, extractSkillReads(detail.messages));
+    built += 1;
+  }
+  return { built, skipped, total_events: totalRows };
+}
+
 async function cmdSkillReads(args: CliArgs) {
   if (!args.startDate && !args.endDate && args.days == null) args.days = 7;
   const { startDate, endDate } = resolveWindow(args);
@@ -1109,24 +1143,8 @@ async function cmdSkillReads(args: CliArgs) {
     // 批量扫描前 warm list 缓存 (长 TTL), 避免 TTL 过期重扫尖刺混入 detail 计时
     await warmSourceListCache(args.source);
     try {
-      let built = 0;
-      let skipped = 0;
-      let totalRows = 0;
-      for (const s of sessions) {
-        if (!isSourceId(String(s.source))) continue;
-        const source = s.source as SourceId;
-        const lastActiveMs = s.last_active_at_iso ? Date.parse(s.last_active_at_iso) : 0;
-        const builtAt = getSkillReadsBuiltAt(source, s.id);
-        // args.full 即 --force-rebuild / --full 别名: 绕过 built_at 短路, 强制重提 (issue #14 ①B)
-        if (!args.full && builtAt != null && lastActiveMs <= builtAt) {
-          skipped += 1;
-          continue;
-        }
-        const detail = await getSessionDetail({ sessionId: s.id, source });
-        totalRows += replaceSkillReads(source, s.id, extractSkillReads(detail?.messages));
-        built += 1;
-      }
-      printJson({ ok: true, build: { sessions: sessions.length, built, skipped, total_events: totalRows, force_rebuild: args.full } }, args.pretty);
+      const buildResult = await runSkillReadsBuild(sessions, { full: args.full });
+      printJson({ ok: true, build: { sessions: sessions.length, ...buildResult, force_rebuild: args.full } }, args.pretty);
     } finally {
       closeAiCodingStats();
       closeStoreDb();

@@ -280,7 +280,8 @@ function mergeParentFromCache(s: UnifiedSessionInfo): UnifiedSessionInfo {
   return s;
 }
 
-/** 顺手补: 对本次 upsert 的 session 增量物化 skill-reads (last_active 晚于 built_at 才重提, 失败不阻塞 sync) */
+/** 顺手补: 对本次 upsert 的 session 增量物化 skill-reads (last_active 晚于 built_at 才重提, 失败不阻塞 sync)
+ *  边界语义 — `detail === null` (transient 失败) → **skip 本次 replace** 让下次增量重试; 空 extract → **仍走 replace** (issue #14 ①) */
 async function backfillSkillReads(source: SourceId, ids: string[]): Promise<number> {
   let built = 0;
   for (const id of ids) {
@@ -290,7 +291,8 @@ async function backfillSkillReads(source: SourceId, ids: string[]): Promise<numb
       const builtAt = getSkillReadsBuiltAt(source, id);
       if (builtAt != null && lastActiveMs <= builtAt) continue;
       const detail = await getSessionDetail({ sessionId: id, source });
-      replaceSkillReads(source, id, extractSkillReads(detail?.messages));
+      if (detail == null) continue;
+      replaceSkillReads(source, id, extractSkillReads(detail.messages));
       built++;
     } catch (e) {
       console.warn(`[sync] skill-reads ${source}/${id} failed:`, e);

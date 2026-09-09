@@ -2,13 +2,23 @@
  * session-skill-reads 单元测试（临时 DB, 不依赖真实 session 数据）
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { initStoreDb, closeStoreDb } from './db';
+import { initStoreDb, closeStoreDb, getStoreDb } from './db';
 import { extractSkillReads, querySkillReads, replaceSkillReads, getSkillReads, getSkillReadsBuiltAt } from './session-skill-reads';
-import type { UnifiedSessionDetail } from '../sources/types';
+import type { UnifiedSessionInfo, UnifiedSessionDetail } from '../sources/types';
+// cli.ts 顶层 main() 默认走 'sync' 会污染真实 cache db; 用 dynamic import 在改 argv 之后加载
+import * as sourcesIndexModule from '../sources/index';
+
+const _origArgv = process.argv;
+process.argv = ['bun', 'cli.ts', 'help'];
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const cliModule = await import('./cli') as typeof import('./cli');
+process.argv = _origArgv;
+const { runSkillReadsBuild } = cliModule;
+const sourcesIndex = sourcesIndexModule;
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acs-skillreads-'));
 
@@ -213,5 +223,102 @@ describe('replaceSkillReads 空 events 死循环', () => {
     replaceSkillReads(SRC, S, [], T3 + 1000);
     expect(getSkillReadsBuiltAt(SRC, S)).toBe(T3 + 1000);
     expect(getSkillReads(SRC, S)!.read_count).toBe(0);
+  });
+});
+
+/**
+ * ① build 循环边界 (issue #14 ①): `getSessionDetail` 返回 null (transient 失败) → skip replace 让下次增量重试;
+ * 有 detail 但 extract 空 → 仍走 replace (清旧 + 刷 built_at, 与 ①A 语义一致)。
+ */
+describe('runSkillReadsBuild: detail null vs 空 extract 区分', () => {
+  const SRC = 'zcode';
+  const S_NULL = 's-detail-null';
+  const S_EMPTY_EXTRACT = 's-empty-extract';
+
+  // 直接 INSERT 一行 sessions (避免依赖 queryCached / upsertSession)
+  function seedSession(id: string, lastActiveMs: number): UnifiedSessionInfo {
+    const iso = new Date(lastActiveMs).toISOString();
+    const db = getStoreDb();
+    db.prepare(
+      `INSERT INTO sessions (source, session_id, time_created, time_updated, last_active_at, payload, synced_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(SRC, id, lastActiveMs, lastActiveMs, lastActiveMs, JSON.stringify({ id, source: SRC }), lastActiveMs);
+    return { id, source: SRC, last_active_at_iso: iso } as unknown as UnifiedSessionInfo;
+  }
+
+  test('getSessionDetail 返回 null → 不调 replaceSkillReads, 计为 skipped, 表里无行无 built_at', async () => {
+    seedSession(S_NULL, Date.now());
+    expect(getSkillReadsBuiltAt(SRC, S_NULL)).toBeNull();
+
+    const detailSpy = spyOn(sourcesIndex, 'getSessionDetail').mockResolvedValue(null as any);
+    const replaceSpy = spyOn(
+      await import('./session-skill-reads'),
+      'replaceSkillReads',
+    );
+
+    try {
+      const result = await runSkillReadsBuild([
+        { id: S_NULL, source: SRC, last_active_at_iso: new Date().toISOString() } as any,
+      ]);
+
+      expect(result).toEqual({ built: 0, skipped: 1, total_events: 0 });
+      expect(detailSpy).toHaveBeenCalledTimes(1);
+      expect(replaceSpy).not.toHaveBeenCalled();
+      expect(getSkillReads(SRC, S_NULL)).toBeNull();
+      expect(getSkillReadsBuiltAt(SRC, S_NULL)).toBeNull();
+    } finally {
+      replaceSpy.mockRestore();
+      detailSpy.mockRestore();
+    }
+  });
+
+  test('getSessionDetail 返回 detail 但 extract 空 → 仍调 replaceSkillReads (清旧 + 刷 built_at)', async () => {
+    // seed 一个旧行 (带非空 events)
+    replaceSkillReads(
+      SRC,
+      S_EMPTY_EXTRACT,
+      [
+        {
+          idx: 0,
+          kind: 'skill-tool',
+          skill: 'old',
+          tool: 'Skill',
+          status: 'completed',
+          msg_idx: 0,
+          turn: 0,
+          created_at: 1,
+        },
+      ],
+      1_700_000_000_000,
+    );
+    expect(getSkillReadsBuiltAt(SRC, S_EMPTY_EXTRACT)).toBe(1_700_000_000_000);
+
+    const emptyDetail = { messages: [] } as unknown as UnifiedSessionDetail;
+    const detailSpy = spyOn(sourcesIndex, 'getSessionDetail').mockResolvedValue(emptyDetail);
+    const replaceSpy = spyOn(
+      await import('./session-skill-reads'),
+      'replaceSkillReads',
+    );
+
+    try {
+      const session = seedSession(S_EMPTY_EXTRACT, Date.now());
+      const result = await runSkillReadsBuild([session]);
+
+      // 空 extract 但 detail 非空 → 仍走 replace (走 ①A 重 build 空 events 分支: 清旧 + 刷 built_at)
+      expect(result.built).toBe(1);
+      expect(detailSpy).toHaveBeenCalledTimes(1);
+      expect(replaceSpy).toHaveBeenCalledTimes(1);
+      expect(replaceSpy.mock.calls[0]![1]).toBe(S_EMPTY_EXTRACT);
+      expect(replaceSpy.mock.calls[0]![2]).toEqual([]);
+
+      const rec = getSkillReads(SRC, S_EMPTY_EXTRACT)!;
+      expect(rec.read_count).toBe(0);
+      expect(rec.reads).toEqual([]);
+      // built_at 被刷新 (≠ 旧值 1_700_000_000_000)
+      expect(getSkillReadsBuiltAt(SRC, S_EMPTY_EXTRACT)).toBeGreaterThan(1_700_000_000_000);
+    } finally {
+      replaceSpy.mockRestore();
+      detailSpy.mockRestore();
+    }
   });
 });
