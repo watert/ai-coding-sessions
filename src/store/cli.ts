@@ -281,6 +281,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === '--include-empty') out.includeEmptyReview = true;
     else if (a === '--regex') out.regex = true;
     else if (a === '--build') out.build = true;
+    else if (a === '--force-rebuild') out.full = true; // skill-reads --build 强制重提 (绕过 built_at 短路)
     else if (a === '--all') out.all = true;
     else if (a.startsWith('--grep=')) out.grep = a.slice('--grep='.length);
     else if (a.startsWith('--prompt-count=')) {
@@ -368,7 +369,7 @@ Commands:
   stats        Aggregate counts / tokens (cache; P0 window clip + quality)
   scan         跨 session prompt 检索 (缓存 prompts 表, cache-first)
   tool-calls   跨 session tool call 导出 jsonl (--build 物化 / --live 直读)
-  skill-reads  skill 读取抽取 (Skill tool + SKILL.md 等 skills/ 文件; --build 物化)
+  skill-reads  skill 读取抽取 (Skill tool + SKILL.md 等 skills/ 文件; --build 物化 / --live 直读)
   perf         性能检查: 各 source list(×2)/detail/extract 分阶段采样 + 阈值警告
   sync         Incremental sync → SQLite
   refs         listRefs only
@@ -414,11 +415,13 @@ Tool calls export (数据出口与检索解耦; jsonl 每行自含 session 归�
   tool-calls --days=7 --live --io --max-output-chars=500   # 跳过物化表 live 直读 + 附 output preview
   # 默认 cache-first (先 --build); --limit=N 行上限 (默认 5000); --format=json 包装数组
 
-Skill reads (skill 使用轨迹: Skill tool 调用 + read 类工具读 skills/<name>/ 文件):
-  skill-reads --build --days=90                        # live 提取物化 (增量)
-  skill-reads --days=90 --out=skills.jsonl             # cache-first 导出 jsonl (每事件一行)
+Skill reads (skill 使用轨迹: Skill tool 调用 + read 类工具读 skills/<name>/ 文件; 三阶段: build 物化 / cache 导出 / live 兜底):
+  skill-reads --build --days=90                        # 第一步: 物化 (增量, 已 built 且未过期 session 跳过)
+  skill-reads --build --days=90 --force-rebuild        # 强制重提全部 (绕过 built_at 短路, 修识别漏接)
+  skill-reads --days=90 --out=skills.jsonl             # 第二步: 导出 (cache-first, 读物化表打平 jsonl)
   skill-reads --days=30 --skill=vault-ops              # 按 skill 名过滤
   skill-reads --days=30 --skill='ai-%' --format=json   # 前缀模糊 + JSON 包装
+  skill-reads --days=30 --live --out=/tmp/x.jsonl      # 第三步: 跳过物化表 live 直读 (兜底)
 
 Perf check (变更 sources/store 后的性能回归; 详见 README「Performance check」):
   perf                                                 # 全 source: list×2 + detail/extract 采样
@@ -456,7 +459,7 @@ Options:
                       '...', whitespace collapsed); 0 = full raw text
   --include-empty     title-review: also list sessions with no prompts
   --limit=N --offset=N
-  --live              list: live convert
+  --live              list: live convert; skill-reads: 跳过物化表 live 直读
   --full-fields       list/detail info: full objects
   --no-messages       detail: skip messages
   --with-children     detail/trace/handoff: attach children from cache
@@ -467,7 +470,8 @@ Options:
   --io                trace/tool-errors: include tool I/O previews
   --grep=PATTERN      scan: 匹配 pattern (默认大小写不敏感 substring)
   --regex             scan: pattern 按 RegExp (忽略大小写)
-  --build             tool-calls/skill-reads: live 提取并物化 (增量)
+  --build             tool-calls/skill-reads: live 提取并物化 (增量; 需配合 --days)
+  --force-rebuild     skill-reads --build: 强制重提 (绕过 built_at 短路, 修识别漏接)
   --tool=NAME --status=STATUS  tool-calls/filter tools (error|soft|hard|completed)
   --skill=NAME        skill-reads: skill 名过滤 (= / 前缀模糊 %)
   --reasoning         trace: include reasoning_preview
@@ -1070,7 +1074,7 @@ async function cmdToolCalls(args: CliArgs) {
 
 /**
  * skill-read 导出 (session 级物化, reads JSON 列):
- * --build live 提取物化 (增量); 默认 cache-first 导出打平 jsonl。
+ * 三阶段: --build 物化 (增量; --force-rebuild 强制重提); --live 跳过物化表直接 export; 默认 cache-first。
  * 口径: Skill tool 调用 + read 类工具命中 skills/<name>/ (含 SKILL.md 主文件)。
  */
 async function cmdSkillReads(args: CliArgs) {
@@ -1086,7 +1090,7 @@ async function cmdSkillReads(args: CliArgs) {
     cwd: args.cwd,
   });
 
-  // ---- build: live 提取 → 物化 (session 级增量, last_active 晚于 built_at 才重提) ----
+  // ---- build: live 提取 → 物化 (session 级增量, last_active 晚于 built_at 才重提; --force-rebuild / --full 强制重提) ----
   if (args.build) {
     await initAiCodingStats();
     // 批量扫描前 warm list 缓存 (长 TTL), 避免 TTL 过期重扫尖刺混入 detail 计时
@@ -1100,7 +1104,8 @@ async function cmdSkillReads(args: CliArgs) {
         const source = s.source as SourceId;
         const lastActiveMs = s.last_active_at_iso ? Date.parse(s.last_active_at_iso) : 0;
         const builtAt = getSkillReadsBuiltAt(source, s.id);
-        if (builtAt != null && lastActiveMs <= builtAt) {
+        // args.full 即 --force-rebuild / --full 别名: 绕过 built_at 短路, 强制重提 (issue #14 ①B)
+        if (!args.full && builtAt != null && lastActiveMs <= builtAt) {
           skipped += 1;
           continue;
         }
@@ -1108,7 +1113,7 @@ async function cmdSkillReads(args: CliArgs) {
         totalRows += replaceSkillReads(source, s.id, extractSkillReads(detail?.messages));
         built += 1;
       }
-      printJson({ ok: true, build: { sessions: sessions.length, built, skipped, total_events: totalRows } }, args.pretty);
+      printJson({ ok: true, build: { sessions: sessions.length, built, skipped, total_events: totalRows, force_rebuild: args.full } }, args.pretty);
     } finally {
       closeAiCodingStats();
       closeStoreDb();
@@ -1116,7 +1121,7 @@ async function cmdSkillReads(args: CliArgs) {
     return;
   }
 
-  // ---- 导出 ----
+  // ---- 导出 (默认 cache-first; --live 跳过物化表) ----
   const emitRow = (s: UnifiedSessionInfo, e: SkillReadEvent) =>
     JSON.stringify({
       source: s.source,
@@ -1125,25 +1130,42 @@ async function cmdSkillReads(args: CliArgs) {
       directory: s.directory || null,
       ...e,
     });
+  // skill 名过滤: = 全等 / 含 % 视为前缀模糊 substring
+  const matchesSkill = (skill: string): boolean => {
+    if (!args.skill) return true;
+    const name = skill.toLowerCase();
+    const f = args.skill.toLowerCase();
+    return f.includes('%') ? name.includes(f.replace(/%/g, '')) : name === f;
+  };
 
-  const collect = (limit: number): string => {
+  const collect = async (limit: number): Promise<string> => {
     const lines: string[] = [];
     let count = 0;
-    for (const s of sessions) {
-      if (!isSourceId(String(s.source))) continue;
-      const rec = getSkillReads(s.source as SourceId, s.id);
-      if (!rec) continue;
-      for (const e of rec.reads) {
-        if (args.skill) {
-          const name = e.skill.toLowerCase();
-          const f = args.skill.toLowerCase();
-          const hit = f.includes('%') ? name.includes(f.replace(/%/g, '')) : name === f;
-          if (!hit) continue;
+    const live = !!args.live;
+    if (live) await initAiCodingStats();
+    try {
+      for (const s of sessions) {
+        if (!isSourceId(String(s.source))) continue;
+        const source = s.source as SourceId;
+        let events: SkillReadEvent[];
+        if (live) {
+          // --live: detail 直读 + extractSkillReads, 跳过物化表 (issue #14 ②)
+          const detail = await getSessionDetail({ sessionId: s.id, source });
+          events = extractSkillReads(detail?.messages);
+        } else {
+          const rec = getSkillReads(source, s.id);
+          if (!rec) continue;
+          events = rec.reads;
         }
-        lines.push(emitRow(s, e));
-        count += 1;
-        if (count >= limit) return lines.join('\n');
+        for (const e of events) {
+          if (!matchesSkill(e.skill)) continue;
+          lines.push(emitRow(s, e));
+          count += 1;
+          if (count >= limit) return lines.join('\n');
+        }
       }
+    } finally {
+      if (live) closeAiCodingStats();
     }
     return lines.join('\n');
   };
@@ -1151,19 +1173,19 @@ async function cmdSkillReads(args: CliArgs) {
   try {
     const limit = args.limit ?? 5000;
     if (args.format === 'json') {
-      const body = collect(limit);
+      const body = await collect(limit);
       const all = body.split('\n').filter(Boolean).map((l) => JSON.parse(l));
-      printJson({ ok: true, count: all.length, truncated: all.length >= limit, records: all }, args.pretty);
+      printJson({ ok: true, count: all.length, truncated: all.length >= limit, records: all, live: !!args.live }, args.pretty);
       return;
     }
-    const body = collect(limit);
+    const body = await collect(limit);
     if (args.out) {
       writeFileSync(args.out, body ? `${body}\n` : '', 'utf8');
-      printJson({ ok: true, out: args.out, bytes: Buffer.byteLength(body, 'utf8'), lines: body ? body.split('\n').length : 0 }, args.pretty);
+      printJson({ ok: true, out: args.out, bytes: Buffer.byteLength(body, 'utf8'), lines: body ? body.split('\n').length : 0, live: !!args.live }, args.pretty);
       return;
     }
     if (body) process.stdout.write(`${body}\n`);
-    else console.error('[cli] skill_reads 表为空或窗口无命中; 先 skill-reads --build 物化');
+    else console.error(`[cli] skill_reads ${args.live ? '--live 直读' : '表为空或窗口无命中'}; 先 skill-reads --build 物化, 或加 --live 兜底`);
   } finally {
     closeStoreDb();
   }
