@@ -18,6 +18,30 @@ export const OC_NORESP_SESSION_ID = 'ses_fixture_noresp';
 /** 2026-07-15 12:00 UTC */
 export const OC_T0 = Date.UTC(2026, 6, 15, 12, 0, 0);
 
+/** 多步 agent loop 样本：1 user + 3 assistant，每条带真输出窗口（reasoning part 带 time） */
+export const OC_MULTI_SESSION_ID = 'ses_fixture_multi';
+export const OC_MULTI_USER_MSG = 'msg_fixture_multi_user';
+/** 多步样本时间基准（各步 created/completed/window 由此推算） */
+export const OC_MULTI_BASE = OC_T0 + 200_000;
+
+/**
+ * 三步的时序与 token（测试断言基准）。
+ * 预期：TTFT = window[0] − created；decode = window[1] − window[0]；TPS 分子 = output + reasoning
+ */
+export const OC_MULTI_STEPS = [
+  { id: 'msg_fixture_multi_a1', created: OC_MULTI_BASE + 10, completed: OC_MULTI_BASE + 2100, window: [OC_MULTI_BASE + 510, OC_MULTI_BASE + 1610], input: 1000, output: 20, reasoning: 80 },
+  { id: 'msg_fixture_multi_a2', created: OC_MULTI_BASE + 2200, completed: OC_MULTI_BASE + 3400, window: [OC_MULTI_BASE + 2500, OC_MULTI_BASE + 3200], input: 200, output: 10, reasoning: 40 },
+  { id: 'msg_fixture_multi_a3', created: OC_MULTI_BASE + 3500, completed: OC_MULTI_BASE + 5600, window: [OC_MULTI_BASE + 4000, OC_MULTI_BASE + 5400], input: 300, output: 50, reasoning: 150 },
+] as const;
+
+/** 多步样本的期望聚合值（与 OC_MULTI_STEPS 严格对应） */
+export const OC_MULTI_EXPECT = {
+  ttftList: [500, 300, 500],
+  tpsList: OC_MULTI_STEPS.map((s) => (s.output + s.reasoning) / ((s.window[1] - s.window[0]) / 1000)),
+  avgTps: 101.73,
+  avgLatencyMs: 433,
+};
+
 export type OpencodeFixture = {
   dir: string;
   dbPath: string;
@@ -215,6 +239,57 @@ export function createOpencodeFixtureDb(dir?: string): OpencodeFixture {
   db.prepare(
     `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
   ).run(OC_MSG_USER + '_noresp', OC_NORESP_SESSION_ID, t3 + 1000, t3 + 1000, JSON.stringify(norespUserData));
+
+  // 多步 agent loop 样本：1 user + 3 assistant，每条带真输出窗口（reasoning part 带 time）。
+  // 口径基准：TTFT = reasoning.start − created；decode = reasoning.end − reasoning.start；分子含 reasoning。
+  db.prepare(
+    `INSERT INTO session (
+      id, project_id, parent_id, slug, directory, title, version,
+      time_created, time_updated, summary_additions, summary_deletions, summary_files
+    ) VALUES (?, ?, NULL, 'fixture-multi', ?, 'Fixture Multi-step Session', '1.0.0-test', ?, ?, 0, 0, 0)`,
+  ).run(OC_MULTI_SESSION_ID, OC_PROJECT_ID, '/tmp/acs-fixture-proj', OC_MULTI_BASE, OC_MULTI_BASE + 5700);
+
+  const multiUserData = { ...userData, time: { created: OC_MULTI_BASE } };
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run(OC_MULTI_USER_MSG, OC_MULTI_SESSION_ID, OC_MULTI_BASE, OC_MULTI_BASE, JSON.stringify(multiUserData));
+
+  OC_MULTI_STEPS.forEach((step, i) => {
+    const [winStart, winEnd] = step.window;
+    db.prepare(
+      `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+    ).run(step.id, OC_MULTI_SESSION_ID, step.created, step.completed, JSON.stringify({
+      role: 'assistant',
+      time: { created: step.created, completed: step.completed },
+      agent: 'build',
+      model: { providerID: 'opencode', modelID: 'fixture-model' },
+      modelID: 'fixture-model',
+      providerID: 'opencode',
+      finish: 'tool-calls',
+      tokens: {
+        total: step.input + step.output + step.reasoning,
+        input: step.input,
+        output: step.output,
+        reasoning: step.reasoning,
+        cache: { read: 0, write: 0 },
+      },
+      cost: 0,
+    }));
+    // 输出 part 带 data.time（TTFT 终点 / decode 窗口来源）
+    db.prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      `part_multi_reasoning_${i}`, step.id, OC_MULTI_SESSION_ID, winStart, winEnd,
+      JSON.stringify({ type: 'reasoning', text: `think ${i}`, time: { start: winStart, end: winEnd } }),
+    );
+    // 尾部 tool part 无 time：设计上不得计入 decode 时长
+    db.prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      `part_multi_tool_${i}`, step.id, OC_MULTI_SESSION_ID, winEnd + 10, step.completed,
+      JSON.stringify({ type: 'tool', tool: 'bash', callID: `call_multi_${i}`, state: { status: 'completed', input: {}, output: 'ok' } }),
+    );
+  });
 
   db.close();
   return {

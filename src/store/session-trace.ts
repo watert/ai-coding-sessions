@@ -94,6 +94,8 @@ export interface TraceStep {
   tokens: {
     input: number;
     output: number;
+    /** 推理 token（独立计费/独立流式段；TPS 分子需含它） */
+    reasoning: number;
     cache_read: number;
     total: number;
   } | null;
@@ -188,6 +190,7 @@ function msgTokens(info: any): TraceStep['tokens'] {
   return {
     input: tok.input ?? 0,
     output: tok.output ?? 0,
+    reasoning: tok.reasoning ?? 0,
     cache_read: cacheRead ?? 0,
     total: tok.total ?? (tok.input || 0) + (tok.output || 0) + (cacheRead || 0),
   };
@@ -203,7 +206,8 @@ export function extractStepTiming(info: any): StepTiming & { tps: number | null 
   const { t, done, decodeStart, decodeEnd } = msgTime(info);
   const tokens = msgTokens(info);
   const input = tokens?.input ?? 0;
-  const output = tokens?.output ?? 0;
+  // 分子含 reasoning：decode 窗口即模型输出段，reasoning 与 output 同段产出
+  const outputTotal = (tokens?.output ?? 0) + (tokens?.reasoning ?? 0);
 
   let lag_ms: number | null = null;
   if (t != null && decodeStart != null && decodeStart >= t) {
@@ -237,8 +241,8 @@ export function extractStepTiming(info: any): StepTiming & { tps: number | null 
   if (prefill_tps == null && lag_ms != null && lag_ms > 0 && input > 0) {
     prefill_tps = Number((input / (lag_ms / 1000)).toFixed(2));
   }
-  if (decode_tps == null && decode_ms != null && decode_ms > 0 && output > 0) {
-    decode_tps = Number((output / (decode_ms / 1000)).toFixed(2));
+  if (decode_tps == null && decode_ms != null && decode_ms > 0 && outputTotal > 0) {
+    decode_tps = Number((outputTotal / (decode_ms / 1000)).toFixed(2));
   }
 
   return {
@@ -267,7 +271,8 @@ export function summarizeSessionTimingFromMessages(
     const latencyMs = hasLag ? timing.lag_ms! : fullDur;
     pushAssistantTimingSample(lists, {
       latencyMs,
-      outputTokens: tokens?.output ?? 0,
+      // 分子与 decode 窗口同源：必须含 reasoning（opencode source 的 info.tps.decode 也是此口径）
+      outputTokens: (tokens?.output ?? 0) + (tokens?.reasoning ?? 0),
       decodeDurationMs: timing.decode_ms ?? undefined,
       inputTokens: hasLag ? (tokens?.input ?? 0) : 0,
     });

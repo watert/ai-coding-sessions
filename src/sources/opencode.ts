@@ -19,9 +19,14 @@ import { classifyBashCommands, extractBashCommands } from './bash-signals';
 import { inferDeliverableSignals } from './deliverable-signals';
 import { buildOpenCodeSoftErrorSql } from './tool-error-soft';
 import { isTimestamp } from '../lib/date-utils';
+import {
+  createTimingLists,
+  pushAssistantTimingSample,
+  summarizeTimingLists,
+  MAX_DECODE_TPS,
+} from '../lib/timing-stats';
 
-// TPS/latency 护栏（与 lib/timing-stats.ts 一致）：过滤尖峰与失真样本
-const MAX_TPS = 1000; // decode TPS 上限，超过视为异常（含工具执行/等待噪声）
+// TTFT / decode TPS 口径与护栏统一在 lib/timing-stats.ts；本文件只做窗口提取
 const MAX_LATENCY_MS = 300_000; // 单步 TTFT 上限 5min
 
 // ==================== Zod Schema 定义 ====================
@@ -476,38 +481,73 @@ export function getMsgParts(messageIds: string[], types: string[] = ["text"]): O
 }
 
 /**
- * 轻量获取每条消息首个 part 的开始时间
- * 不读取 data 列，避免解析大 JSON
- * @param messageIds 消息 ID 列表
+ * 一条消息的模型输出窗口（ms）—— TTFT / decode 口径的唯一数据源。
+ * 新版本 opencode 仅 text/reasoning 等输出类 part 在 data 内带 time；
+ * step-start/tool/patch/step-finish 一律无 —— 故“带 time 的 part”即模型解码段。
  */
-export function getFirstPartStartTimes(messageIds: string[]): Map<string, number> {
-  const database = getOpencodeDb();
-  const result = new Map<string, number>();
+export interface MessageOutputWindow {
+  /** 首个输出 part 的 start（真首 token 时刻，TTFT 终点 / decode 起点） */
+  outStart?: number;
+  /** 末个输出 part 的 end（纯 decode 终点，不含尾部工具执行） */
+  outEnd?: number;
+  /** part 表最早落库时间（step-start）；无输出 part 的消息用它做整段近似兜底 */
+  dbFirst?: number;
+}
 
+/**
+ * 批量取模型输出窗口。三个值一次 SQL 拿全（json_extract 走 part(message_id, id) 索引）。
+ * 无输出 part（纯工具轮 / 老版本单 part）时 outStart 退化为 dbFirst（整段近似）。
+ */
+export function getMessageOutputWindows(messageIds: string[]): Map<string, MessageOutputWindow> {
+  const database = getOpencodeDb();
+  const result = new Map<string, MessageOutputWindow>();
   if (messageIds.length === 0) return result;
 
   const placeholders = messageIds.map(() => '?').join(',');
-  const sql = `
-    SELECT message_id, MIN(time_created) AS first_part_start_time
+  const rows = database.prepare(`
+    SELECT message_id,
+      MIN(json_extract(data, '$.time.start')) AS out_start,
+      MAX(COALESCE(json_extract(data, '$.time.end'), json_extract(data, '$.time.start'))) AS out_end,
+      MIN(time_created) AS db_first
     FROM part
     WHERE message_id IN (${placeholders})
     GROUP BY message_id
-  `;
+  `).all(...messageIds) as any[];
 
-  const rows = database.prepare(sql).all(...messageIds) as any[];
-  rows.forEach(row => {
-    if (row.first_part_start_time) {
-      result.set(row.message_id, row.first_part_start_time);
-    }
-  });
-
+  for (const row of rows) {
+    const win: MessageOutputWindow = {};
+    if (typeof row.out_start === 'number') win.outStart = row.out_start;
+    if (typeof row.out_end === 'number') win.outEnd = row.out_end;
+    if (typeof row.db_first === 'number') win.dbFirst = row.db_first;
+    result.set(row.message_id, win);
+  }
   return result;
 }
 
 /**
- * 从消息 parts 提取模型输出时序窗口。
- * 新版本 opencode 仅 text/reasoning 等输出类 part 在 data 内带 time；
- * step-start/tool/patch/step-finish 一律无 time —— 故“带 time 的 part”即可视为模型解码段。
+ * 统一 TTFT / decode 解析（口径见 lib/timing-stats.ts）。
+ * - TTFT   = 首 token(输出 part.start) − created；无输出 part 时退化用 part 落库时间
+ * - decode = 纯输出段(end − start)；无 outEnd 时退化用 completed − start
+ * 只做有效性判断，不作业务裁剪；TPS 上限由 pushAssistantTimingSample 兜底。
+ */
+export function resolveStepTiming(args: {
+  created?: number;
+  completed?: number;
+  window?: MessageOutputWindow;
+}): { ttftMs?: number; decodeMs?: number } {
+  const { created, completed, window: win } = args;
+  const start = win?.outStart ?? win?.dbFirst;
+  const ttftMs = created && start && start > created && start - created < MAX_LATENCY_MS
+    ? start - created
+    : undefined;
+  let decodeMs: number | undefined;
+  if (start && win?.outEnd && win.outEnd > start) decodeMs = win.outEnd - start;
+  else if (start && completed && completed > start) decodeMs = completed - start;
+  return { ttftMs, decodeMs };
+}
+
+/**
+ * 从消息 parts 提取模型输出时序窗口（detail 内存版，等价 getMessageOutputWindows 的 SQL 版）。
  * @returns firstStart=首个输出 part 开始（decode 起点/TTFT 参考），lastEnd=末个输出 part 结束（纯 decode 终点）
  */
 function pickPartTimingWindow(parts: OpenCodePart[]): { firstStart?: number; lastEnd?: number } {
@@ -668,7 +708,6 @@ interface MessageTimingStat {
   cacheWrite: number;
   providerID?: string;
   modelID?: string;
-  firstPartStart?: number;
 }
 
 /** 轻量获取用于 TPS/latency/pricing 计算的消息元数据，避免解析完整 message data 和 JOIN part */
@@ -1002,17 +1041,12 @@ export function getSessionList(
     const userPartsBySession = getUserTextPartsBySession(sessionIds);
     const timingStatsBySession = getMessageTimingStats(sessionIds);
 
-    // 单独获取 first_part_start，避免在消息元数据查询中 LEFT JOIN part 导致性能骤降
+    // 模型输出窗口（TTFT 终点 / 纯 decode 段）：一次 SQL 拿全，避免 JOIN part 导致性能骤降
     const allMessageIds: string[] = [];
     for (const stats of Array.from(timingStatsBySession.values())) {
       for (const s of stats) allMessageIds.push(s.messageID);
     }
-    const firstPartStartTimes = getFirstPartStartTimes(allMessageIds);
-    for (const stats of Array.from(timingStatsBySession.values())) {
-      for (const s of stats) {
-        s.firstPartStart = firstPartStartTimes.get(s.messageID);
-      }
-    }
+    const windowsByMessage = getMessageOutputWindows(allMessageIds);
 
     const pricingBySession = new Map<string, SessionPricing>();
     for (const [sessionId, stats] of Array.from(timingStatsBySession.entries())) {
@@ -1045,56 +1079,33 @@ export function getSessionList(
       const timingStats = timingStatsBySession.get(sessionId) || [];
       const spawn_group_id = spawnGroupByChild.get(sessionId);
 
-      // 用累加和代替数组，减少内存占用
-      let latencySum = 0;
-      let latencyCount = 0;
-      let tpsSum = 0;
-      let tpsCount = 0;
-      let prefillTpsSum = 0;
-      let prefillTpsCount = 0;
-      let lastUserMsgTime: number | null = null;
-
+      // 统一 TTFT / decode 口径（见 lib/timing-stats.ts）：全部 assistant 采样。
+      // 勿按 user 轮次只取首条 —— agent loop 一轮多步时会把其余步的 TPS/TTFT 整批丢掉
+      const timingLists = createTimingLists();
       const sortedStats = timingStats
         .filter(s => s.role)
         .sort((a, b) => a.created - b.created);
 
       for (const msg of sortedStats) {
-        if (msg.role === 'user') {
-          lastUserMsgTime = msg.created;
-        } else if (msg.role === 'assistant' && lastUserMsgTime) {
-          const outputStartTime = msg.firstPartStart || msg.created;
-          const latency = outputStartTime - msg.created;
-          const hasLatency = latency > 0 && latency < MAX_LATENCY_MS;
-          if (hasLatency) {
-            latencySum += latency;
-            latencyCount++;
-          }
-
-          const inputTokens = msg.input;
-          if (hasLatency && inputTokens > 0) {
-            prefillTpsSum += inputTokens / (latency / 1000);
-            prefillTpsCount++;
-          }
-
-          if (msg.completed) {
-            const totalOutputTokens = msg.output + msg.reasoning;
-            if (totalOutputTokens > 0) {
-              const durationSeconds = (msg.completed - outputStartTime) / 1000;
-              const tps = durationSeconds > 0 ? totalOutputTokens / durationSeconds : 0;
-              if (tps > 0 && tps < MAX_TPS) {
-                tpsSum += tps;
-                tpsCount++;
-              }
-            }
-          }
-
-          lastUserMsgTime = null;
-        }
+        if (msg.role !== 'assistant') continue;
+        const { ttftMs, decodeMs } = resolveStepTiming({
+          created: msg.created,
+          completed: msg.completed,
+          window: windowsByMessage.get(msg.messageID),
+        });
+        pushAssistantTimingSample(timingLists, {
+          latencyMs: ttftMs,
+          outputTokens: msg.output + msg.reasoning,
+          decodeDurationMs: decodeMs,
+          inputTokens: ttftMs ? msg.input : 0,
+        });
       }
 
-      const avgTps = tpsCount > 0 ? tpsSum / tpsCount : undefined;
-      const avgLatency = latencyCount > 0 ? latencySum / latencyCount : undefined;
-      const avgPrefillTps = prefillTpsCount > 0 ? Number((prefillTpsSum / prefillTpsCount).toFixed(2)) : undefined;
+      const {
+        avg_tps: avgTps,
+        avg_latency_ms: avgLatency,
+        avg_prefill_tps: avgPrefillTps,
+      } = summarizeTimingLists(timingLists);
 
       const editDiffs = calculateEditDiffs(toolParts);
       const bashSignals = classifyBashCommands(extractBashCommands(toolParts));
@@ -1140,8 +1151,8 @@ export function getSessionList(
 
   const allMessageIds = results.flatMap(row => row.message_ids ? row.message_ids.split(',') : []);
   const allParts = getMsgParts(allMessageIds, ['text', 'tool']);
-  // 轻量获取每条消息首个 part 开始时间，不读取 data 列
-  const firstPartStartTimes = getFirstPartStartTimes(allMessageIds);
+  // 模型输出窗口（TTFT 终点 / 纯 decode 段）：一条 SQL 拿全，不 JOIN part
+  const windowsByMessage = getMessageOutputWindows(allMessageIds);
 
   // 与 checkLastUpdateTime 同源：从 message 表取全局最新更新时间
   const lastMsgRow = database.prepare("SELECT time_updated FROM message ORDER BY time_updated DESC LIMIT 1").get() as any;
@@ -1222,11 +1233,8 @@ export function getSessionList(
       return prevText !== r.text;
     });
 
-    // 计算延迟数据和 TPS
-    const latencyList: number[] = [];
-    const tpsList: number[] = [];
-    const prefillTpsList: number[] = [];
-    let lastUserMsgTime: number | null = null;
+    // 计算延迟数据和 TPS（统一口径见 lib/timing-stats.ts；全部 assistant 采样）
+    const timingLists = createTimingLists();
 
     // 按时间顺序遍历消息
     const sortedMessages = messageIds
@@ -1235,52 +1243,27 @@ export function getSessionList(
       .sort((a, b) => (a.created || 0) - (b.created || 0));
 
     for (const msg of sortedMessages) {
-      if (msg.role === 'user') {
-        lastUserMsgTime = msg.created;
-      } else if (msg.role === 'assistant' && lastUserMsgTime) {
-        // 从 SQL 聚合结果取首个 part 开始时间；没有则用消息 created 备选
-        const firstPartStartTime = firstPartStartTimes.get(msg.id);
-        const outputStartTime = firstPartStartTime || msg.created;
-
-        // latency = 输出开始时间 - 消息创建时间（与 compact 分支同护栏：>0 且 <5min）
-        const latency = outputStartTime - msg.created;
-        const hasLatency = latency > 0 && latency < MAX_LATENCY_MS;
-        if (hasLatency) latencyList.push(latency);
-
-        // prefill TPS = input tokens / latency
-        const inputTokens = msg.tokens?.input || 0;
-        if (hasLatency && inputTokens > 0) {
-          prefillTpsList.push(Number((inputTokens / (latency / 1000)).toFixed(2)));
-        }
-
-        // 如果有完成时间，计算 decode TPS: (output tokens + reasoning tokens) / (completed - outputStartTime)
-        // 上限 MAX_TPS：剔除工具执行/等待导致的失真尖峰
-        if (msg.completed) {
-          const totalOutputTokens = (msg.tokens?.output || 0) + (msg.tokens?.reasoning || 0);
-          if (totalOutputTokens > 0) {
-            const durationSeconds = (msg.completed - outputStartTime) / 1000;
-            const tps = durationSeconds > 0 ? totalOutputTokens / durationSeconds : 0;
-            if (tps > 0 && tps < MAX_TPS) {
-              tpsList.push(tps);
-            }
-          }
-        }
-
-        // 重置，等待下一个 user 消息
-        lastUserMsgTime = null;
-      }
+      if (msg.role !== 'assistant') continue;
+      const { ttftMs, decodeMs } = resolveStepTiming({
+        created: msg.created,
+        completed: msg.completed,
+        window: windowsByMessage.get(msg.id),
+      });
+      pushAssistantTimingSample(timingLists, {
+        latencyMs: ttftMs,
+        outputTokens: (msg.tokens?.output || 0) + (msg.tokens?.reasoning || 0),
+        decodeDurationMs: decodeMs,
+        inputTokens: ttftMs ? (msg.tokens?.input || 0) : 0,
+      });
     }
 
-    // 计算平均值
-    const avgTps = tpsList.length > 0 
-      ? tpsList.reduce((a, b) => a + b, 0) / tpsList.length 
-      : undefined;
-    const avgLatency = latencyList.length > 0
-      ? latencyList.reduce((a, b) => a + b, 0) / latencyList.length
-      : undefined;
-    const avgPrefillTps = prefillTpsList.length > 0
-      ? Number((prefillTpsList.reduce((a, b) => a + b, 0) / prefillTpsList.length).toFixed(2))
-      : undefined;
+    const timingSummary = summarizeTimingLists(timingLists);
+    const avgTps = timingSummary.avg_tps;
+    const avgLatency = timingSummary.avg_latency_ms;
+    const avgPrefillTps = timingSummary.avg_prefill_tps;
+    const tpsList = timingSummary.assistant_tps_list ?? [];
+    const latencyList = timingSummary.latency_list ?? [];
+    const prefillTpsList = timingSummary.prefill_tps_list ?? [];
 
     // 统计该 session 的 edit diff
     const sessionParts = partsBySession[row.session_id] || [];
@@ -1481,19 +1464,20 @@ export function getSessionDetail(sessionId: string): OpenCodeSessionExport | nul
       ...(isCompactionMsg ? { compaction: true } : {}),
     };
 
-    // assistant 消息计算 prefill / decode TPS
+    // assistant 消息计算 prefill / decode TPS（口径见 lib/timing-stats.ts）
     if (messageInfo.role === 'assistant' && messageInfo.tokens) {
-      const { created, decodeStart: ds, decodeEnd } = messageInfo.time || {};
+      const { created, decodeStart: ds, decodeEnd, completed } = messageInfo.time || {};
       const { input = 0, output = 0, reasoning = 0 } = messageInfo.tokens;
       const tps: { prefill?: number; decode?: number } = {};
       if (created && ds && ds > created && input > 0) {
         tps.prefill = Number((input / ((ds - created) / 1000)).toFixed(2));
       }
-      // decode 窗口 = decodeEnd - decodeStart（模型输出段），不把消息尾部工具执行/等待当解码时长；
-      // 老版本单 part start==end 等窗口过窄的样本会被 MAX_TPS 过滤掉
-      if (ds && decodeEnd && decodeEnd > ds && (output + reasoning) > 0) {
-        const tpsVal = (output + reasoning) / ((decodeEnd - ds) / 1000);
-        if (tpsVal > 0 && tpsVal < MAX_TPS) {
+      // decode 窗口 = 纯输出段（decodeEnd - decodeStart），尾部工具执行/等待不计入；
+      // 无输出 part（老版本）退化用 completed 兜底，与 list 侧 resolveStepTiming 保持一致
+      const decodeEndTs = decodeEnd ?? (completed && ds && completed > ds ? completed : undefined);
+      if (ds && decodeEndTs && decodeEndTs > ds && (output + reasoning) > 0) {
+        const tpsVal = (output + reasoning) / ((decodeEndTs - ds) / 1000);
+        if (tpsVal > 0 && tpsVal < MAX_DECODE_TPS) {
           tps.decode = Number(tpsVal.toFixed(2));
         }
       }

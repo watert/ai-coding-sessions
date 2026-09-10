@@ -1,9 +1,18 @@
 /**
- * assistant 延迟 / decode TPS / prefill TPS 列表聚合（Claude、Kimi 等 source 共用）
+ * assistant 延迟 / decode TPS / prefill TPS 列表聚合（全 source 共用）
+ *
+ * 统一口径（各 source 必须按此传参，勿在 source 内另起一套）：
+ * - `latencyMs`   = TTFT：首个模型输出 part 的 start − 请求发起（消息 created）
+ * - `decodeDurationMs` = 纯模型输出段时长（末个输出 part.end − 首个输出 part.start），
+ *                        缺省才退化为整段时长；有真窗口时勿传整段，否则 TPS 被工具执行稀释
+ * - `outputTokens` = 输出 token 总量，**必须含 reasoning**（分子与 decode 窗口同源）
+ * - `inputTokens` 仅在有真 TTFT 时传；步时长/整段时长 ≠ prefill 时间
+ * - 样本 = 全部 assistant 消息（含一轮内的多步 agent loop），勿按 user 轮次只取首条
  */
 
 const MAX_LATENCY_MS = 300_000;
-const MAX_TPS = 1000;
+/** decode TPS 防御上限：只拦脏窗口/单位错误导致的荒谬值，不做业务裁剪（真实高速模型可超 1k） */
+export const MAX_DECODE_TPS = 5000;
 
 export interface TimingLists {
   latencyList: number[];
@@ -18,8 +27,9 @@ export function createTimingLists(): TimingLists {
 export interface TimingSample {
   /** 首 token 延迟（TTFT）。无 TTFT 数据的 source 可缺省，仅用 decodeDurationMs 算 tps */
   latencyMs?: number;
+  /** 输出 token 总量，**含 reasoning**；只传 output 会把 TPS 算到实际值的一半以下 */
   outputTokens?: number;
-  /** decode 阶段时长，缺省则用 latencyMs */
+  /** 纯 decode 阶段时长；缺省才退化用 latencyMs（会把 TTFT 当解码时长，TPS 偏低） */
   decodeDurationMs?: number;
   inputTokens?: number;
 }
@@ -36,7 +46,7 @@ export function pushAssistantTimingSample(lists: TimingLists, sample: TimingSamp
 
   if (outputTokens > 0 && decodeMs > 0) {
     const tps = outputTokens / (decodeMs / 1000);
-    if (tps > 0 && tps < MAX_TPS) {
+    if (tps > 0 && tps < MAX_DECODE_TPS) {
       lists.tpsList.push(tps);
     }
   }

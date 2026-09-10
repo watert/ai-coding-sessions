@@ -11,11 +11,15 @@ import {
   closeOpencodeDb,
 } from './opencode';
 import { listSessions, getSessionDetail as getUnifiedSessionDetail } from './index';
+import { summarizeSessionTimingFromMessages } from '../store/session-trace';
 import {
   createOpencodeFixtureDb,
   OC_SESSION_ID,
   OC_ERR_SESSION_ID,
   OC_NORESP_SESSION_ID,
+  OC_MULTI_SESSION_ID,
+  OC_MULTI_STEPS,
+  OC_MULTI_EXPECT,
   type OpencodeFixture,
 } from './__fixtures__/opencode';
 
@@ -114,6 +118,46 @@ describe('OpenCode SQLite (fixture)', () => {
     expect(detail!.info.session_status).toBe('done');
     const unified = await getUnifiedSessionDetail({ sessionId: OC_SESSION_ID, source: 'opencode' });
     expect(unified?.info.session_status).toBe('done');
+  });
+
+  it('多步 agent loop：全部 assistant 采样，TTFT/decode 用统一口径', () => {
+    const { list } = getSessionList();
+    const item = list.find((s) => s.session_id === OC_MULTI_SESSION_ID)!;
+    expect(item.total_messages).toBe(4);
+    // 旧实现按 user 轮次只取首条 → 这里只会剩 1 个样本
+    expect(item.latency_list).toEqual(OC_MULTI_EXPECT.ttftList);
+    expect(item.assistant_tps_list).toHaveLength(3);
+    item.assistant_tps_list!.forEach((v, i) => {
+      expect(v).toBeCloseTo(OC_MULTI_EXPECT.tpsList[i], 6);
+    });
+    expect(item.avg_latency_ms).toBe(OC_MULTI_EXPECT.avgLatencyMs);
+    expect(item.avg_tps).toBe(OC_MULTI_EXPECT.avgTps);
+  });
+
+  it('compact 与全量列表的 timing 口径一致', () => {
+    const { list } = getSessionList(undefined, undefined, true);
+    const item = list.find((s) => s.session_id === OC_MULTI_SESSION_ID)!;
+    expect(item.avg_tps).toBe(OC_MULTI_EXPECT.avgTps);
+    expect(item.avg_latency_ms).toBe(OC_MULTI_EXPECT.avgLatencyMs);
+  });
+
+  it('detail 消息级 tps：纯输出窗口 + 分子含 reasoning', () => {
+    const detail = getSessionDetail(OC_MULTI_SESSION_ID)!;
+    const asst = detail.messages.filter((m) => m.info.role === 'assistant');
+    expect(asst).toHaveLength(3);
+    asst.forEach((m, i) => {
+      // TTFT 终点 / decode 边界都来自输出 part，不含尾部 tool part
+      expect(m.info.time?.decodeStart).toBe(OC_MULTI_STEPS[i].window[0]);
+      expect(m.info.time?.decodeEnd).toBe(OC_MULTI_STEPS[i].window[1]);
+      expect(m.info.tps?.decode).toBeCloseTo(Number(OC_MULTI_EXPECT.tpsList[i].toFixed(2)), 2);
+    });
+  });
+
+  it('CLI detail 聚合（summarizeSessionTimingFromMessages）与 list 口径一致', () => {
+    const detail = getSessionDetail(OC_MULTI_SESSION_ID)!;
+    const sum = summarizeSessionTimingFromMessages(detail.messages);
+    expect(sum.avg_tps).toBe(OC_MULTI_EXPECT.avgTps);
+    expect(sum.avg_latency_ms).toBe(OC_MULTI_EXPECT.avgLatencyMs);
   });
 
   it('不存在的 session 返回 null', () => {

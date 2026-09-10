@@ -48,6 +48,7 @@ import {
   createTimingLists,
   pushAssistantTimingSample,
   summarizeTimingLists,
+  MAX_DECODE_TPS,
 } from '../lib/timing-stats';
 
 // ==================== title ====================
@@ -117,8 +118,7 @@ type PiTimingData = {
   streamDurationMs: number;
 };
 
-/** 与 opencode/kimi 一致的 TPS 护栏：超限视为工具执行/等待噪声 */
-const MAX_TPS = 1000;
+/** TPS 上限统一由 lib/timing-stats.ts 提供（防御性，不裁剪真实样本） */
 const MAX_LATENCY_MS = 300_000;
 
 function validPiTiming(raw: unknown): PiTimingData | null {
@@ -337,7 +337,7 @@ export function convertPiEventsToMessages(
         }
         if (timing.streamDurationMs > 0 && output + reasoning > 0) {
           const v = (output + reasoning) / (timing.streamDurationMs / 1000);
-          if (v > 0 && v < MAX_TPS) tps.decode = Number(v.toFixed(2));
+          if (v > 0 && v < MAX_DECODE_TPS) tps.decode = Number(v.toFixed(2));
         }
         if (tps.prefill || tps.decode) messageInfo.tps = tps;
       }

@@ -66,6 +66,23 @@
 
 改完 Claude/Codex 解析后需 **`sync --reconcile`**（或 `?fresh=1`）再看 token-stats。
 
+## Timing 口径（TTFT / decode TPS）
+
+全 source 共用 `lib/timing-stats.ts` 的合成器，**勿在 source 内另起一套**：
+
+| 指标 | 口径 |
+|------|------|
+| `latencyMs`（TTFT） | 首个**模型输出 part** 的 start − 消息 `created`；无输出 part 时退化用 part 表最早落库时间（step-start 近似） |
+| `decodeDurationMs` | 纯输出段：末个输出 part 的 end − 首个输出 part 的 start（尾部 tool 执行/等待不计入）；无输出 part 时退化 `completed − start` |
+| `outputTokens` | `tokens.output + tokens.reasoning` —— 分子必须与 decode 窗口同源，只传 `output` 会把 TPS 砍半 |
+| 样本 | **全部 assistant 消息**（含一轮内的多步 agent loop）；按 user 轮次只取首条会整批丢样本 |
+| 上限 | `MAX_DECODE_TPS`（防御性，只拦脏窗口/单位错误；真实高速模型可超 1k）、`MAX_LATENCY_MS` = 5min |
+
+opencode 侧窗口来自 `part.data.time`（仅 text / reasoning 带 `time`），`getMessageOutputWindows` 一条 SQL 取全；
+detail 的内存版是 `pickPartTimingWindow` —— 两者必须同口径，改一个要改另一个。
+
+> 同一 session 在 list / Web detail / CLI detail(`summarizeSessionTimingFromMessages`) 三处数字不一致时，先查这里。
+
 ## 研究 agent 源码（可选）
 
 对照 wire / tool schema 时自行 clone 上游（opencode、kimi-code、grok-build、claude dump 等）。  
