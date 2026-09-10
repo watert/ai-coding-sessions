@@ -13,7 +13,7 @@ metadata:
 - 轨迹设计：[issue #1](https://github.com/watert/ai-coding-sessions/issues/1)
 - 跨 agent handoff：[issue #4](https://github.com/watert/ai-coding-sessions/issues/4)
 - Claude/Codex 主链 fidelity：[issue #5](https://github.com/watert/ai-coding-sessions/issues/5)
-- 参考：[Source](./references/sources.md) · [CLI](./references/cli.md) · [排查](./references/troubleshooting.md) · [其它 agent](./references/other-agents.md)
+- 参考：[Source](./references/sources.md) · [CLI](./references/cli.md) · [排查](./references/troubleshooting.md) · [其它 agent](./references/other-agents.md) · [WorkBuddy 内部机制](./references/workbuddy-internals.md)
 
 ## 触发场景
 
@@ -50,6 +50,7 @@ skills/ai-coding-sessions/   本 skill
 
 `opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor | pi`  
 本地路径与适配见 [references/sources.md](./references/sources.md)。  
+WorkBuddy 时序 / 吞吐 / 日志排查 → [workbuddy-internals.md](./references/workbuddy-internals.md)。  
 未实现 agent 目录与落盘形态 → [other-agents.md](./references/other-agents.md)。  
 本机探测：`bun skills/ai-coding-sessions/scripts/check-local-agents.ts`（`--format=md` · `--kind=other` · `--all`；pi 行会附带 **pi-timing extension** 检查）。  
 **pi-timing extension**（pi source 真 TTFT/流式时长 → TPS 的数据源，缺了则回退整段 call 时长估算）：

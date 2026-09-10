@@ -10,7 +10,7 @@
 | `grok` | `~/.grok/sessions/` | `grok-code.ts` + `grok-source.ts`（真实 usage；cost 优先 costUsdTicks；旧 → `usage_source=estimate`） |
 | `codex` | `~/.codex/` state sqlite + rollout JSONL/`.jsonl.zst` | `codex-code.ts` + `codex-source.ts` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
-| `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` + `.../<sid>/subagents/agent-*.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts`（`Agent` tool → 虚拟 subagent，`parent_id` / `spawn_group_id`） |
+| `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` + `.../<sid>/subagents/agent-*.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts`（`Agent` tool → 虚拟 subagent，`parent_id` / `spawn_group_id`）；时序/日志排查见 [workbuddy-internals.md](./workbuddy-internals.md) |
 | `cursor` | Desktop `state.vscdb`（composerHeaders + bubbleId）+ `~/.cursor/projects/*/agent-transcripts` | `cursor-code.ts` + `cursor-source.ts` |
 | `pi` | `~/.pi/agent/sessions/*.jsonl` + **pi-timing extension** 落盘的 custom entry（TTFT/流式时长，T0/1/2） | `pi-code.ts` + `pi-source.ts`（extension: `extensions/pi-timing.ts`，装到 `~/.pi/agent/extensions/pi-timing.ts`） |
 
