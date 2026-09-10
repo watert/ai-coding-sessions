@@ -420,10 +420,67 @@ function sumTokens(sessions: UnifiedSessionInfo[]): number {
   return sessions.reduce((a, s) => a + (s.total_tokens || 0), 0);
 }
 
+/** 请求涉及 source 中最旧的 last_sync_at；任一缺失视为从未 sync */
+function oldestSourceSyncAt(meta: StoreMeta, sources: SourceId[]): number | null {
+  let oldest: number | null = null;
+  for (const s of sources) {
+    const t = meta.sources[s]?.last_sync_at;
+    if (t == null) return null;
+    if (oldest == null || t < oldest) oldest = t;
+  }
+  return oldest;
+}
+
+export type EnsureFreshPlanReason = 'never' | 'min_interval' | 'ttl_all' | 'check';
+
+export interface EnsureFreshPlan {
+  reason: EnsureFreshPlanReason;
+  staleSources: SourceId[];
+  checkSources: SourceId[];
+  ageMs: number | null;
+}
+
+/**
+ * per-source 闸：刚 sync 的源跳过 listRefs，热源不得挡其它源。
+ * 旧 newest 早退会让热 grok/kimi 把 opencode 脏检饿死。
+ */
+export function planEnsureFresh(opts: {
+  sources: SourceId[];
+  meta: StoreMeta;
+  now: number;
+  maxAgeMs: number;
+  minIntervalMs: number;
+}): EnsureFreshPlan {
+  const { sources, meta, now, maxAgeMs, minIntervalMs } = opts;
+  const oldest = oldestSourceSyncAt(meta, sources);
+  const ageMs = oldest != null ? now - oldest : null;
+  if (oldest == null) {
+    return { reason: 'never', staleSources: [...sources], checkSources: [], ageMs: null };
+  }
+
+  const staleSources = sources.filter((s) => {
+    const t = meta.sources[s]?.last_sync_at;
+    return t == null || now - t >= maxAgeMs;
+  });
+  if (staleSources.length === sources.length) {
+    return { reason: 'ttl_all', staleSources, checkSources: [], ageMs };
+  }
+
+  const staleSet = new Set(staleSources);
+  const checkSources = sources.filter((s) => {
+    if (staleSet.has(s)) return false;
+    const t = meta.sources[s]?.last_sync_at;
+    return t == null || now - t >= minIntervalMs;
+  });
+  if (!staleSources.length && !checkSources.length) {
+    return { reason: 'min_interval', staleSources: [], checkSources: [], ageMs };
+  }
+  return { reason: 'check', staleSources, checkSources, ageMs };
+}
+
 /**
  * ensureFresh：
- * 1. minInterval：用「最近一次任一 source 的 last_sync」防 5s 轮询 thrash
- *    （不再用 oldest——闲置源会让 minInterval 永远失效）
+ * 1. minInterval：per-source。刚 sync 过的源跳过 listRefs（防 5s 轮询 thrash）
  * 2. TTL：per-source 过期的强制 sync（避免只刷 grok 导致 claude 永远不扫）
  * 3. 其余 source 用 listRefs 脏检测；只 sync 脏/过期源
  */
@@ -447,76 +504,29 @@ export async function ensureFresh(opts?: {
   const paths = await initStoreDb(opts?.sync);
   const meta = loadMeta(paths.metaPath);
   const sources = normalizeSources(opts?.sync?.source);
-  const now = Date.now();
-  const newest = newestSourceSyncAt(meta, sources);
-  const oldest = oldestSourceSyncAt(meta, sources);
-  // ageMs 对外仍报告「最旧源年龄」（可观测陈旧度）
-  const ageMs = oldest != null ? now - oldest : null;
+  const plan = planEnsureFresh({ sources, meta, now: Date.now(), maxAgeMs, minIntervalMs });
 
-  // 从未 sync 过任一源
-  if (oldest == null) {
+  if (plan.reason === 'never' || plan.reason === 'ttl_all') {
     const result = await syncSessions({ days: 7, ...(opts?.sync || {}) });
-    return { synced: true, ageMs: null, reason: 'never', result };
+    return { synced: true, ageMs: plan.ageMs, reason: plan.reason === 'never' ? 'never' : 'ttl', result };
   }
-
-  // per-source TTL：过期源必须 sync（不受 minInterval 阻挡，避免活跃源拖死闲置源）
-  const staleSources = sources.filter((s) => {
-    const t = meta.sources[s]?.last_sync_at;
-    return t == null || now - t >= maxAgeMs;
-  });
-
-  if (staleSources.length === sources.length) {
-    const result = await syncSessions({ days: 7, ...(opts?.sync || {}) });
-    return { synced: true, ageMs, reason: 'ttl', result };
+  if (plan.reason === 'min_interval') {
+    return { synced: false, ageMs: plan.ageMs, reason: 'min_interval' };
   }
-
-  // 防 thrash：无 TTL 任务时，最近刚 sync 过则跳过脏检测
-  if (!staleSources.length && newest != null && now - newest < minIntervalMs) {
-    return { synced: false, ageMs: now - newest, reason: 'min_interval' };
-  }
-
-  // 脏检测：跳过刚 sync 过的源 + 已在 stale 列表的
-  const checkSources = sources.filter((s) => {
-    if (staleSources.includes(s)) return false;
-    const t = meta.sources[s]?.last_sync_at;
-    return t == null || now - t >= minIntervalMs;
-  });
 
   let dirtySources: SourceId[] = [];
-  if (checkDirty && checkSources.length) {
-    dirtySources = await findDirtySources(opts?.sync, checkSources);
+  if (checkDirty && plan.checkSources.length) {
+    dirtySources = await findDirtySources(opts?.sync, plan.checkSources);
   }
 
-  const toSync = [...new Set([...staleSources, ...dirtySources])];
+  const toSync = [...new Set([...plan.staleSources, ...dirtySources])];
   if (!toSync.length) {
-    return { synced: false, ageMs, reason: 'clean' };
+    return { synced: false, ageMs: plan.ageMs, reason: 'clean' };
   }
 
   const result = await syncDirtySources(toSync, opts?.sync);
-  const reason = staleSources.length ? 'ttl' : 'dirty';
-  return { synced: true, ageMs, reason, result };
-}
-
-/** 请求涉及 source 中最旧的 last_sync_at；任一缺失视为从未 sync */
-function oldestSourceSyncAt(meta: StoreMeta, sources: SourceId[]): number | null {
-  let oldest: number | null = null;
-  for (const s of sources) {
-    const t = meta.sources[s]?.last_sync_at;
-    if (t == null) return null;
-    if (oldest == null || t < oldest) oldest = t;
-  }
-  return oldest;
-}
-
-/** 最近一次 sync（防 thrash）；任一缺失不阻断，只看已有 */
-function newestSourceSyncAt(meta: StoreMeta, sources: SourceId[]): number | null {
-  let newest: number | null = null;
-  for (const s of sources) {
-    const t = meta.sources[s]?.last_sync_at;
-    if (t == null) continue;
-    if (newest == null || t > newest) newest = t;
-  }
-  return newest;
+  const reason = plan.staleSources.length ? 'ttl' : 'dirty';
+  return { synced: true, ageMs: plan.ageMs, reason, result };
 }
 
 /**

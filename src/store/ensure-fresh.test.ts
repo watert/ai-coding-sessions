@@ -6,9 +6,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { initStoreDb, closeStoreDb } from './db';
-import { loadMeta, saveMeta, emptyMeta } from './meta';
+import { saveMeta, emptyMeta, type StoreMeta } from './meta';
 import { upsertSession, getCachedDirtyMark } from './upsert';
-import { ensureFresh } from './sync';
+import { ensureFresh, planEnsureFresh } from './sync';
+import { ALL_SOURCES, type SourceId } from './schema';
 import type { UnifiedSessionInfo } from '../sources/types';
 import { grokActivityDirtyMark } from '../sources/grok-code';
 
@@ -38,17 +39,23 @@ function makeSession(id: string): UnifiedSessionInfo {
   };
 }
 
+/** agesMs: 距今多久；未列出的源默认 60s（超过默认 minInterval） */
+function metaWithAges(now: number, agesMs: Partial<Record<SourceId, number>>): StoreMeta {
+  const m = emptyMeta();
+  let newest = 0;
+  for (const s of ALL_SOURCES) {
+    const age = agesMs[s] ?? 60_000;
+    const t = now - age;
+    m.sources[s] = { last_sync_at: t, session_count: 0 };
+    if (t > newest) newest = t;
+  }
+  m.last_sync_at = newest;
+  return m;
+}
+
 beforeAll(async () => {
   await initStoreDb({ dbPath, metaPath });
   upsertSession(makeSession('s1'), { dirty_mark: '100' });
-  const m = emptyMeta();
-  const now = Date.now();
-  // 全部源刚 sync 过
-  for (const s of ['claude', 'opencode', 'kimi', 'grok', 'codex', 'zcode', 'workbuddy', 'cursor'] as const) {
-    m.sources[s] = { last_sync_at: now - 5_000, session_count: 0 };
-  }
-  m.last_sync_at = now - 5_000;
-  saveMeta(m, metaPath);
 });
 
 afterAll(() => {
@@ -60,15 +67,96 @@ afterAll(() => {
   }
 });
 
+describe('planEnsureFresh', () => {
+  const now = 1_800_000_000_000;
+  const maxAgeMs = 6 * 3600_000;
+  const minIntervalMs = 30_000;
+
+  test('全部源刚 sync → min_interval', () => {
+    const ages = Object.fromEntries(ALL_SOURCES.map((s) => [s, 5_000])) as Partial<Record<SourceId, number>>;
+    const plan = planEnsureFresh({
+      sources: [...ALL_SOURCES],
+      meta: metaWithAges(now, ages),
+      now,
+      maxAgeMs,
+      minIntervalMs,
+    });
+    expect(plan.reason).toBe('min_interval');
+    expect(plan.checkSources).toEqual([]);
+    expect(plan.staleSources).toEqual([]);
+  });
+
+  test('grok 刚 sync、opencode 超过 minInterval → 仍检 opencode', () => {
+    const plan = planEnsureFresh({
+      sources: [...ALL_SOURCES],
+      meta: metaWithAges(now, { grok: 5_000, kimi: 8_000, opencode: 60_000 }),
+      now,
+      maxAgeMs,
+      minIntervalMs,
+    });
+    expect(plan.reason).toBe('check');
+    expect(plan.checkSources).toContain('opencode');
+    expect(plan.checkSources).not.toContain('grok');
+    expect(plan.checkSources).not.toContain('kimi');
+    expect(plan.staleSources).toEqual([]);
+  });
+
+  test('全部 TTL 过期 → ttl_all', () => {
+    const ages = Object.fromEntries(ALL_SOURCES.map((s) => [s, maxAgeMs + 1])) as Partial<
+      Record<SourceId, number>
+    >;
+    const plan = planEnsureFresh({
+      sources: [...ALL_SOURCES],
+      meta: metaWithAges(now, ages),
+      now,
+      maxAgeMs,
+      minIntervalMs,
+    });
+    expect(plan.reason).toBe('ttl_all');
+    expect(plan.staleSources).toEqual([...ALL_SOURCES]);
+    expect(plan.checkSources).toEqual([]);
+  });
+
+  test('任一源从未 sync → never', () => {
+    const meta = metaWithAges(now, { grok: 5_000 });
+    delete meta.sources.opencode;
+    const plan = planEnsureFresh({
+      sources: [...ALL_SOURCES],
+      meta,
+      now,
+      maxAgeMs,
+      minIntervalMs,
+    });
+    expect(plan.reason).toBe('never');
+  });
+});
+
 describe('ensureFresh minInterval', () => {
   test('最近 sync 过 → min_interval，不跑脏检', async () => {
+    const now = Date.now();
+    const ages = Object.fromEntries(ALL_SOURCES.map((s) => [s, 5_000])) as Partial<Record<SourceId, number>>;
+    saveMeta(metaWithAges(now, ages), metaPath);
     const r = await ensureFresh({
       minIntervalMs: 30_000,
       maxAgeMs: 6 * 3600_000,
+      checkDirty: false,
       sync: { source: 'all', dbPath, metaPath },
     });
     expect(r.synced).toBe(false);
     expect(r.reason).toBe('min_interval');
+  });
+
+  test('热 grok 刚 sync 不挡 opencode 脏检（checkDirty=false → clean 而非 min_interval）', async () => {
+    const now = Date.now();
+    saveMeta(metaWithAges(now, { grok: 5_000, kimi: 5_000, opencode: 60_000 }), metaPath);
+    const r = await ensureFresh({
+      minIntervalMs: 30_000,
+      maxAgeMs: 6 * 3600_000,
+      checkDirty: false,
+      sync: { source: 'all', dbPath, metaPath },
+    });
+    expect(r.synced).toBe(false);
+    expect(r.reason).toBe('clean');
   });
 
   test('upsert skip 刷新 dirty_mark', () => {
