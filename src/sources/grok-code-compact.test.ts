@@ -153,10 +153,13 @@ describe('live grok compact session', () => {
     expect(detail.info.time_compacting).toBeTruthy();
     const compactMsgs = detail.messages.filter((m) => m.info.compaction);
     expect(compactMsgs.length).toBeGreaterThanOrEqual(1);
-    const text = (compactMsgs[0].parts || [])
-      .filter((p: any) => p.type === 'text')
-      .map((p: any) => p.text)
+    const joined = compactMsgs
+      .map((m) => (m.parts || []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n'))
       .join('\n');
-    expect(text).toContain('[Context Compacted]');
+    // live 有两种形态：① 有 compaction_requests → 缝合点注入 [Context Compacted] 合成消息；
+    // ② 无 requests（如本 session，仅 summary.json + chat_history）→ 续写摘要保留，compact 消息即 grok 原始 summary
+    const hasMarker = joined.includes('[Context Compacted]');
+    const hasContinuationSummary = /^This session is being continued from a previous conversation/i.test(joined.trim());
+    expect(hasMarker || hasContinuationSummary).toBe(true);
   });
 });
