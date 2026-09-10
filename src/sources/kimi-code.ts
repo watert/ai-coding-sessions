@@ -230,11 +230,16 @@ export async function getKimiSessionActivityMark(
  * 批量扫描入口可 warm 更长 ttlMs。
  */
 const KIMI_LIST_TTL_MS = 3000;
-let kimiListCache: { at: number; ttl: number; sessions: KimiSessionItem[] } | null = null;
+/**
+ * 列表缓存：key 必须含数据根。生产路径固定，但测试用 KIMI_DATA_DIR 切 fixture 根，
+ * 不带 key 会让先跑的 fixture 结果污染后续真实数据断言（单跑过、全量挂）。
+ */
+let kimiListCache: { root: string; at: number; ttl: number; sessions: KimiSessionItem[] } | null = null;
 
 export async function listKimiCodeSessions(opts?: { fresh?: boolean; ttlMs?: number }): Promise<KimiSessionItem[]> {
+  const root = kimiBase();
   const cached = kimiListCache;
-  if (!opts?.fresh && cached && Date.now() - cached.at < cached.ttl) {
+  if (!opts?.fresh && cached && cached.root === root && Date.now() - cached.at < cached.ttl) {
     return cached.sessions;
   }
   if (!fs.existsSync(sessionIndexPath())) {
@@ -284,7 +289,7 @@ export async function listKimiCodeSessions(opts?: { fresh?: boolean; ttlMs?: num
     }
   }
 
-  return (kimiListCache = { at: Date.now(), ttl: opts?.ttlMs ?? KIMI_LIST_TTL_MS, sessions }).sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  return (kimiListCache = { root, at: Date.now(), ttl: opts?.ttlMs ?? KIMI_LIST_TTL_MS, sessions }).sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**
