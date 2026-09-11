@@ -2,7 +2,7 @@
 name: ai-coding-sessions
 description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题、skill 使用频次盘点 / 审计。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.11.0
+  version: 1.11.1
 ---
 
 # AI Coding Sessions
@@ -91,10 +91,11 @@ bun packages/ai-coding-sessions/src/store/cli.ts skill-reads --build --days=30 -
 
 > ⚠️ `--build --out=` 合在同一行 **不会** 落盘：build 只物化表，写文件请单独再跑导出。常见踩坑见 issue #14。
 
-**静默 pipe（issue #14 ③）**：CLI 退出时 `closeSqliteDb` 会向 stderr 打 `[sqlite] 数据库连接已关闭`。`--format=json | python3 -m json.tool` / `2>&1 | jq` 这类把 stderr 也吃进管道的场景，会把这条日志混入 JSON 末尾、撕碎解析。纯静默 pipe 时设 `AI_CODING_SESSIONS_QUIET=1`（接受 `1` / `true`）：
+**JSON stdout**：CLI **默认静默** sqlite 生命周期 banner（`[sqlite:…] 运行时/已关闭`）。Agent 把 stdout+stderr 一起 `JSON.parse` 时不再撕碎。排查连接时加 `--verbose`（或 `AI_CODING_SESSIONS_QUIET=0`）：
 
 ```bash
-AI_CODING_SESSIONS_QUIET=1 bun packages/ai-coding-sessions/src/store/cli.ts skill-reads --days=30 --format=json | python3 -m json.tool
+bun packages/ai-coding-sessions/src/store/cli.ts skill-reads --days=30 --format=json | python3 -m json.tool
+bun packages/ai-coding-sessions/src/store/cli.ts list --source=kimi --days=1 --limit=1 --verbose
 ```
 
 ## 数据模型要点
@@ -212,7 +213,7 @@ bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --wr
 - `prompts` 默认每条截断 300 字符（`--truncate-chars=` 可调，`0` = 全量原文）；标题生成用途够用，逐字核对时才关
 - 一次最多改约 5 条。标题短、可检索，不要整段 prompt。
 
-标志速查：`--cwd=` · `--ref=` · `--untitled` · `--title=` · `--clear` · `--write-source` · `--prompt-count=` · `--prompt-chars=` · `--include-empty` · `--truncate-chars=` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw`  
+标志速查：`--cwd=` · `--ref=` · `--untitled` · `--title=` · `--clear` · `--write-source` · `--prompt-count=` · `--prompt-chars=` · `--include-empty` · `--truncate-chars=` · `--text-preview=` · `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=` · `--out=` · `--with-children` · `--raw` · `--verbose`  
 完整说明 → [references/cli.md](./references/cli.md)
 
 ## 库 API 摘要

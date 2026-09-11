@@ -31,7 +31,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `refs` | listRefs（无 convert/write） |
 | `help` | 帮助 |
 
-默认 stdout **JSON**（`--raw` 单行；`trace --jsonl` 逐步一行；`--format=md --out=trace.md` 落盘）。日志走 **stderr**。
+默认 stdout **JSON**（`--raw` 单行；`trace --jsonl` 逐步一行；`--format=md --out=trace.md` 落盘）。日志走 **stderr**。sqlite 开关库 banner **默认静默**（`--verbose` / `AI_CODING_SESSIONS_QUIET=0` 打开）。
 
 ### Agent 轨迹
 
@@ -152,7 +152,7 @@ bun src/store/cli.ts set-title --source=opencode --id=ses_xxx --title="..." --wr
 - 已设 `custom_title` 的 session 自动排除；`is_weak=false` 的同样列为候选，交 Agent 判断
 - 包内不调 LLM：读 `title-review` / `prompts` → 自己生成短标题 → `set-title`。一次最多约 5 条。`--write-source` 仅 OpenCode 源库。
 
-Env：`AI_CODING_SESSIONS_DB` · `AI_CODING_SESSIONS_META`
+Env：`AI_CODING_SESSIONS_DB` · `AI_CODING_SESSIONS_META` · `AI_CODING_SESSIONS_QUIET`（`0`/`false` 打开 sqlite banner；CLI 默认静默）
 
 ### 导出相关信号（列表/详情字段，非 LLM）
 

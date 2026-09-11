@@ -105,6 +105,7 @@ import {
 } from './session-title';
 import { initOpencodeDb, updateSessionTitle } from '../sources/opencode';
 import type { UnifiedSessionInfo, UnifiedSessionDetail } from '../sources/types';
+import { setSqliteQuiet } from '../lib/sqlite';
 
 const COMMANDS = [
   'list',
@@ -208,6 +209,8 @@ interface CliArgs {
   skill?: string;
   /** perf: detail 扫描窗口全部 session (找最慢任务, 默认只采样) */
   all: boolean;
+  /** sqlite 生命周期 banner 打到 stderr (默认静默) */
+  verbose: boolean;
 }
 
 function parseSource(s: string): SourceId | 'all' {
@@ -244,6 +247,7 @@ function parseArgs(argv: string[]): CliArgs {
     regex: false,
     build: false,
     all: false,
+    verbose: false,
   };
 
   let i = 0;
@@ -263,6 +267,8 @@ function parseArgs(argv: string[]): CliArgs {
       out.refsOnly = true;
       if (out.cmd === 'sync') out.cmd = 'refs';
     } else if (a === '--live') out.live = true;
+    else if (a === '--verbose' || a === '-v') out.verbose = true;
+    else if (a === '--compact') out.compact = true;
     else if (a === '--full-fields' || a === '--no-compact') out.compact = false;
     else if (a === '--no-messages') out.messages = false;
     else if (a === '--raw' || a === '--compact-json') out.pretty = false;
@@ -485,10 +491,26 @@ Options:
   --full --reconcile  sync
   --db=PATH --meta=PATH
   --raw               single-line JSON
+  --compact           list/detail: 精简字段 (默认已开; 兼容旧 flag)
+  --verbose, -v       sqlite 生命周期日志打到 stderr (默认静默, 避免污染 JSON)
   -h, --help
 
-Env: AI_CODING_SESSIONS_DB / AI_CODING_SESSIONS_META
+Env: AI_CODING_SESSIONS_DB / AI_CODING_SESSIONS_META / AI_CODING_SESSIONS_QUIET
 `);
+}
+
+/** Agent 常把 stdout+stderr 一起 JSON.parse; CLI 默认关掉 sqlite 开关库 banner */
+function applyCliSqliteQuiet(args: CliArgs) {
+  if (args.verbose) {
+    setSqliteQuiet(false);
+    return;
+  }
+  const v = process.env.AI_CODING_SESSIONS_QUIET;
+  if (v === '0' || v === 'false') {
+    setSqliteQuiet(false);
+    return;
+  }
+  setSqliteQuiet(true);
 }
 
 function resolveExportFormat(args: CliArgs, fallback: TraceExportFormat = 'json'): TraceExportFormat {
@@ -1976,6 +1998,7 @@ async function cmdSync(args: CliArgs) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  applyCliSqliteQuiet(args);
   if (args.help || args.cmd === 'help') {
     usage();
     return;

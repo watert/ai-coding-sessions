@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { toReadonlyUri, isSqliteQuiet, initSqliteDb, closeSqliteDb } from './sqlite';
+import { toReadonlyUri, isSqliteQuiet, initSqliteDb, closeSqliteDb, setSqliteQuiet } from './sqlite';
 
 // 手动 mock console.error: bun:test 没有 spyOn, 装一个收集 calls 的替身
 function makeStderrSpy() {
@@ -65,9 +65,10 @@ describe('closeSqliteDb quiet gate (issue #14 ③)', () => {
     return p;
   }
 
-  // 恢复 env 防止跨 test 污染
+  // 恢复 env / override 防止跨 test 污染
   const originalQuiet = process.env.AI_CODING_SESSIONS_QUIET;
   afterEach(() => {
+    setSqliteQuiet(undefined);
     if (originalQuiet === undefined) delete process.env.AI_CODING_SESSIONS_QUIET;
     else process.env.AI_CODING_SESSIONS_QUIET = originalQuiet;
   });
@@ -94,6 +95,17 @@ describe('closeSqliteDb quiet gate (issue #14 ③)', () => {
     expect(isSqliteQuiet()).toBe(false);
     process.env.AI_CODING_SESSIONS_QUIET = '';
     expect(isSqliteQuiet()).toBe(false);
+  });
+
+  test('isSqliteQuiet: setSqliteQuiet(true/false) 覆盖 env', () => {
+    process.env.AI_CODING_SESSIONS_QUIET = '0';
+    setSqliteQuiet(true);
+    expect(isSqliteQuiet()).toBe(true);
+    setSqliteQuiet(false);
+    process.env.AI_CODING_SESSIONS_QUIET = '1';
+    expect(isSqliteQuiet()).toBe(false);
+    setSqliteQuiet(undefined);
+    expect(isSqliteQuiet()).toBe(true);
   });
 
   test('默认 (env 未设): closeSqliteDb 输出 [sqlite] 数据库连接已关闭', async () => {
@@ -146,6 +158,38 @@ describe('closeSqliteDb quiet gate (issue #14 ③)', () => {
     const spy = makeStderrSpy();
     try {
       const id = `quiet-zero-${Date.now()}`;
+      await initSqliteDb(id, () => makeDbPath(id));
+      spy.mockClear();
+      closeSqliteDb(id);
+      const messages = spy.calls.map((c) => String(c[0]));
+      expect(messages.some((m) => m.includes('数据库连接已关闭'))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('setSqliteQuiet(true) 覆盖 env=0: 不输出关闭日志', async () => {
+    process.env.AI_CODING_SESSIONS_QUIET = '0';
+    setSqliteQuiet(true);
+    const spy = makeStderrSpy();
+    try {
+      const id = `override-true-${Date.now()}`;
+      await initSqliteDb(id, () => makeDbPath(id));
+      spy.mockClear();
+      closeSqliteDb(id);
+      const messages = spy.calls.map((c) => String(c[0]));
+      expect(messages.some((m) => m.includes('数据库连接已关闭'))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('setSqliteQuiet(false) 覆盖 env=1: 仍输出关闭日志', async () => {
+    process.env.AI_CODING_SESSIONS_QUIET = '1';
+    setSqliteQuiet(false);
+    const spy = makeStderrSpy();
+    try {
+      const id = `override-false-${Date.now()}`;
       await initSqliteDb(id, () => makeDbPath(id));
       spy.mockClear();
       closeSqliteDb(id);

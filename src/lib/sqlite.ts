@@ -16,9 +16,18 @@ interface SqliteInstance {
 
 const instances = new Map<string, SqliteInstance>();
 
-// issue #14 ③: 关闭 sqlite close 日志污染 stdout (--format=json | python3 json.loads)
-// 用函数读取 (非 const) 是为了让测试能动态切换 env
+// issue #14 ③: sqlite 生命周期 banner 会撕碎 Agent 对 JSON stdout 的解析
+// 库默认仍打 stderr; CLI 调 setSqliteQuiet(true) 默认静默
+let quietOverride: boolean | undefined;
+
+/** CLI / 测试用: true 强制静默, false 强制打日志, undefined 回退 env */
+export function setSqliteQuiet(quiet: boolean | undefined): void {
+  quietOverride = quiet;
+}
+
 export function isSqliteQuiet(): boolean {
+  if (quietOverride === true) return true;
+  if (quietOverride === false) return false;
   const v = process.env.AI_CODING_SESSIONS_QUIET;
   return v === '1' || v === 'true';
 }

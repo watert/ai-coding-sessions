@@ -25,7 +25,7 @@ bun src/store/cli.ts refs --source=claude --days=7
 bun src/store/cli.ts sync --days=1 --source=kimi --reconcile
 ```
 
-stderr 有 sqlite 路径日志；stdout 应是纯 JSON。
+CLI 默认静默 sqlite 生命周期 banner；stdout 应是纯 JSON。排查连接加 `--verbose`。
 
 ## Subagent / 跨 CLI 调用陷阱 (grok / opencode / claude)
 
