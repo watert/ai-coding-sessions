@@ -708,18 +708,22 @@ export async function convertKimiSession(
     debugFallback(`[convertKimiSession] 时间字段回退汇总 sessionId=${session.sessionId} fallbackCount=${stats.fallbackCount}/${unifiedMessages.length}`);
   }
   const session_status = checkSessionStatus(unifiedMessages);
+  // state.json 缺失时 createdAt/updatedAt 为 0，落到 epoch(1970-01-01) 会污染趋势按天展开与列表排序
+  const nowMs = Date.now();
+  const updatedAtMs = session.updatedAt > 0 ? session.updatedAt : nowMs;
+  const createdAtMs = session.createdAt > 0 ? session.createdAt : updatedAtMs;
   const activity = buildActivitySpanFromUnifiedMessages(
     unifiedMessages,
-    session.updatedAt,
-    session.createdAt,
+    updatedAtMs,
+    createdAtMs,
   );
   // root.state.updatedAt 在 swarm 中常冻结；与 subagent 一致用 message 活动时间
   const time_updated = activity.last_active_at_iso
     ? new Date(activity.last_active_at_iso).getTime()
-    : session.updatedAt;
+    : updatedAtMs;
   const time_created = activity.first_active_at_iso
     ? new Date(activity.first_active_at_iso).getTime()
-    : session.createdAt;
+    : createdAtMs;
 
   return {
     id: session.sessionId,
