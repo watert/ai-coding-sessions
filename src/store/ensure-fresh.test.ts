@@ -72,6 +72,20 @@ describe('planEnsureFresh', () => {
   const maxAgeMs = 6 * 3600_000;
   const minIntervalMs = 30_000;
 
+  test('minInterval=0 即使刚 sync 也走 check（宿主 ?fresh=1）', () => {
+    const ages = Object.fromEntries(ALL_SOURCES.map((s) => [s, 5_000])) as Partial<Record<SourceId, number>>;
+    const plan = planEnsureFresh({
+      sources: [...ALL_SOURCES],
+      meta: metaWithAges(now, ages),
+      now,
+      maxAgeMs,
+      minIntervalMs: 0,
+    });
+    expect(plan.reason).toBe('check');
+    expect(plan.checkSources).toEqual([...ALL_SOURCES]);
+    expect(plan.staleSources).toEqual([]);
+  });
+
   test('全部源刚 sync → min_interval', () => {
     const ages = Object.fromEntries(ALL_SOURCES.map((s) => [s, 5_000])) as Partial<Record<SourceId, number>>;
     const plan = planEnsureFresh({
