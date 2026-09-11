@@ -9,8 +9,9 @@ import { listClaudeCodeSessions } from './claude-code';
 import {
   listKimiCodeSessions,
   listKimiSubagentsFromMainWire,
+  getKimiSessionItemsByIds,
 } from './kimi-code';
-import { listGrokCodeSessions } from './grok-code';
+import { listGrokCodeSessions, getGrokSessionItemsByIds } from './grok-code';
 import { listCodexSessions, closeCodexDb } from './codex-code';
 import { listZcodeSessions, closeZcodeDb, initZcodeDb } from './zcode-code';
 import {
@@ -21,6 +22,7 @@ import {
 } from './workbuddy-code';
 import { listCursorSessions, closeCursorDb, initCursorDb } from './cursor-code';
 import { convertPiSession, getPiSessionDetail, listPiSessionsForListing } from './pi-source';
+import { listPiSessionRefs } from './pi-code';
 import {
   initOpencodeDb,
   closeOpencodeDb,
@@ -44,7 +46,8 @@ import {
   convertWorkbuddySubagentSession,
   getWorkbuddySessionDetail,
 } from './workbuddy-source';
-import { convertCursorSession, getCursorSessionDetail } from './cursor-source';import type {
+import { convertCursorSession, getCursorSessionDetail } from './cursor-source';import type { SourceId } from '../store/schema';
+import type {
   UnifiedSessionInfo,
   UnifiedSessionDetail,
   ListSessionsOptions,
@@ -194,68 +197,7 @@ export async function listSessions(
       const filteredOpencode = opencodeSessions
         .filter(s => filterByProject(projectId)(s as any))
         .filter(filterByModels)
-        .map((s: any): UnifiedSessionInfo => {
-          const lastMs = s.session_time_updated
-            ?? (s.last_active_at_iso ? new Date(s.last_active_at_iso).getTime() : 0);
-          const firstMs = s.session_time_created
-            ?? (s.first_active_at_iso ? new Date(s.first_active_at_iso).getTime() : lastMs);
-          return {
-          id: s.session_id,
-          project_id: s.project_id,
-          parent_id: s.parent_id ?? undefined,
-          spawn_group_id: s.spawn_group_id ?? undefined,
-          slug: s.session_id,
-          directory: s.session_dir,
-          title: s.session_title,
-          version: 'unknown',
-          time_created: firstMs,
-          time_updated: lastMs,
-          project_name: s.project_name,
-          project_worktree: s.project_worktree,
-          summary_additions: s.editDiffs?.additions,
-          summary_deletions: s.editDiffs?.deletions,
-          summary_files: s.editDiffs?.filesChanged,
-
-          // 新增的统计字段
-          total_messages: s.total_messages,
-          total_user_messages: s.total_user_messages,
-          total_tool_calls: s.total_tool_calls,
-          total_tool_calls_success: s.total_tool_calls_success,
-          total_tool_calls_failed: s.total_tool_calls_failed,
-          total_tokens: s.total_tokens,
-          total_input: s.total_input,
-          total_output: s.total_output,
-          total_reasoning: s.total_reasoning,
-          total_cache_read: s.total_cache_read,
-          last_active_at_iso: s.last_active_at_iso,
-          last_active_at: s.last_active_at_iso || s.last_active_at,
-          first_active_at_iso: s.first_active_at_iso,
-          span_days: s.span_days,
-          usage_by_day: s.usage_by_day,
-          models_used: s.models_used,
-          last_message_tokens: s.last_message_tokens,
-          max_context_tokens: s.max_context_tokens || undefined,
-          compact_count: s.compact_count || undefined,
-          time_compacting: s.time_compacting || undefined,
-          last_message: s.last_message,
-          lastTokenInfo: s.lastTokenInfo,
-          session_status: s.session_status,
-          textParts: s.textParts,
-          userParts: s.userParts,
-          avg_tps: s.avg_tps,
-          avg_latency_ms: s.avg_latency_ms,
-          avg_prefill_tps: s.avg_prefill_tps,
-          assistant_tps_list: s.assistant_tps_list,
-          latency_list: s.latency_list,
-          prefill_tps_list: s.prefill_tps_list,
-          editDiffs: s.editDiffs,
-          bashSignals: s.bashSignals,
-          deliverableSignals: s.deliverableSignals,
-          pricing: s.pricing,
-
-          source: 'opencode',
-        };
-        });
+        .map(mapOpencodeListItem);
 
       sessions.push(...filteredOpencode);
       opencodeCount = filteredOpencode.length;
@@ -415,6 +357,135 @@ export async function listSessions(
     },
     lastUpdatedAt: new Date(),
   };
+}
+
+/** OpenCode 列表行 → UnifiedSessionInfo（全量 list 与增量 convert 共用同一映射，字段一字不差） */
+function mapOpencodeListItem(s: any): UnifiedSessionInfo {
+  const lastMs = s.session_time_updated
+    ?? (s.last_active_at_iso ? new Date(s.last_active_at_iso).getTime() : 0);
+  const firstMs = s.session_time_created
+    ?? (s.first_active_at_iso ? new Date(s.first_active_at_iso).getTime() : lastMs);
+  return {
+    id: s.session_id,
+    project_id: s.project_id,
+    parent_id: s.parent_id ?? undefined,
+    spawn_group_id: s.spawn_group_id ?? undefined,
+    slug: s.session_id,
+    directory: s.session_dir,
+    title: s.session_title,
+    version: 'unknown',
+    time_created: firstMs,
+    time_updated: lastMs,
+    project_name: s.project_name,
+    project_worktree: s.project_worktree,
+    summary_additions: s.editDiffs?.additions,
+    summary_deletions: s.editDiffs?.deletions,
+    summary_files: s.editDiffs?.filesChanged,
+
+    total_messages: s.total_messages,
+    total_user_messages: s.total_user_messages,
+    total_tool_calls: s.total_tool_calls,
+    total_tool_calls_success: s.total_tool_calls_success,
+    total_tool_calls_failed: s.total_tool_calls_failed,
+    total_tokens: s.total_tokens,
+    total_input: s.total_input,
+    total_output: s.total_output,
+    total_reasoning: s.total_reasoning,
+    total_cache_read: s.total_cache_read,
+    last_active_at_iso: s.last_active_at_iso,
+    last_active_at: s.last_active_at_iso || s.last_active_at,
+    first_active_at_iso: s.first_active_at_iso,
+    span_days: s.span_days,
+    usage_by_day: s.usage_by_day,
+    models_used: s.models_used,
+    last_message_tokens: s.last_message_tokens,
+    max_context_tokens: s.max_context_tokens || undefined,
+    compact_count: s.compact_count || undefined,
+    time_compacting: s.time_compacting || undefined,
+    last_message: s.last_message,
+    lastTokenInfo: s.lastTokenInfo,
+    session_status: s.session_status,
+    textParts: s.textParts,
+    userParts: s.userParts,
+    avg_tps: s.avg_tps,
+    avg_latency_ms: s.avg_latency_ms,
+    avg_prefill_tps: s.avg_prefill_tps,
+    assistant_tps_list: s.assistant_tps_list,
+    latency_list: s.latency_list,
+    prefill_tps_list: s.prefill_tps_list,
+    editDiffs: s.editDiffs,
+    bashSignals: s.bashSignals,
+    deliverableSignals: s.deliverableSignals,
+    pricing: s.pricing,
+
+    source: 'opencode',
+  };
+}
+
+/**
+ * 按 session id 增量 convert（sync 脏 session 专用）。
+ *
+ * 全量 listSessions 要读遍整个源（opencode 千级 session、grok 千兆级尖峰），
+ * 而一轮脏 session 通常是个位数；这里只 convert 命中的 id。
+ * 每个源复用全量路径的同一个 convertXxxSession，保证 upsert 指纹/字段与全量一致。
+ * 子 session 展开（kimi/workbuddy 的虚拟 subagent）与全量路径保持一致。
+ */
+export async function convertSessionsByIds(
+  source: SourceId,
+  ids: string[],
+): Promise<UnifiedSessionInfo[]> {
+  if (ids.length === 0) return [];
+  const want = new Set(ids);
+  const pick = <T extends { sessionId: string }>(items: T[]) => items.filter((s) => want.has(s.sessionId));
+
+  switch (source) {
+    case 'claude':
+      return withConcurrencyLimit(pick(await listClaudeCodeSessions()), convertClaudeSession, 3);
+    case 'codex':
+      return withConcurrencyLimit(pick(await listCodexSessions()), convertCodexSession, 3);
+    case 'zcode':
+      return withConcurrencyLimit(pick(await listZcodeSessions()), convertZcodeSession, 3);
+    case 'cursor':
+      return withConcurrencyLimit(pick(await listCursorSessions()), convertCursorSession, 3);
+    case 'pi':
+      return withConcurrencyLimit(pick(await listPiSessionRefs()), convertPiSession, 3);
+    case 'workbuddy': {
+      const expanded = await withConcurrencyLimit(
+        pick(await listWorkbuddySessions()),
+        async (s) => {
+          const results: UnifiedSessionInfo[] = [await convertWorkbuddySession(s)];
+          for (const meta of listWorkbuddySubagentsFromMainJsonl(s)) {
+            results.push(await convertWorkbuddySubagentSession(s, meta));
+          }
+          return results;
+        },
+        3,
+      );
+      return expanded.flat();
+    }
+    case 'opencode':
+      return getOpencodeSessionList(undefined, undefined, true, undefined, ids).list.map(mapOpencodeListItem);
+    case 'grok':
+      return withConcurrencyLimit(await getGrokSessionItemsByIds(ids), convertGrokSession, 3);
+    case 'kimi': {
+      const expanded = await withConcurrencyLimit(
+        await getKimiSessionItemsByIds(ids),
+        async (s) => {
+          const results: UnifiedSessionInfo[] = [await convertKimiSession(s)];
+          for (const meta of await listKimiSubagentsFromMainWire(s.sessionDir, s.sessionId)) {
+            results.push(await convertKimiSubagentSession(s, meta));
+          }
+          return results;
+        },
+        3,
+      );
+      return expanded.flat();
+    }
+    default: {
+      const never: never = source;
+      throw new Error(`convertSessionsByIds: 未支持的 source ${String(never)}`);
+    }
+  }
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   listSessions,
   closeAiCodingStats,
   getSessionDetail,
+  convertSessionsByIds,
 } from '../sources/index';
 import type { UnifiedSessionInfo } from '../sources/types';
 import type { SourceId } from './schema';
@@ -29,14 +30,12 @@ import {
 } from './upsert';
 import { queryCached, getCachedSession } from './query';
 import { extractSkillReads, replaceSkillReads, getSkillReadsBuiltAt } from './session-skill-reads';
-import { getGrokSessionItemsByIds } from '../sources/grok-code';
-import { convertGrokSession } from '../sources/grok-source';
-import { getKimiSessionItemsByIds, listKimiSubagentsFromMainWire } from '../sources/kimi-code';
-import { convertKimiSession, convertKimiSubagentSession } from '../sources/kimi-source';
-import { withConcurrencyLimit } from '../sources/utils';
 
-/** 脏 session 超过此数量（或 refs 的 50%）时回退全量 convert */
-const INCREMENTAL_DIRTY_MAX = 24;
+/**
+ * 脏 session 超过此数量（或 refs 的 50%）时回退全量 convert。
+ * 增量按条 convert 每源都有一次 catalog 扫描的固定开销，量大了不如全量批处理。
+ */
+const INCREMENTAL_DIRTY_MAX = 120;
 
 export interface SyncOptions {
   /** 回溯天数，默认 7；与 startDate 二选一，startDate 优先 */
@@ -115,7 +114,13 @@ export async function syncSessions(options: SyncOptions = {}): Promise<SyncResul
 
   try {
     for (const source of sources) {
-      const r = await syncOneSource(source, { startDate, endDate, full, reconvert: !!options.reconvert });
+      const r = await syncOneSource(source, {
+        startDate,
+        endDate,
+        full,
+        reconvert: !!options.reconvert,
+        skillReads: options.skillReads,
+      });
       bySource.push(r);
       const sm: SourceSyncMeta = {
         last_sync_at: Date.now(),
@@ -210,13 +215,12 @@ async function syncOneSource(
       return result;
     }
 
-    const useFull =
-      opts.full ||
-      opts.reconvert ||
-      dirtyIds.length > INCREMENTAL_DIRTY_MAX ||
-      (refs.length > 0 && dirtyIds.length > refs.length * 0.5) ||
-      // 仅 grok/kimi 有按 id 增量 convert；其它源走全量 list（本身已较快）
-      (source !== 'grok' && source !== 'kimi');
+    const useFull = shouldUseFullConvert({
+      full: opts.full,
+      reconvert: !!opts.reconvert,
+      dirtyCount: dirtyIds.length,
+      refsCount: refs.length,
+    });
 
     let sessions: UnifiedSessionInfo[];
     if (useFull) {
@@ -227,7 +231,8 @@ async function syncOneSource(
       });
       sessions = live.sessions;
     } else {
-      sessions = await convertDirtySessions(source, dirtyIds);
+      // 增量：只 convert 脏 id（各源复用全量路径的 convert，字段与指纹一致）
+      sessions = await convertSessionsByIds(source, dirtyIds);
     }
 
     result.live = sessions.length;
@@ -301,37 +306,22 @@ async function backfillSkillReads(source: SourceId, ids: string[]): Promise<numb
   return built;
 }
 
-/** grok/kimi：只 convert 指定 root session ids（含 kimi subagent 展开） */
-async function convertDirtySessions(
-  source: SourceId,
-  dirtyIds: string[],
-): Promise<UnifiedSessionInfo[]> {
-  if (source === 'grok') {
-    const items = await getGrokSessionItemsByIds(dirtyIds);
-    return withConcurrencyLimit(items, convertGrokSession, 3);
-  }
-  if (source === 'kimi') {
-    const items = await getKimiSessionItemsByIds(dirtyIds);
-    const expanded = await withConcurrencyLimit(
-      items,
-      async (s) => {
-        const results: UnifiedSessionInfo[] = [await convertKimiSession(s)];
-        const subagents = await listKimiSubagentsFromMainWire(s.sessionDir, s.sessionId);
-        for (const meta of subagents) {
-          results.push(await convertKimiSubagentSession(s, meta));
-        }
-        return results;
-      },
-      3,
-    );
-    return expanded.flat();
-  }
-  // 不应到达：调用方对非 grok/kimi 走 full
-  const live = await listSessions({ source });
-  const want = new Set(dirtyIds);
-  return live.sessions.filter(
-    (s) => want.has(s.id) || (s.parent_id != null && want.has(s.parent_id)),
-  );
+/**
+ * 全量 vs 增量 convert 判定（纯函数，便于单测）。
+ * - full / reconvert：强制全量
+ * - 脏数量超阈值或占 refs 过半：全量批处理更划算
+ * - 其余：按 id 增量（各源都支持，见 convertSessionsByIds）
+ */
+export function shouldUseFullConvert(opts: {
+  full?: boolean;
+  reconvert?: boolean;
+  dirtyCount: number;
+  refsCount: number;
+}): boolean {
+  if (opts.full || opts.reconvert) return true;
+  if (opts.dirtyCount > INCREMENTAL_DIRTY_MAX) return true;
+  if (opts.refsCount > 0 && opts.dirtyCount > opts.refsCount * 0.5) return true;
+  return false;
 }
 
 /**

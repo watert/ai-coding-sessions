@@ -41,6 +41,7 @@ export {
   initAiCodingStats,
   closeAiCodingStats,
   listSessions,
+  convertSessionsByIds,
   getSessionDetail as getSessionDetailLive,
   OpenCodeSessionInfoSchema,
   OpenCodeMessageSchema,

@@ -785,6 +785,8 @@ export function getSessionList(
   endDate?: string,
   compact = false,
   models?: string[],
+  /** 限定 session id（sync 增量 convert 用）；给定时跳过其余 session 的 CTE 扫描 */
+  sessionIds?: string[],
 ): { list: SessionListItem[]; total: number; lastUpdatedAt: Date } {
   const database = getOpencodeDb();
   let whereClause: string;
@@ -820,6 +822,12 @@ export function getSessionList(
     const end = `strftime('%s', '${endDate}', '+1 day', 'start of day') * 1000 - 1`;
     whereClause = `s.time_created <= ${end}`;
     params = [];
+  }
+
+  // 增量收窄：whereClause 在 5 处 CTE 复用，统一追加 id 过滤（id 为源侧主键，转义单引号防注入）
+  if (sessionIds && sessionIds.length > 0) {
+    const ids = sessionIds.map((id) => `'${id.replace(/'/g, "''")}'`).join(',');
+    whereClause = `(${whereClause}) AND s.id IN (${ids})`;
   }
 
   // 模型过滤：只要 session 里任意一条 assistant 消息的 modelID 命中即可
