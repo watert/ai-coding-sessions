@@ -107,9 +107,10 @@ export const AI_MODEL_PRICING_TABLE: ModelPricing[] = [
     priceCurrency: 'CNY', inputPrice: 2, outputPrice: 3, cacheReadPrice: 0.2,
   },
   {
+    // DeepSeek flash 家族统一价：官方低峰 0.15/0.6/0.003 USD ×2(高峰)、抹零头 → 2/8/0.04 CNY
+    // 该条目同时承接 deepseek-flash 新 id / v4-flash / v4.1-flash / vision-exp 等变体
     id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", totalContext: "1M", maxOutput: "384K",
-    // 2026-08-17 起峰谷计价，此处按高峰时段价（输入未命中 3.0 / 输出 9.0 / 缓存命中 0.10）
-    priceCurrency: 'CNY', inputPrice: 3, outputPrice: 9, cacheReadPrice: 0.10,
+    priceCurrency: 'CNY', inputPrice: 2, outputPrice: 8, cacheReadPrice: 0.04,
   },
   {
     id: "deepseek-v4-pro", name: "DeepSeek V4 Pro（原价）", totalContext: "1M", maxOutput: "384K",
