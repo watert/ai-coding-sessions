@@ -54,7 +54,7 @@ const SEMANTICS: Partial<Record<SourceId, string>> = {
   opencode: 'session.time_updated SQL',
   codex: 'thread updatedAt',
   cursor: 'composerHeaders lastUpdatedAt; activity prefers bubbles',
-  pi: 'jsonl mtime:size (cwd-slug/<ISO>_<uuid>.jsonl)',
+  pi: 'jsonl mtime:size (cwd-slug/*.jsonl + sidecar <stem>/<runId>/run-N/session.jsonl)',
 };
 
 export async function listRefs(options?: ListRefsOptions): Promise<SessionRef[]> {

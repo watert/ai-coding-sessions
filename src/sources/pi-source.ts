@@ -17,8 +17,9 @@
  * - toolResult.message.content[text] → 注入对应 toolCallId 的 state.output
  * - last assistant stopReason → session_status（stop/done / toolUse/in-progress / aborted / error）
  *
- * 分支: v1 线性全收（不剪 parentId 树）
+ * 分支: v1 线性全收（不剪 message parentId 树）
  * 弱标题: 首条 user text 截断；isWeakTitle 不认截断 prompt（issue 开放问题 2，v1 接受）
+ * 子会话: pi-subagents sidecar jsonl → UnifiedSessionInfo.parent_id / spawn_group_id
  */
 
 import path from 'path';
@@ -57,12 +58,19 @@ const TITLE_MAX = 50;
 
 /** 首条 user text 截断 → title；空或缺 user 时回退 sessionId 截断 */
 export function derivePiTitle(firstUserText: string | undefined, sessionId: string): string {
-  const t = (firstUserText || '').trim();
+  let t = (firstUserText || '').trim();
   if (!t) return sessionId.slice(0, 8);
-  // 单行化 + 截断
+  // pi-subagents 子会话 prompt 形如 `Task: <长上下文>。请…`；砍掉 Task: 与首句以免截断撞车
+  if (/^Task:\s*/i.test(t)) {
+    t = t.replace(/^Task:\s*/i, '');
+    const cut = t.search(/[。]/);
+    if (cut >= 24 && cut <= 240) {
+      const rest = t.slice(cut + 1).trim();
+      if (rest.length >= 8) t = rest;
+    }
+  }
   const oneLine = t.replace(/\s+/g, ' ');
   if (oneLine.length <= TITLE_MAX) return oneLine;
-  // 截断 + ellipsis = TITLE_MAX（保留 ellipsis 字符位）
   return `${oneLine.slice(0, TITLE_MAX - 1)}…`;
 }
 
@@ -896,6 +904,8 @@ export async function convertPiSession(
   return {
     id: session.sessionId,
     project_id: session.cwd || session.cwdSlug,
+    parent_id: session.parentId || undefined,
+    spawn_group_id: session.spawnGroupId || undefined,
     slug: session.sessionId,
     directory: session.cwd,
     title,

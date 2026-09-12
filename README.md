@@ -252,6 +252,7 @@ Typical baseline on a real machine (Sep 2026, ~850 cached sessions): total run <
 | `codex` | `~/.codex/` state sqlite + rollout JSONL / `.jsonl.zst` | Compact / rollback aware; zstd may need `zstd` CLI |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + project JSONL | Virtual subagents (`Agent` tool → `projects/.../<sid>/subagents/agent-*.jsonl`) |
+| `pi` | `~/.pi/agent/sessions/*.jsonl` | Real usage/cost; pi-subagents sidecar children (`parent_id` / `spawn_group_id`) |
 | `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | See **Cursor limits** below |
 
 Missing source dirs are skipped with a warning (other sources still work).

@@ -710,4 +710,17 @@ describe('derivePiTitle', () => {
   test('falls back to sessionId prefix when no text', () => {
     expect(derivePiTitle(undefined, 'abcdef-1234')).toBe('abcdef-1');
   });
+  test('Task: 长前置句后取指令段, 避免子会话标题撞车', () => {
+    const a = derivePiTitle(
+      'Task: 目标目录 /Users/foo/github/claude-code-src-with-map 是反编译源码（无 package.json）。请统计并分析它依赖的第三方开源模块, 输出中文侦察报告。',
+      'sid',
+    );
+    const b = derivePiTitle(
+      'Task: 目标目录 /Users/foo/github/claude-code-src-with-map 是反编译源码（无 package.json）。请调查它的【插件 / 扩展 / Skills】体系, 输出中文报告。',
+      'sid',
+    );
+    expect(a).toContain('第三方开源');
+    expect(b).toContain('插件');
+    expect(a).not.toBe(b);
+  });
 });

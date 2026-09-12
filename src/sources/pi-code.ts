@@ -6,6 +6,12 @@
  * - 事件流: session | model_change | thinking_level_change | message | compaction | custom
  * - 未知 type 事件容错跳过（v3 格式仍在快速迭代）
  * 无原生 title；title 用首条 user text 截断（v1 接受 isWeakTitle 不认现状）
+ *
+ * pi-subagents 子会话（插件 sidecar，非虚拟 id）:
+ *   <stem>.jsonl 旁的 <stem>/<runId>/run-N/session.jsonl
+ *   parent_id = 最近一层 sidecar 对应的 jsonl header.id
+ *   spawn_group_id = 同父下 createdAt 间隔 ≤30s 的并发簇
+ *   不扫 cwd-slug/subagent-artifacts/（transcript 格式不同）
  */
 
 import fs from 'fs';
@@ -157,6 +163,10 @@ export type PiSessionItem = {
   mtimeMs: number;
   /** 文件 size bytes */
   size: number;
+  /** pi-subagents sidecar 子会话的父 session id */
+  parentId?: string;
+  /** 同父并发簇（createdAt 间隔 ≤30s） */
+  spawnGroupId?: string;
 };
 
 /** 单条 jsonl 内的轻量行迭代（容错） */
@@ -207,10 +217,56 @@ function fileStat(filePath: string): { mtimeMs: number; size: number } {
   }
 }
 
-/** 扫 root 下两级目录，列出 jsonl（cwd-slug/<file>.jsonl） */
-function walkSessionFiles(root: string): Array<{ filePath: string; cwdSlug: string }> {
+type PiFileHit = { filePath: string; cwdSlug: string; parentFilePath?: string };
+
+/** 同父并发簇：间隔超过此时长视为新一轮 spawn */
+const SPAWN_GROUP_GAP_MS = 30_000;
+
+/**
+ * 子 jsonl 的父文件：沿目录上走，命中 `<dir>.jsonl`（pi-subagents sidecar 约定）。
+ * 例: STEM/run/run-0/session.jsonl → STEM.jsonl
+ *     STEM/run/run-0/session/nested/run-0/session.jsonl → STEM/run/run-0/session.jsonl
+ */
+function inferParentJsonl(childFile: string, projectDir: string): string | undefined {
+  const project = path.resolve(projectDir);
+  const self = path.resolve(childFile);
+  let dir = path.dirname(self);
+  while (dir === project || dir.startsWith(project + path.sep)) {
+    const candidate = `${dir}.jsonl`;
+    if (candidate !== self && fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+function walkNestedJsonl(dir: string, projectDir: string, cwdSlug: string, out: PiFileHit[]): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith('.') || e.name === 'subagent-artifacts') continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      walkNestedJsonl(full, projectDir, cwdSlug, out);
+    } else if (e.isFile() && e.name.endsWith('.jsonl')) {
+      out.push({
+        filePath: full,
+        cwdSlug,
+        parentFilePath: inferParentJsonl(full, projectDir),
+      });
+    }
+  }
+}
+
+/** 扫 cwd-slug/*.jsonl + 其 sidecar 目录内嵌套 jsonl（pi-subagents 子会话） */
+function walkSessionFiles(root: string): PiFileHit[] {
   if (!fs.existsSync(root)) return [];
-  const out: Array<{ filePath: string; cwdSlug: string }> = [];
+  const out: PiFileHit[] = [];
   let projDirs: fs.Dirent[];
   try {
     projDirs = fs.readdirSync(root, { withFileTypes: true });
@@ -226,11 +282,107 @@ function walkSessionFiles(root: string): Array<{ filePath: string; cwdSlug: stri
     } catch {
       continue;
     }
+    const jsonlNames = new Set<string>();
     for (const f of files) {
-      if (!f.isFile() || !f.name.endsWith('.jsonl')) continue;
-      out.push({ filePath: path.join(projDir, f.name), cwdSlug: pd.name });
+      if (f.isFile() && f.name.endsWith('.jsonl')) jsonlNames.add(f.name);
+    }
+    for (const f of files) {
+      if (f.isFile() && f.name.endsWith('.jsonl')) {
+        out.push({ filePath: path.join(projDir, f.name), cwdSlug: pd.name });
+      } else if (f.isDirectory() && jsonlNames.has(`${f.name}.jsonl`)) {
+        // 只进「某个顶层 jsonl 的 sidecar」，跳过 subagent-artifacts 等
+        walkNestedJsonl(path.join(projDir, f.name), projDir, pd.name, out);
+      }
     }
   }
+  return out;
+}
+
+/** 仅读前 64KB 找首条 user text（listRefs 预览） */
+function peekFirstUserText(filePath: string): string | undefined {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(65536);
+      const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
+      const chunk = buf.subarray(0, bytes).toString('utf-8');
+      for (const line of splitLines(chunk)) {
+        const t = line.trim();
+        if (!t) continue;
+        let obj: any;
+        try {
+          obj = JSON.parse(t);
+        } catch {
+          continue;
+        }
+        if (obj?.type === 'message' && obj.message?.role === 'user') {
+          const c = obj.message.content?.[0];
+          if (c?.type === 'text' && typeof c.text === 'string') return c.text.slice(0, 80);
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+/** 同父 children 按 createdAt 分簇 → spawnGroupId */
+function assignSpawnGroups(items: PiSessionItem[]): void {
+  const byParent = new Map<string, PiSessionItem[]>();
+  for (const it of items) {
+    if (!it.parentId) continue;
+    const arr = byParent.get(it.parentId);
+    if (arr) arr.push(it);
+    else byParent.set(it.parentId, [it]);
+  }
+  for (const [pid, kids] of byParent) {
+    kids.sort((a, b) => a.createdAt - b.createdAt);
+    let groupStart = Number.NEGATIVE_INFINITY;
+    let groupId = '';
+    for (const k of kids) {
+      if (k.createdAt - groupStart > SPAWN_GROUP_GAP_MS) {
+        groupStart = k.createdAt;
+        groupId = `${pid}:${groupStart}`;
+      }
+      k.spawnGroupId = groupId;
+    }
+  }
+}
+
+function loadPiSessionItems(opts?: { peekUser?: boolean }): PiSessionItem[] {
+  const files = walkSessionFiles(getPiSessionsRoot());
+  const idByFile = new Map<string, string>();
+  const pending: Array<{ file: PiFileHit; header: PiSessionHeader; stat: { mtimeMs: number; size: number } }> = [];
+  for (const file of files) {
+    const header = readHeader(file.filePath);
+    if (!header?.id) continue;
+    const stat = fileStat(file.filePath);
+    idByFile.set(path.resolve(file.filePath), header.id);
+    pending.push({ file, header, stat });
+  }
+  const out: PiSessionItem[] = [];
+  for (const { file, header, stat } of pending) {
+    const parentFile = file.parentFilePath ? path.resolve(file.parentFilePath) : undefined;
+    const parentId = parentFile ? idByFile.get(parentFile) : undefined;
+    out.push({
+      sessionId: header.id,
+      filePath: file.filePath,
+      cwdSlug: file.cwdSlug,
+      cwd: header.cwd || '',
+      createdAt: numTs(header.timestamp),
+      updatedAt: stat.mtimeMs || numTs(header.timestamp),
+      dirtyMark: `${stat.mtimeMs}:${stat.size}`,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      parentId,
+      firstUserText: opts?.peekUser ? peekFirstUserText(file.filePath) : undefined,
+    });
+  }
+  assignSpawnGroups(out);
+  out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
 }
 
@@ -238,90 +390,18 @@ function walkSessionFiles(root: string): Array<{ filePath: string; cwdSlug: stri
 
 /**
  * 列出全部 pi session（解析首行 + stat；不读全文）
- * 用法：listSessions/convert 调用；不含 listRefs 用的脏标记聚合
+ * 含 pi-subagents sidecar 子会话（parentId 已填）
  */
 export async function listPiCodeSessions(): Promise<PiSessionItem[]> {
-  const root = getPiSessionsRoot();
-  const files = walkSessionFiles(root);
-  const out: PiSessionItem[] = [];
-  for (const { filePath, cwdSlug } of files) {
-    const header = readHeader(filePath);
-    if (!header || !header.id) continue;
-    const stat = fileStat(filePath);
-    out.push({
-      sessionId: header.id,
-      filePath,
-      cwdSlug,
-      cwd: header.cwd || '',
-      createdAt: numTs(header.timestamp),
-      updatedAt: stat.mtimeMs || numTs(header.timestamp),
-      dirtyMark: `${stat.mtimeMs}:${stat.size}`,
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-    });
-  }
-  out.sort((a, b) => b.updatedAt - a.updatedAt);
-  return out;
+  return loadPiSessionItems();
 }
 
 /**
  * 仅 listRefs 用的轻量扫描：mtime:size 脏标记 + first_user_text 预览
- * 不解析完整 jsonl；仅前 30 行扫首条 user text
+ * 不解析完整 jsonl；仅前 64KB 扫首条 user text
  */
 export async function listPiSessionRefs(): Promise<PiSessionItem[]> {
-  const root = getPiSessionsRoot();
-  const files = walkSessionFiles(root);
-  const out: PiSessionItem[] = [];
-  for (const { filePath, cwdSlug } of files) {
-    const header = readHeader(filePath);
-    if (!header || !header.id) continue;
-    const stat = fileStat(filePath);
-    // 找首条 user text（最多读前 ~64KB，足够覆盖首条 prompt）
-    let firstUserText: string | undefined;
-    try {
-      const fd = fs.openSync(filePath, 'r');
-      try {
-        const buf = Buffer.alloc(65536);
-        const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
-        const chunk = buf.subarray(0, bytes).toString('utf-8');
-        for (const line of splitLines(chunk)) {
-          const t = line.trim();
-          if (!t) continue;
-          let obj: any;
-          try {
-            obj = JSON.parse(t);
-          } catch {
-            continue;
-          }
-          if (obj?.type === 'message' && obj.message?.role === 'user') {
-            const c = obj.message.content?.[0];
-            if (c?.type === 'text' && typeof c.text === 'string') {
-              firstUserText = c.text.slice(0, 80);
-              break;
-            }
-          }
-        }
-      } finally {
-        fs.closeSync(fd);
-      }
-    } catch {
-      /* ignore */
-    }
-    out.push({
-      sessionId: header.id,
-      filePath,
-      cwdSlug,
-      cwd: header.cwd || '',
-      createdAt: numTs(header.timestamp),
-      updatedAt: stat.mtimeMs || numTs(header.timestamp),
-      dirtyMark: `${stat.mtimeMs}:${stat.size}`,
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-      firstUserText,
-    });
-  }
-  out.sort((a, b) => b.updatedAt - a.updatedAt);
-  return out;
+  return loadPiSessionItems({ peekUser: true });
 }
 
 /** 按 sessionId 精确取 item（list 走一遍；detail 找不到时回退用） */

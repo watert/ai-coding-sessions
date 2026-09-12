@@ -12,7 +12,7 @@
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` + `.../<sid>/subagents/agent-*.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts`（`Agent` tool → 虚拟 subagent，`parent_id` / `spawn_group_id`）；时序/日志排查见 [workbuddy-internals.md](./workbuddy-internals.md) |
 | `cursor` | Desktop `state.vscdb`（composerHeaders + bubbleId）+ `~/.cursor/projects/*/agent-transcripts` | `cursor-code.ts` + `cursor-source.ts` |
-| `pi` | `~/.pi/agent/sessions/*.jsonl` + **pi-timing extension** 落盘的 custom entry（TTFT/流式时长，T0/1/2） | `pi-code.ts` + `pi-source.ts`（extension: `extensions/pi-timing.ts`，装到 `~/.pi/agent/extensions/pi-timing.ts`） |
+| `pi` | `~/.pi/agent/sessions/*.jsonl` + **pi-timing extension** 落盘的 custom entry（TTFT/流式时长，T0/1/2）；**pi-subagents** 子会话在父 jsonl sidecar：`<stem>/<runId>/run-N/session.jsonl`（`parent_id` / `spawn_group_id`） | `pi-code.ts` + `pi-source.ts`（extension: `extensions/pi-timing.ts`，装到 `~/.pi/agent/extensions/pi-timing.ts`） |
 
 路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
 
@@ -54,7 +54,7 @@
 
 | 主题 | 说明 |
 |------|------|
-| subagent | kimi/opencode/workbuddy 有 `parent_id` + `spawn_group_id`；用 `children` / `list --parent=` |
+| subagent | kimi/opencode/workbuddy/pi 有 `parent_id` + `spawn_group_id`；用 `children` / `list --parent=`。pi 是真实 sidecar jsonl（非虚拟 id），扫 `<stem>/<runId>/run-N/session.jsonl`，不扫 `subagent-artifacts/` |
 | grok usage | 新会话 real；旧 estimate；trace 时间戳可能偏序号化（见 #1 P1） |
 | grok TTFT | **events.jsonl** `loop_started` → `first_token`。updates 里 thought chunk 会被 grok-shell 合成一条，`agentTimestampMs` 是思考结束不是首 token，不能当 ttft |
 | 成本 | 缓存不写 pricing；detail 依赖 `configurePricing` 或源内 cost 字段 |

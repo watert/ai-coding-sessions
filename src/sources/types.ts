@@ -17,6 +17,7 @@ export interface UnifiedSessionInfo {
    * subagent 并发轮次分组键：
    * - OpenCode: 父 session 中 task 工具所在 message_id（同 message 多 task = 一轮并发）
    * - Kimi: Agent/AgentSwarm 的 toolCallId（同 id 多 agent = 一轮并发）
+   * - pi: 同父 sidecar 子会话按 createdAt 间隔 ≤30s 分簇（`parentId:groupStartMs`）
    */
   spawn_group_id?: string;
   slug: string;

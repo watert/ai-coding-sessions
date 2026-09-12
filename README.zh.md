@@ -254,6 +254,7 @@ bun src/store/cli.ts perf --days=30 --limit=8 --source=grok   # 定向检查
 | `codex` | `~/.codex/` state sqlite + rollout JSONL / `.jsonl.zst` | 感知 compact / rollback；`.zst` 可能需 `zstd` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + 项目 JSONL | 虚拟 subagent（主 jsonl `Agent` tool → `projects/.../<sid>/subagents/agent-*.jsonl`） |
+| `pi` | `~/.pi/agent/sessions/*.jsonl` | 真实 usage/cost；pi-subagents sidecar 子会话（`parent_id` / `spawn_group_id`） |
 | `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | 见下方 **Cursor 限制** |
 
 某 source 目录不存在会告警并跳过（其它源仍可用）。
