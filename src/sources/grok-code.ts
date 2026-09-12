@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
 import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
+import type { UserQueueOrigin } from './types';
 
 /** Grok sessions 根：GROK_HOME → ~/.grok/sessions（env 可指 ~/.grok 或 sessions 目录） */
 export function resolveGrokSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -225,6 +226,8 @@ export type GrokMessageItem = {
   parts?: GrokMessagePart[];
   /** context compact 合成消息（对齐 Kimi [Context Compacted]） */
   compaction?: boolean;
+  /** 运行中插入：insert=while working；interrupt=prior_turn_interrupt mid_turn_abort */
+  origin?: UserQueueOrigin;
   /** 合成终态：updates 最后一条 retry_state 已失败 / 重试中途死掉 */
   error?: { name: string; message: string };
   /**
@@ -1173,6 +1176,32 @@ export function attachGrokWallClockTimestamps(
  * 注意：compact 续写摘要 (This session is being continued...) 在上游 merge 阶段已剥离；
  * compaction_requests 保存了 compact 前的完整 chat_history，无需再依赖摘要行。
  */
+const GROK_INSERT_PREFIX = /^The user sent a message while you were working:\s*/i;
+const GROK_INTERRUPT_PREFIX = /^The user interrupted the previous turn:\s*/i;
+const GROK_CONTINUE_SUFFIX = /\s*Make sure to complete any unfinished tasks from previous turns\.?\s*$/i;
+
+/** grok chat_history 显式标记：while-working 前缀 → insert；prior_turn_interrupt / interrupted 前缀 → interrupt */
+export function classifyGrokUserQueueOrigin(raw: {
+  prior_turn_interrupt?: unknown;
+  text: string;
+}): UserQueueOrigin | undefined {
+  if (raw.prior_turn_interrupt === 'mid_turn_abort') return 'interrupt';
+  const t = String(raw.text || '').trim();
+  if (GROK_INTERRUPT_PREFIX.test(t)) return 'interrupt';
+  if (GROK_INSERT_PREFIX.test(t)) return 'insert';
+  return undefined;
+}
+
+/** 列表预览：剥掉 while-working / interrupt 包装，只留 user_query 正文 */
+export function unwrapGrokUserQueryText(text: string): string {
+  let t = String(text || '');
+  t = t.replace(GROK_INSERT_PREFIX, '').replace(GROK_INTERRUPT_PREFIX, '');
+  t = t.replace(GROK_CONTINUE_SUFFIX, '');
+  const m = t.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/);
+  if (m) return m[1].trim();
+  return t.replace(/<\/?user_query>/g, '').trim();
+}
+
 export function isGrokSyntheticUserText(text: string): boolean {
   const t = (text || '').trim();
   if (!t) return true;
@@ -2524,6 +2553,10 @@ export async function listGrokCodeMessages(params: {
       if (isGrokSyntheticUserText(text)) continue;
 
       const uuid = grokStableMessageId(sessionId, lineIndex);
+      const origin = classifyGrokUserQueueOrigin({
+        prior_turn_interrupt: (e as any).prior_turn_interrupt,
+        text,
+      });
       messages.push({
         uuid,
         sessionId,
@@ -2531,6 +2564,7 @@ export async function listGrokCodeMessages(params: {
         timestamp: t,
         text,
         toolCalls: [],
+        ...(origin ? { origin } : {}),
       });
       // compact 续写摘要：若有 compaction_requests 数据已在 merge 阶段剥离；
       // 此处为无 compaction 数据的旧 session 兜底：保留展示但不更新 lastRealUserUuid

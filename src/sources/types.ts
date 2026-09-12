@@ -71,6 +71,12 @@ export interface UnifiedSessionInfo {
   max_context_tokens?: number;
   /** 本 session compact 次数（assistant 摘要 / Kimi [Context Compacted]） */
   compact_count?: number;
+  /** 运行中插入的 user 条数（pi 插在 tool 循环；kimi turn.steer / prompt.steered） */
+  insert_count?: number;
+  /** 排队等本轮结束再送的 user 条数（pi Alt+Enter follow-up） */
+  queued_count?: number;
+  /** 打断当前轮后再说的 user 条数（kimi Esc → interruption injection） */
+  interrupt_count?: number;
   last_message?: any;
   lastTokenInfo?: { input: number; cacheRead: number; output: number; reasoning: number; total: number };
   textParts?: any[];
@@ -155,6 +161,14 @@ export interface UnifiedSessionInfo {
 
   source: 'claude' | 'opencode' | 'kimi' | 'grok' | 'codex' | 'zcode' | 'workbuddy' | 'cursor' | 'pi'; // 数据来源标识
 }
+
+/**
+ * user prompt 运行中插入来源（普通输入不设）
+ * - insert: 不中断当前轮，插进正在跑的 turn（pi tool 循环中插入；kimi Ctrl-S / turn.steer）
+ * - queued: 排队，等本轮结束后再送（pi Alt+Enter）
+ * - interrupt: 先打断当前轮再发（kimi Esc → interruption）
+ */
+export type UserQueueOrigin = 'insert' | 'queued' | 'interrupt';
 
 /**
  * 统一的 Message 信息 (基于 OpenCode 协议)

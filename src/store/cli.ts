@@ -592,6 +592,9 @@ function compactSession(s: UnifiedSessionInfo) {
     usage_source: s.usage_source ?? null,
     usage_is_incomplete: s.usage_is_incomplete ?? null,
     cost_is_partial: s.cost_is_partial ?? null,
+    insert_count: s.insert_count ?? null,
+    queued_count: s.queued_count ?? null,
+    interrupt_count: s.interrupt_count ?? null,
     pricing_usd: s.pricing?.usd ?? null,
     pricing_cny: s.pricing?.cny ?? null,
   };

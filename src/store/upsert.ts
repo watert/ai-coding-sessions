@@ -126,10 +126,10 @@ export function upsertSession(
     // prompts 全量重写
     db.prepare('DELETE FROM prompts WHERE source = ? AND session_id = ?').run(source, session_id);
     const insPrompt = db.prepare(
-      `INSERT INTO prompts (source, session_id, idx, created_at, text) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO prompts (source, session_id, idx, created_at, text, origin) VALUES (?, ?, ?, ?, ?, ?)`,
     );
     for (const p of prompts) {
-      insPrompt.run(source, session_id, p.idx, p.created_at, p.text);
+      insPrompt.run(source, session_id, p.idx, p.created_at, p.text, p.origin ?? null);
     }
 
     // usage_by_day 全量重写

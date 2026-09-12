@@ -203,7 +203,7 @@ export function getSessionPrompts(
   const db = getStoreDb();
   return db
     .prepare(
-      `SELECT idx, created_at, text FROM prompts
+      `SELECT idx, created_at, text, origin FROM prompts
        WHERE source = ? AND session_id = ?
        ORDER BY idx ASC`,
     )

@@ -113,6 +113,18 @@ describe('fingerprint', () => {
     ]);
   });
 
+  test('extractPrompts keeps insert origin', () => {
+    const s = makeSession({
+      id: 'b-insert',
+      userParts: [
+        { role: 'user', text: 'hello', tool: '', duration: 0, startTime: 1, endTime: 1 },
+        { role: 'user', text: '插入', tool: '', duration: 0, startTime: 2, endTime: 2, origin: 'insert' },
+      ] as any,
+    });
+    const p = extractPrompts(s);
+    expect(p[1]).toMatchObject({ idx: 1, text: '插入', origin: 'insert' });
+  });
+
   test('contentFingerprint stable then changes on title', () => {
     const s1 = makeSession({ id: 'c', title: 'one' });
     const s2 = makeSession({ id: 'c', title: 'one' });
@@ -180,6 +192,23 @@ describe('upsert + query', () => {
     const rows = getSessionPrompts('claude', 'sess-1');
     expect(rows.length).toBe(1);
     expect(rows[0].text).toBe('hello world');
+  });
+
+  test('prompts.origin 落盘', () => {
+    upsertSession(makeSession({
+      id: 'insert-sess',
+      source: 'pi',
+      insert_count: 1,
+      userParts: [
+        { role: 'user', text: '先做 A', tool: '', duration: 0, startTime: 1, endTime: 1 },
+        { role: 'user', text: '哦先改 AGENTS', tool: '', duration: 0, startTime: 2, endTime: 2, origin: 'insert' },
+      ] as any,
+    }));
+    const rows = getSessionPrompts('pi', 'insert-sess');
+    expect(rows.map((r) => r.origin)).toEqual([null, 'insert']);
+    const cached = queryCached({ source: 'pi' });
+    const found = cached.sessions.find((x) => x.id === 'insert-sess');
+    expect(found?.insert_count).toBe(1);
   });
 
   test('usage_by_day has usage_by_model', () => {

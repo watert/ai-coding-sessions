@@ -19,6 +19,7 @@ import {
   convertPiEventsToMessages,
   getPiSessionDetail,
   derivePiTitle,
+  classifyPiUserQueueOrigin,
 } from './pi-source';
 import { writeJsonl, mkFixtureDir } from './__fixtures__/tmp';
 
@@ -269,6 +270,45 @@ describe('convertPiEventsToMessages', () => {
     const a1 = messages[1];
     const tool = a1.parts.find((p: any) => p.type === 'tool') as any;
     expect(tool.state.status).toBe('error');
+  });
+});
+
+describe('classifyPiUserQueueOrigin', () => {
+  test('toolResult / toolUse → insert；Task: 跳过', () => {
+    expect(classifyPiUserQueueOrigin({
+      text: '先改 AGENTS.md',
+      lastNonUserRole: 'toolResult',
+      lastAssistantFinish: 'toolUse',
+    })).toBe('insert');
+    expect(classifyPiUserQueueOrigin({
+      text: 'go',
+      lastNonUserRole: 'assistant',
+      lastAssistantFinish: 'toolUse',
+    })).toBe('insert');
+    expect(classifyPiUserQueueOrigin({
+      text: 'Task: You are a delegated subagent',
+      lastNonUserRole: 'toolResult',
+      lastAssistantFinish: 'toolUse',
+    })).toBeUndefined();
+  });
+
+  test('提交时刻落在上一轮 assistant 窗口 → queued', () => {
+    expect(classifyPiUserQueueOrigin({
+      text: '做完再总结',
+      lastNonUserRole: 'assistant',
+      lastAssistantFinish: 'stop',
+      submittedAt: T0 + 3000,
+      lastAssistantCreated: T0 + 1000,
+      lastAssistantCompleted: T0 + 5000,
+    })).toBe('queued');
+    expect(classifyPiUserQueueOrigin({
+      text: '下一轮',
+      lastNonUserRole: 'assistant',
+      lastAssistantFinish: 'stop',
+      submittedAt: T0 + 6000,
+      lastAssistantCreated: T0 + 1000,
+      lastAssistantCompleted: T0 + 5000,
+    })).toBeUndefined();
   });
 });
 
@@ -694,6 +734,63 @@ describe('pi compaction', () => {
     const r = convertPiEventsToMessages('s', [cpRow({ fromHook: true })] as any);
     const cp = r.messages.find((m: any) => m.info?.compaction) as any;
     expect(cp.parts[0].text).toContain('hook');
+  });
+});
+
+describe('pi insert / queued', () => {
+  test('tool 循环中插入的 user → insert_count + userParts.origin', () => {
+    const tmp = mkFixtureDir('acs-pi-steer-');
+    const fx = writePiSample(tmp, {
+      sessionId: 'pi-steer',
+      rows: [
+        { type: 'session', version: 3, id: 'pi-steer', timestamp: new Date(T0).toISOString(), cwd: '/tmp/p' },
+        {
+          type: 'message', id: 'u1', parentId: null, timestamp: new Date(T0 + 100).toISOString(),
+          message: { role: 'user', content: [{ type: 'text', text: '先做 A' }], timestamp: T0 + 100 },
+        },
+        {
+          type: 'message', id: 'a1', parentId: 'u1', timestamp: new Date(T0 + 1000).toISOString(),
+          message: {
+            role: 'assistant',
+            content: [{ type: 'toolCall', id: 'tc1', name: 'read', arguments: { path: '/tmp/p/a.md' } }],
+            provider: 'opencode-go', model: 'kimi-k2.6',
+            usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 15 },
+            stopReason: 'toolUse', timestamp: T0 + 800,
+          },
+        },
+        {
+          type: 'message', id: 'tr1', parentId: 'a1', timestamp: new Date(T0 + 1100).toISOString(),
+          message: { role: 'toolResult', toolCallId: 'tc1', toolName: 'read', content: [{ type: 'text', text: 'ok' }], isError: false },
+        },
+        {
+          type: 'message', id: 'u2', parentId: 'tr1', timestamp: new Date(T0 + 1200).toISOString(),
+          message: { role: 'user', content: [{ type: 'text', text: '哦，AGENTS.md 的不对齐先修改' }], timestamp: T0 + 900 },
+        },
+        {
+          type: 'message', id: 'a2', parentId: 'u2', timestamp: new Date(T0 + 2000).toISOString(),
+          message: {
+            role: 'assistant', content: [{ type: 'text', text: 'done' }],
+            provider: 'opencode-go', model: 'kimi-k2.6',
+            usage: { input: 20, output: 8, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 28 },
+            stopReason: 'stop', timestamp: T0 + 1800,
+          },
+        },
+      ],
+    });
+    withEnv({ PI_SESSIONS_DIR: fx.root }, async () => {
+      const events = readPiSessionEvents(fx.jsonlPath);
+      const { messages } = convertPiEventsToMessages(fx.sessionId, events);
+      const users = messages.filter((m) => m.info.role === 'user');
+      expect(users).toHaveLength(2);
+      expect((users[0].info as any).user_origin).toBeUndefined();
+      expect((users[1].info as any).user_origin).toBe('insert');
+
+      const list = await listPiCodeSessions();
+      const info = await convertPiSession(list[0]);
+      expect(info.insert_count).toBe(1);
+      expect(info.queued_count).toBeUndefined();
+      expect((info.userParts || []).map((p: any) => p.origin)).toEqual([undefined, 'insert']);
+    });
   });
 });
 

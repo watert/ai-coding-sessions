@@ -22,7 +22,7 @@ import {
 } from './kimi-code';
 import { checkSessionStatus } from './opencode';
 import { calculateSessionPricingFromUnifiedMessages, type SessionPricing } from '../pricing';
-import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from './types';
+import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage, UserQueueOrigin } from './types';
 import type { BashSignals } from '../core';
 import { classifyBashCommands, extractBashCommands, EMPTY_BASH_SIGNALS } from './bash-signals';
 import { inferDeliverableSignals } from './deliverable-signals';
@@ -162,7 +162,8 @@ function convertKimiMessage(
     ...(msg.retryCount ? {
       retry: { count: msg.retryCount, waitMs: msg.retryWaitMs || 0, ...(msg.rateLimit429 ? { rateLimit: true } : {}) },
     } : {}),
-  };
+    ...(msg.origin ? { user_origin: msg.origin } : {}),
+  } as UnifiedMessage['info'];
 
   if (msg.model) {
     const modelParts = msg.model.split('/');
@@ -371,6 +372,7 @@ interface KimiTextPart {
   duration: number;
   startTime: number;
   endTime: number;
+  origin?: UserQueueOrigin;
 }
 
 async function getKimiSessionStats(
@@ -410,6 +412,9 @@ async function getKimiSessionStats(
     rate_limit_wait_ms?: number;
     time_compacting?: number;
     compact_count?: number;
+    insert_count?: number;
+    queued_count?: number;
+    interrupt_count?: number;
   };
   messages: KimiMessageItem[];
   unifiedMessages: UnifiedMessage[];
@@ -474,6 +479,7 @@ async function getKimiSessionStats(
           duration: msg.streamDurationMs || 0,
           startTime: msg.timestamp,
           endTime: msg.timestamp + (msg.streamDurationMs || 0),
+          ...(msg.role === 'user' && msg.origin ? { origin: msg.origin } : {}),
         });
       }
 
@@ -546,6 +552,9 @@ async function getKimiSessionStats(
         ...timingSummary,
         time_compacting,
         compact_count,
+        insert_count: userParts.filter((p) => p.origin === 'insert').length || undefined,
+        queued_count: userParts.filter((p) => p.origin === 'queued').length || undefined,
+        interrupt_count: userParts.filter((p) => p.origin === 'interrupt').length || undefined,
       },
       messages,
       unifiedMessages,
@@ -655,6 +664,9 @@ export async function convertKimiSubagentSession(
     time_updated,
     time_compacting: stats.time_compacting,
     compact_count: stats.compact_count,
+    insert_count: stats.insert_count,
+    queued_count: stats.queued_count,
+    interrupt_count: stats.interrupt_count,
     time_archived: undefined,
     workspace_id: undefined,
     project_name: undefined,
@@ -744,6 +756,9 @@ export async function convertKimiSession(
     time_updated,
     time_compacting: stats.time_compacting,
     compact_count: stats.compact_count,
+    insert_count: stats.insert_count,
+    queued_count: stats.queued_count,
+    interrupt_count: stats.interrupt_count,
     time_archived: undefined,
     workspace_id: undefined,
     project_name: undefined,

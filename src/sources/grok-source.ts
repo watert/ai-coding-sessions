@@ -23,6 +23,7 @@ import {
   deriveGrokCompactionStats,
   isGrokCompactionText,
   isGrokContinuationSummary,
+  unwrapGrokUserQueryText,
   type GrokSessionItem,
   type GrokMessageItem,
   type GrokSessionUsageSummary,
@@ -39,7 +40,7 @@ import {
 import { getUsdToCnyRate } from '../pricing';
 import type { TokenTrendPoint } from '../core';
 import { groupMessagesByUser } from '../core';
-import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from './types';
+import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage, UserQueueOrigin } from './types';
 import { inferDeliverableSignals } from './deliverable-signals';
 import { classifyBashCommands, extractBashCommands } from './bash-signals';
 import { maxContextFromUnifiedMessages, sanitizeUserTextParts, buildLastTokenInfo } from './utils';
@@ -198,6 +199,7 @@ function convertGrokMessage(msg: GrokMessageItem, sessionId: string): UnifiedMes
     parentID: msg.parentID,
     modelID: msg.model,
     providerID: 'xai',
+    ...(msg.origin ? { user_origin: msg.origin } : {}),
     ...(finish ? { finish } : {}),
     ...(isCompaction ? { compaction: true } : {}),
     ...(msg.timeSource ? { timeSource: msg.timeSource } : {}),
@@ -323,7 +325,7 @@ function buildGrokListExtras(
   messages: GrokMessageItem[],
   sessionId: string,
 ): {
-  userParts: Array<{ role: string; text: string; tool: string; duration: number; startTime: number; endTime: number }>;
+  userParts: Array<{ role: string; text: string; tool: string; duration: number; startTime: number; endTime: number; origin?: UserQueueOrigin }>;
   totalUserTurns: number;
   avgMsgsPerUserMsg: number;
   textParts: Array<{ role: string; text: string; tool: string; duration: number; startTime: number; endTime: number }>;
@@ -336,11 +338,12 @@ function buildGrokListExtras(
   );
   let userParts = realUserMsgs.map((m) => ({
     role: 'user' as const,
-    text: m.text.replace(/<\/?user_query>/g, '').trim() || m.text.slice(0, 200),
+    text: unwrapGrokUserQueryText(m.text) || m.text.slice(0, 200),
     tool: '',
     duration: 0,
     startTime: m.timestamp,
     endTime: m.timestamp,
+    ...(m.origin ? { origin: m.origin } : {}),
   }));
   userParts = sanitizeUserTextParts(userParts);
   userParts = userParts.filter((r, i) => (i > 0 ? userParts[i - 1].text !== r.text : true));
@@ -708,6 +711,9 @@ function grokSessionInfoWithMessages(
     last_message: lastUnified?.info,
     lastTokenInfo: buildLastTokenInfo(unifiedMessages),
     userParts: listExtras.userParts.length ? listExtras.userParts : undefined,
+    insert_count: listExtras.userParts.filter((p) => p.origin === 'insert').length || undefined,
+    queued_count: listExtras.userParts.filter((p) => p.origin === 'queued').length || undefined,
+    interrupt_count: listExtras.userParts.filter((p) => p.origin === 'interrupt').length || undefined,
     textParts: listExtras.textParts.length ? listExtras.textParts : undefined,
     avg_msgs_per_user_msg: listExtras.avgMsgsPerUserMsg > 0 ? listExtras.avgMsgsPerUserMsg : undefined,
     project_worktree: session.workDir,

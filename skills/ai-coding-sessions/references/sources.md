@@ -6,13 +6,13 @@
 |--------|------------------|----------|
 | `opencode` | OpenCode SQLite（`opencode db path`） | `opencode.ts` + 统一层 |
 | `claude` | `~/.claude/` history + project JSONL | `claude-code.ts` + `claude-main-chain.ts` + `claude-source.ts` |
-| `kimi` | `~/.kimi-code/` index + wire.jsonl | `kimi-code.ts` + `kimi-source.ts`（含 subagent 虚拟 session） |
-| `grok` | `~/.grok/sessions/` | `grok-code.ts` + `grok-source.ts`（真实 usage；cost 优先 costUsdTicks；旧 → `usage_source=estimate`） |
+| `kimi` | `~/.kimi-code/` index + wire.jsonl | `kimi-code.ts` + `kimi-source.ts`（含 subagent 虚拟 session）。`prompt.steered` / `turn.steer(origin=user)` → `insert`；`turn.cancel` + `injection.variant=interruption` → `interrupt` |
+| `grok` | `~/.grok/sessions/` | `grok-code.ts` + `grok-source.ts`（真实 usage；cost 优先 costUsdTicks；旧 → `usage_source=estimate`）。while-working 前缀 → `insert`；`prior_turn_interrupt=mid_turn_abort` → `interrupt` |
 | `codex` | `~/.codex/` state sqlite + rollout JSONL/`.jsonl.zst` | `codex-code.ts` + `codex-source.ts` |
 | `zcode` | `~/.zcode/cli/db/db.sqlite` | `zcode-code.ts` + `zcode-source.ts` |
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` + `.../<sid>/subagents/agent-*.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts`（`Agent` tool → 虚拟 subagent，`parent_id` / `spawn_group_id`）；时序/日志排查见 [workbuddy-internals.md](./workbuddy-internals.md) |
 | `cursor` | Desktop `state.vscdb`（composerHeaders + bubbleId）+ `~/.cursor/projects/*/agent-transcripts` | `cursor-code.ts` + `cursor-source.ts` |
-| `pi` | `~/.pi/agent/sessions/*.jsonl` + **pi-timing extension** 落盘的 custom entry（TTFT/流式时长，T0/1/2）；**pi-subagents** 子会话在父 jsonl sidecar：`<stem>/<runId>/run-N/session.jsonl`（`parent_id` / `spawn_group_id`） | `pi-code.ts` + `pi-source.ts`（extension: `extensions/pi-timing.ts`，装到 `~/.pi/agent/extensions/pi-timing.ts`） |
+| `pi` | `~/.pi/agent/sessions/*.jsonl` + **pi-timing extension** 落盘的 custom entry（TTFT/流式时长，T0/1/2）；**pi-subagents** 子会话在父 jsonl sidecar：`<stem>/<runId>/run-N/session.jsonl`（`parent_id` / `spawn_group_id`）。`<stem>/forks/*.jsonl` 是拷贝父 transcript 的 worker 副本：仍作 child 列出，但 convert **剥 inherited 事件**（否则父 usage 被每个 fork 再计一遍） | `pi-code.ts` + `pi-source.ts`（extension: `extensions/pi-timing.ts`，装到 `~/.pi/agent/extensions/pi-timing.ts`）。运行中插入无显式 flag：tool 循环中 → `insert`，提交时刻落在上一轮窗口 → `queued` |
 
 路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
 
@@ -54,7 +54,7 @@
 
 | 主题 | 说明 |
 |------|------|
-| subagent | kimi/opencode/workbuddy/pi 有 `parent_id` + `spawn_group_id`；用 `children` / `list --parent=`。pi 是真实 sidecar jsonl（非虚拟 id），扫 `<stem>/<runId>/run-N/session.jsonl`，不扫 `subagent-artifacts/` |
+| subagent | kimi/opencode/workbuddy/pi 有 `parent_id` + `spawn_group_id`；用 `children` / `list --parent=`。pi 是真实 sidecar jsonl（非虚拟 id），扫 `<stem>/<runId>/run-N/session.jsonl`，不扫 `subagent-artifacts/`。`forks/*.jsonl` 当 child，但剥与父同 id 的 inherited 消息（tokens/title/prompts 只计 Task 之后）；改完需 `sync --source=pi --full` |
 | grok usage | 新会话 real；旧 estimate；trace 时间戳可能偏序号化（见 #1 P1） |
 | grok TTFT | **events.jsonl** `loop_started` → `first_token`。updates 里 thought chunk 会被 grok-shell 合成一条，`agentTimestampMs` 是思考结束不是首 token，不能当 ttft |
 | 成本 | 缓存不写 pricing；detail 依赖 `configurePricing` 或源内 cost 字段 |

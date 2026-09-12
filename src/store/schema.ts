@@ -4,7 +4,7 @@
  * - detail/messages 不缓存；prompts 完整落库；tool_calls / skill_reads 按 session 物化（tool-calls --build / skill-reads --build 按需构建）
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** sessions / prompts / usage_by_day / schema_meta */
 export const SCHEMA_SQL = `
@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS prompts (
   idx INTEGER NOT NULL,
   created_at INTEGER,
   text TEXT NOT NULL,
+  origin TEXT,
   PRIMARY KEY (source, session_id, idx)
 );
 
@@ -149,6 +150,8 @@ export interface SessionPromptRow {
   text: string;
   /** 截断预览标记（prompts 默认截断, --truncate-chars=0 关闭） */
   truncated?: boolean;
+  /** 运行中插入：insert / queued / interrupt；普通输入缺省 */
+  origin?: 'insert' | 'queued' | 'interrupt' | null;
 }
 
 export interface CachedSessionRow {

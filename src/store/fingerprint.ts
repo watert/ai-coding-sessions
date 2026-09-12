@@ -88,6 +88,9 @@ export function contentFingerprint(session: UnifiedSessionInfo): string {
     session.total_messages || 0,
     session.total_user_messages || 0,
     session.total_tool_calls || 0,
+    session.insert_count || 0,
+    session.queued_count || 0,
+    session.interrupt_count || 0,
     session.usage_is_incomplete ? 1 : 0,
     session.parent_id || '',
     session.total_credits || 0,
@@ -116,9 +119,9 @@ function promptSketch(session: UnifiedSessionInfo): string {
 /** 从 userParts 提取完整 prompts */
 export function extractPrompts(
   session: UnifiedSessionInfo,
-): Array<{ idx: number; created_at: number | null; text: string }> {
+): Array<{ idx: number; created_at: number | null; text: string; origin?: 'insert' | 'queued' | 'interrupt' }> {
   const parts = session.userParts || [];
-  const out: Array<{ idx: number; created_at: number | null; text: string }> = [];
+  const out: Array<{ idx: number; created_at: number | null; text: string; origin?: 'insert' | 'queued' | 'interrupt' }> = [];
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i] as any;
     const text = String(p?.text ?? '');
@@ -129,7 +132,10 @@ export function extractPrompts(
         : typeof p.endTime === 'number' && Number.isFinite(p.endTime)
           ? p.endTime
           : null;
-    out.push({ idx: out.length, created_at: created, text });
+    const origin = p?.origin === 'insert' || p?.origin === 'queued' || p?.origin === 'interrupt'
+      ? p.origin as 'insert' | 'queued' | 'interrupt'
+      : undefined;
+    out.push({ idx: out.length, created_at: created, text, ...(origin ? { origin } : {}) });
   }
   return out;
 }

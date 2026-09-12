@@ -209,6 +209,7 @@ const TextPartSchema = z.object({
   duration: z.number(), // 持续时间 (毫秒)
   startTime: z.number(), // 开始时间戳 (毫秒)
   endTime: z.number(), // 结束时间戳 (毫秒)
+  origin: z.enum(['insert', 'queued', 'interrupt']).optional(), // 运行中插入 / 排队 / 打断
 });
 
 const SessionListItemSchema = z.object({
@@ -242,6 +243,12 @@ const SessionListItemSchema = z.object({
   compact_count: z.number().optional(),
   /** 最近一次 compact 时间 ms */
   time_compacting: z.number().optional().nullable(),
+  /** 运行中插入的 user 条数 */
+  insert_count: z.number().optional(),
+  /** 排队等本轮结束再送 */
+  queued_count: z.number().optional(),
+  /** 打断当前轮后再说 */
+  interrupt_count: z.number().optional(),
   last_message: z.any().optional(), // 最后一条消息的完整数据
   textParts: z.array(TextPartSchema).optional(), // 所有文本parts
   userParts: z.array(TextPartSchema).optional(), // 用户文本parts (去重后)

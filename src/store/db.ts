@@ -81,6 +81,14 @@ function migrateIfNeeded(db: any): void {
 
   // v4 → v5：skill_reads 物化表（SCHEMA_SQL 先行且 IF NOT EXISTS 已覆盖，此处仅记版本）
 
+  // v5 → v6：prompts.origin（insert / queued / interrupt）；以列存在性为准
+  {
+    const cols = tableColumns(db, 'prompts');
+    if (!cols.has('origin')) {
+      db.exec('ALTER TABLE prompts ADD COLUMN origin TEXT');
+    }
+  }
+
   if (cur >= SCHEMA_VERSION) return;
 
   db.prepare(

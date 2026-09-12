@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { readJsonlCachedAsync, splitLines } from '../lib/jsonl-cache';
 import { resolveDataRoot, resolveHomeDir } from '../lib/home-paths';
 import { classifySoftToolError } from './tool-error-soft';
+import type { UserQueueOrigin } from './types';
 
 /**
  * Kimi 数据根：KIMI_DATA_DIR → 优先存在的 ~/.kimi-code / ~/.kimi（对齐 ccusage）
@@ -185,7 +186,42 @@ export type KimiMessageItem = {
   rateLimit429?: boolean;
   cwd?: string;
   parentID?: string;
+  /** 运行中插入：insert=turn.steer；interrupt=Esc 打断后重说 */
+  origin?: UserQueueOrigin;
 };
+
+function isKimiRealUserAppend(ev: any): boolean {
+  return ev?.type === 'context.append_message'
+    && ev.message?.role === 'user'
+    && ev.message?.origin?.kind === 'user';
+}
+
+/**
+ * 从 user append 之前的事件推断插话/打断。
+ * kimi 源有显式事件：prompt.steered / turn.steer(user) → insert；
+ * turn.cancel(user_cancelled) / injection.interruption → interrupt。
+ */
+export function classifyKimiUserQueueOrigin(events: any[], userIndex: number): UserQueueOrigin | undefined {
+  let insert = false;
+  let interrupt = false;
+  for (let i = userIndex - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (!ev || typeof ev !== 'object') continue;
+    if (isKimiRealUserAppend(ev)) break;
+    const t = ev.type;
+    const origin = ev.message?.origin || ev.origin;
+    if (t === 'context.append_message' && origin?.kind === 'injection' && origin?.variant === 'interruption') {
+      interrupt = true;
+      break;
+    }
+    if (t === 'turn.cancel' && ev.reason === 'user_cancelled') interrupt = true;
+    // turn.steer 写在 user append 之后，回看会误标下一条；只认 prompt.steered
+    if (t === 'prompt.steered') insert = true;
+  }
+  if (interrupt) return 'interrupt';
+  if (insert) return 'insert';
+  return undefined;
+}
 
 // ==================== Session 列表 ====================
 
@@ -912,13 +948,15 @@ export async function listKimiCodeMessages(params: {
   const isSubagentWire = agentKey !== 'main';
 
   // 从 context.append_message / turn.prompt 中提取用户消息
-  for (const event of events) {
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i];
     if (event.type === 'context.append_message') {
       const msg = (event as any).message;
       const okUser = msg?.role === 'user' && (
         msg?.origin?.kind === 'user' || (isSubagentWire && msg?.origin?.kind === 'system_trigger')
       );
       if (okUser) {
+        const origin = msg?.origin?.kind === 'user' ? classifyKimiUserQueueOrigin(events, i) : undefined;
         messages.push({
           // 稳定 uuid：轮询重拉 detail 时保持一致，避免前端消息 id 漂移
           uuid: `kimi-user-${(event as any).time || 'append'}`,
@@ -929,6 +967,7 @@ export async function listKimiCodeMessages(params: {
           thinking: undefined,
           toolCalls: [],
           cwd: undefined,
+          ...(origin ? { origin } : {}),
         });
       }
     }

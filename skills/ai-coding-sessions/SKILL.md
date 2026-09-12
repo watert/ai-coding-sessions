@@ -100,7 +100,8 @@ bun packages/ai-coding-sessions/src/store/cli.ts list --source=kimi --days=1 --l
 
 ## 数据模型要点
 
-- 列表：`id`, `title`, `source`, `parent_id`, `spawn_group_id`, `total_*`, `avg_tps`, `avg_latency_ms`, `session_status`, `usage_by_model`, `usage_by_day`, `editDiffs`, `usage_source`, `usage_is_incomplete`, `cost_is_partial` …
+- 列表：`id`, `title`, `source`, `parent_id`, `spawn_group_id`, `total_*`, `avg_tps`, `avg_latency_ms`, `session_status`, `usage_by_model`, `usage_by_day`, `editDiffs`, `usage_source`, `usage_is_incomplete`, `cost_is_partial`, `insert_count`, `queued_count`, `interrupt_count` …
+- 运行中插入（`userParts.origin` / `prompts.origin`）：`insert` 不打断当前轮插话 · `queued` 等本轮结束再送 · `interrupt` 先打断再重说。pi 无显式 flag（tool 循环推断 insert）；kimi 用 `prompt.steered` / `injection.interruption`；grok 用 while-working 前缀 / `prior_turn_interrupt=mid_turn_abort`
 - `parent_id`：fork/subagent 父会话；`spawn_group_id`：同轮并发 subagent 组
 - 状态：`in-progress` | `done` | `error` | `aborted` | `unknown`
 - 详情 live：`info` + `messages` + `editDiffs` + 可选 `pricing`

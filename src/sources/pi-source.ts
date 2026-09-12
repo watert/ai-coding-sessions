@@ -16,6 +16,7 @@
  * - assistant.content[toolCall] → tool part（state.input, 状态暂记 completed，output 由后续 toolResult 补回）
  * - toolResult.message.content[text] → 注入对应 toolCallId 的 state.output
  * - last assistant stopReason → session_status（stop/done / toolUse/in-progress / aborted / error）
+ * - user 排队来源：源 jsonl 无 flag；parent=toolResult / stop=toolUse → insert，提交时刻落在上一轮窗口 → queued
  *
  * 分支: v1 线性全收（不剪 message parentId 树）
  * 弱标题: 首条 user text 截断；isWeakTitle 不认截断 prompt（issue 开放问题 2，v1 接受）
@@ -35,7 +36,7 @@ import {
 } from './pi-code';
 import { checkSessionStatus } from './opencode';
 import { calculateSessionPricingFromUnifiedMessages, type SessionPricing } from '../pricing';
-import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage } from './types';
+import type { UnifiedSessionInfo, UnifiedSessionDetail, UnifiedMessage, UserQueueOrigin } from './types';
 import type { BashSignals } from '../core';
 import { classifyBashCommands, extractBashCommands, EMPTY_BASH_SIGNALS } from './bash-signals';
 import { inferDeliverableSignals } from './deliverable-signals';
@@ -125,6 +126,40 @@ function mapPiStatus(
   return checkSessionStatus(messages);
 }
 
+/** 工具循环未收束：assistant stop=toolUse，或上一条是 toolResult */
+function isPiToolLoopFinish(finish?: string | null): boolean {
+  const r = String(finish || '').toLowerCase();
+  return r === 'tooluse' || r === 'tool_use' || r === 'tool_calls';
+}
+
+/**
+ * 推断 user prompt 是否为运行中插入（源 jsonl 无显式 flag）。
+ *
+ * - insert: 插在 tool 循环中间（Enter while streaming）
+ * - queued: 提交时刻落在上一轮已完成 assistant 的 [created, completed)（Alt+Enter）
+ * - 普通输入 / 子会话 `Task:` 系统注入 → undefined
+ */
+export function classifyPiUserQueueOrigin(opts: {
+  text?: string;
+  lastNonUserRole?: 'assistant' | 'toolResult' | 'user' | null;
+  lastAssistantFinish?: string | null;
+  submittedAt?: number | null;
+  lastAssistantCreated?: number | null;
+  lastAssistantCompleted?: number | null;
+}): UserQueueOrigin | undefined {
+  const text = String(opts.text || '').trim();
+  if (/^Task:\s*/i.test(text)) return undefined;
+  const finish = opts.lastAssistantFinish;
+  if (opts.lastNonUserRole === 'toolResult' || isPiToolLoopFinish(finish)) return 'insert';
+  const r = String(finish || '').toLowerCase();
+  const completed = r === 'stop' || r === 'end_turn' || r === 'eos';
+  const submitted = opts.submittedAt || 0;
+  const created = opts.lastAssistantCreated || 0;
+  const done = opts.lastAssistantCompleted || 0;
+  if (completed && submitted > created && submitted < done) return 'queued';
+  return undefined;
+}
+
 // ==================== events → unified messages ====================
 
 type PendingTool = { messageIndex: number; partIndex: number };
@@ -171,6 +206,11 @@ export function convertPiEventsToMessages(
   const pendingTiming: PiTimingData[] = [];
   let lastUserId: string | undefined;
   let lastStopReason: string | undefined;
+  // 推断 insert / queued：跟踪上一条非 user 角色与最近 assistant 窗口
+  let lastNonUserRole: 'assistant' | 'toolResult' | 'user' | null = null;
+  let lastAssistantFinish: string | undefined;
+  let lastAssistantCreated = 0;
+  let lastAssistantCompleted = 0;
 
   let partCounter = 0;
   const newPartId = (msgId: string, prefix: string) => `${msgId}-${prefix}${partCounter++}`;
@@ -259,6 +299,14 @@ export function convertPiEventsToMessages(
           messageID: envId,
         });
       }
+      const origin = classifyPiUserQueueOrigin({
+        text,
+        lastNonUserRole,
+        lastAssistantFinish,
+        submittedAt: msgMs || created,
+        lastAssistantCreated,
+        lastAssistantCompleted,
+      });
       out.push({
         info: {
           id: envId,
@@ -266,10 +314,12 @@ export function convertPiEventsToMessages(
           role: 'user',
           time: { created },
           path: { cwd: fallbackCwd, root: '' },
+          ...(origin ? { user_origin: origin } : {}),
         } as any,
         parts,
       });
       lastUserId = envId;
+      lastNonUserRole = 'user';
       continue;
     }
 
@@ -292,6 +342,7 @@ export function convertPiEventsToMessages(
           }
         }
       }
+      lastNonUserRole = 'toolResult';
       // 没有匹配的 toolCall：丢弃（v1 不重建孤儿 tool）
       continue;
     }
@@ -419,6 +470,10 @@ export function convertPiEventsToMessages(
       }
 
       out.push({ info: messageInfo, parts });
+      lastNonUserRole = 'assistant';
+      lastAssistantFinish = m.stopReason;
+      lastAssistantCreated = created;
+      lastAssistantCompleted = completed;
       continue;
     }
   }
@@ -548,6 +603,8 @@ async function getPiSessionStats(
     usage_is_incomplete?: boolean;
     compact_count?: number;
     time_compacting?: number;
+    insert_count?: number;
+    queued_count?: number;
     usage_by_model?: Array<{
       provider: string;
       model: string;
@@ -696,6 +753,7 @@ async function getPiSessionStats(
           endTime: created,
         });
         if (role === 'user') {
+          const origin = (um.info as any).user_origin as UserQueueOrigin | undefined;
           userTextParts.push({
             role,
             text: texts.join('\n'),
@@ -703,6 +761,7 @@ async function getPiSessionStats(
             duration: 0,
             startTime: created,
             endTime: created,
+            ...(origin ? { origin } : {}),
           });
         }
       }
@@ -795,6 +854,8 @@ async function getPiSessionStats(
     const last_message = lastWithTokens?.info
       || [...messages].reverse().find((m) => m.info.role === 'assistant')?.info;
     const last_message_tokens = lastWithTokens?.info.tokens?.total;
+    const insert_count = userParts.filter((p) => (p as any).origin === 'insert').length;
+    const queued_count = userParts.filter((p) => (p as any).origin === 'queued').length;
 
     return {
       stats: {
@@ -804,6 +865,8 @@ async function getPiSessionStats(
         last_message_tokens,
         textParts: textParts.length ? textParts : undefined,
         userParts: userParts.length ? userParts : undefined,
+        insert_count: insert_count || undefined,
+        queued_count: queued_count || undefined,
         ...timingSummary,
       },
       unifiedMessages: messages,
@@ -949,6 +1012,8 @@ export async function convertPiSession(
     session_status,
     compact_count: stats.compact_count || undefined,
     time_compacting: stats.time_compacting ?? null,
+    insert_count: stats.insert_count || undefined,
+    queued_count: stats.queued_count || undefined,
     last_message_tokens: stats.last_message_tokens,
     max_context_tokens: stats.max_context_tokens,
     last_message: stats.last_message,
