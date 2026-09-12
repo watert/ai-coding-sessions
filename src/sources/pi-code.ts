@@ -12,6 +12,10 @@
  *   parent_id = 最近一层 sidecar 对应的 jsonl header.id
  *   spawn_group_id = 同父下 createdAt 间隔 ≤30s 的并发簇
  *   不扫 cwd-slug/subagent-artifacts/（transcript 格式不同）
+ *
+ * forks/*.jsonl（pi 原生 fork / mission worker）:
+ *   整份拷贝父 transcript 再追加 Task；inherited 事件从 convert 里剥掉，
+ *   否则父 usage 会被每个 fork 再计一遍（本机实测 13 fork × ~40M ≈ 540M 虚高）
  */
 
 import fs from 'fs';
@@ -165,6 +169,8 @@ export type PiSessionItem = {
   size: number;
   /** pi-subagents sidecar 子会话的父 session id */
   parentId?: string;
+  /** 父 jsonl 路径（fork 剥 inherited 事件用） */
+  parentFilePath?: string;
   /** 同父并发簇（createdAt 间隔 ≤30s） */
   spawnGroupId?: string;
 };
@@ -239,6 +245,53 @@ function inferParentJsonl(childFile: string, projectDir: string): string | undef
     dir = parent;
   }
   return undefined;
+}
+
+/** `<stem>/forks/<ISO>_<id>.jsonl`：pi 把父会话拷进 worker 的工作副本 */
+export function isPiForkSessionPath(filePath: string): boolean {
+  return /(^|[\\/])forks[\\/]/.test(filePath);
+}
+
+/** 收集 jsonl 里带 id 的事件（fork 对账用；坏行跳过） */
+export function collectPiEventIds(filePath: string): Set<string> {
+  const ids = new Set<string>();
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    for (const line of splitLines(raw)) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const obj = JSON.parse(t);
+        if (obj && typeof obj.id === 'string') ids.add(obj.id);
+      } catch {
+        /* skip */
+      }
+    }
+  } catch {
+    /* ignore missing parent */
+  }
+  return ids;
+}
+
+/** 丢掉与父 jsonl 同 id 的事件（fork 拷贝的父 transcript） */
+export function dropInheritedPiEvents(events: PiEvent[], parentFilePath?: string | null): PiEvent[] {
+  if (!parentFilePath) return events;
+  const ids = collectPiEventIds(parentFilePath);
+  if (!ids.size) return events;
+  return events.filter((ev) => {
+    const id = (ev as { id?: unknown })?.id;
+    return typeof id !== 'string' || !ids.has(id);
+  });
+}
+
+/** 读 jsonl；fork 则剥 inherited，避免父 usage 重复计入 */
+export function readPiEventsForConvert(session: {
+  filePath: string;
+  parentFilePath?: string;
+}): PiEvent[] {
+  const events = readPiSessionEvents(session.filePath);
+  if (!isPiForkSessionPath(session.filePath) || !session.parentFilePath) return events;
+  return dropInheritedPiEvents(events, session.parentFilePath);
 }
 
 function walkNestedJsonl(dir: string, projectDir: string, cwdSlug: string, out: PiFileHit[]): void {
@@ -377,6 +430,7 @@ function loadPiSessionItems(opts?: { peekUser?: boolean }): PiSessionItem[] {
       dirtyMark: `${stat.mtimeMs}:${stat.size}`,
       mtimeMs: stat.mtimeMs,
       size: stat.size,
+      parentFilePath: parentFile,
       parentId,
       firstUserText: opts?.peekUser ? peekFirstUserText(file.filePath) : undefined,
     });

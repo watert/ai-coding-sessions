@@ -25,7 +25,7 @@
 import path from 'path';
 import {
   listPiCodeSessions,
-  readPiSessionEvents,
+  readPiEventsForConvert,
   getPiSession,
   type PiSessionItem,
   type PiMessageEnvelope,
@@ -60,13 +60,25 @@ const TITLE_MAX = 50;
 export function derivePiTitle(firstUserText: string | undefined, sessionId: string): string {
   let t = (firstUserText || '').trim();
   if (!t) return sessionId.slice(0, 8);
-  // pi-subagents 子会话 prompt 形如 `Task: <长上下文>。请…`；砍掉 Task: 与首句以免截断撞车
+  // pi-subagents / fork worker：砍掉 Task: 套话，避免子会话标题撞车
   if (/^Task:\s*/i.test(t)) {
     t = t.replace(/^Task:\s*/i, '');
-    const cut = t.search(/[。]/);
-    if (cut >= 24 && cut <= 240) {
-      const rest = t.slice(cut + 1).trim();
-      if (rest.length >= 8) t = rest;
+    if (/^You are a delegated subagent/i.test(t)) {
+      // forks/*.jsonl：英文 preamble + 第二个 Task: / 任务：；优先 ## 你的主题
+      t = t.replace(/^You are a delegated subagent[\s\S]*?(?=(?:Task:\s*|任务[：:]))/i, '');
+      t = t.replace(/^Task:\s*/i, '');
+      const topic = t.match(/##\s*你的主题[^\n]*\n([^\n]+)/);
+      if (topic) t = topic[1].replace(/·\s*文件名[\s\S]*$/u, '').trim();
+      else {
+        const job = t.match(/任务[：:]\s*([^\n。]+)/);
+        if (job) t = job[1].trim();
+      }
+    } else {
+      const cut = t.search(/[。]/);
+      if (cut >= 24 && cut <= 240) {
+        const rest = t.slice(cut + 1).trim();
+        if (rest.length >= 8) t = rest;
+      }
     }
   }
   const oneLine = t.replace(/\s+/g, ' ');
@@ -578,7 +590,7 @@ async function getPiSessionStats(
     if (preloadedMessages) {
       messages = preloadedMessages;
     } else {
-      const events = preloadedEvents || readPiSessionEvents(session.filePath);
+      const events = preloadedEvents || readPiEventsForConvert(session);
       const r = convertPiEventsToMessages(session.sessionId, events, {
         fallbackCwd: session.cwd,
       });
@@ -974,7 +986,7 @@ export async function getPiSessionDetail(
   const session = await getPiSession(sessionId);
   if (!session) return null;
 
-  const events = readPiSessionEvents(session.filePath);
+  const events = readPiEventsForConvert(session);
   // 第一遍：临时挂 raw cost 到 message info，便于 reported-cost 抓取
   const interim = convertPiEventsToMessages(session.sessionId, events, {
     fallbackCwd: session.cwd,
@@ -1011,7 +1023,7 @@ export async function listPiSessionsForListing(): Promise<UnifiedSessionInfo[]> 
   const { withConcurrencyLimit } = await import('./utils');
   const out = await withConcurrencyLimit(list, async (s) => {
     // 优先快路径：只读 events + 首条 user text，不走完整 stats
-    const events = readPiSessionEvents(s.filePath);
+    const events = readPiEventsForConvert(s);
     const firstUserText = firstUserTextFromEvents(events);
     const interim = convertPiEventsToMessages(s.sessionId, events, {
       fallbackCwd: s.cwd,

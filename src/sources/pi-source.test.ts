@@ -723,4 +723,22 @@ describe('derivePiTitle', () => {
     expect(b).toContain('插件');
     expect(a).not.toBe(b);
   });
+  test('fork delegated 套话 → 取 ## 你的主题，避免 13 条撞成同一标题', () => {
+    const t = derivePiTitle(
+      [
+        'Task: You are a delegated subagent running from a fork of the parent session. Treat the inherited conversation as reference-only.',
+        '',
+        'Task:',
+        '任务：在 vault 新建一个 post-topics 主题索引文件。',
+        '',
+        '## 你的主题（programming 域，第 1 个）',
+        'TypeScript · FP 生态与选型 · 文件名 /tmp/2609-ts-fp-ecosystem.md · slug: ts-fp-ecosystem',
+      ].join('\n'),
+      'sid',
+    );
+    expect(t).toContain('TypeScript');
+    expect(t).toContain('FP');
+    expect(t).not.toContain('delegated');
+    expect(t).not.toContain('文件名');
+  });
 });
