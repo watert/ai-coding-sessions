@@ -197,6 +197,7 @@ bun src/store/cli.ts help
 | `skill-reads` | 缓存（build）/ live | skill 使用轨迹：Skill tool 调用 + `skills/<name>/` 下文件读取；`--skill=NAME`（支持 `%` 模糊），sqlite 中 session 级 JSON 行 |
 | `perf` | live | 性能检查：各 source list(×2)/detail/extract 采样 + 阈值警告——见[性能检查](#性能检查performance-check) |
 | `refs` | live refs | 不 convert / 不写库 |
+| `schema` | 缓存 | 缓存表结构 + 列口径（`--table=` 单表）；裸查 sqlite 前的第一站 |
 
 **Trace / detail 标志：** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=`（`error`/`soft`/`hard`/`completed`） · `--jsonl` · `--format=json\|jsonl\|md` · `--out=PATH` · `--with-children` · `--max-steps=`
 

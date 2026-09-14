@@ -29,6 +29,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `scan` | **跨 session prompt 检索**（`--grep=` · `--regex`；缓存 prompts 表, cache-first） |
 | `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含归因：`source`/`session_id`/`model`(主导)/`day`/`msg_idx`；`--build` 物化(增量, 回报 `coverage` 覆盖区间) / `--live` 直读 / `--tool=` / `--status=` / `--out=`；分析交给 grep/jq/python） |
 | `refs` | listRefs（无 convert/write） |
+| `schema` | **缓存表结构 + 口径速查**（`--table=` 单表；裸查 sqlite 前的第一站） |
 | `help` | 帮助 |
 
 默认 stdout **JSON**（`--raw` 单行；`trace --jsonl` 逐步一行；`--format=md --out=trace.md` 落盘）。日志走 **stderr**。sqlite 开关库 banner **默认静默**（`--verbose` / `AI_CODING_SESSIONS_QUIET=0` 打开）。
@@ -144,7 +145,7 @@ bun src/store/cli.ts stats --days=14 --model=deepseek --by=model,day
 
 ### 直查 sqlite（CLI 聚合不够用时）
 
-缓存库 `~/data/ai-coding-sessions.sqlite`（`AI_CODING_SESSIONS_DB` 可覆盖）。直查比逐 session `detail`（live）快几个数量级，分位数 / 自定义窗口分析首选。
+缓存库 `~/data/ai-coding-sessions.sqlite`（`AI_CODING_SESSIONS_DB` 可覆盖）。直查比逐 session `detail`（live）快几个数量级，分位数 / 自定义窗口分析首选。先跑 `cli.ts schema` 打一份表结构 + 口径，省得自己摸 `PRAGMA`。
 
 | 表 | 语义 |
 |----|------|

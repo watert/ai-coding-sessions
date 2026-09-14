@@ -138,6 +138,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `skill-reads` | **skill 使用频次盘点**（`--build` 物化 / 默认 cache 导出 / `--live` 直读 / `--full` 强制重建 / `--skill=` / `--out=`; 三阶段见「审计 / 盘点」段） |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |
+| `schema` | 缓存表结构 + 口径速查（`--table=` 单表；裸查 sqlite 前先看） |
 
 **按模型 / 趋势聚合**（先看 `stats`，别急着裸查 sqlite；口径与直查姿势见 [CLI](./references/cli.md)）：
 

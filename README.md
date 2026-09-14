@@ -197,6 +197,7 @@ bun src/store/cli.ts help
 | `skill-reads` | cache (build) / live | skill usage trail: Skill tool calls + reads under `skills/<name>/`; `--skill=NAME` (`%` fuzzy), session-level JSON rows in sqlite |
 | `perf` | live | perf check: per-source list(×2)/detail/extract sampling with threshold warnings — see [Performance check](#performance-check) |
 | `refs` | live refs | no convert/write |
+| `schema` | cache | cache table structure + column semantics (`--table=` single table); first stop before raw sqlite |
 
 **Trace / detail flags:** `--io` · `--reasoning` · `--tools-only` · `--no-reasoning` · `--max-output-chars=N` · `--from=`/`--to=` · `--tool=` · `--status=` · `--jsonl` · `--format=json\|jsonl\|md` · `--out=PATH` · `--with-children` · `--max-steps=`
 
