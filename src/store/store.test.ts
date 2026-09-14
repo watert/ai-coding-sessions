@@ -212,6 +212,15 @@ describe('upsert + query', () => {
     expect(ids([]).length).toBeGreaterThanOrEqual(3);
   });
 
+  test('usage_by_day 无 messages 死列 (v7 起)', () => {
+    const db = getStoreDb();
+    const cols = (
+      db.prepare('PRAGMA table_info(usage_by_day)').all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    expect(cols).not.toContain('messages');
+    expect(cols).toContain('usage_by_model');
+  });
+
   test('prompts full text queryable', () => {
     const rows = getSessionPrompts('claude', 'sess-1');
     expect(rows.length).toBe(1);

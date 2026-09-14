@@ -4,7 +4,7 @@
  * - detail/messages 不缓存；prompts 完整落库；tool_calls / skill_reads 按 session 物化（tool-calls --build / skill-reads --build 按需构建）
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** sessions / prompts / usage_by_day / schema_meta */
 export const SCHEMA_SQL = `
@@ -52,7 +52,6 @@ CREATE TABLE IF NOT EXISTS usage_by_day (
   cache_read INTEGER,
   cache_write INTEGER,
   tokens INTEGER,
-  messages INTEGER,
   usage_by_model TEXT,
   PRIMARY KEY (source, session_id, day)
 );

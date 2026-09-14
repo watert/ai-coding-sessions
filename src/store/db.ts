@@ -89,6 +89,14 @@ function migrateIfNeeded(db: any): void {
     }
   }
 
+  // v6 → v7：删 usage_by_day.messages 死列（历史遗留，从未写入过值）；以列存在性为准
+  {
+    const cols = tableColumns(db, 'usage_by_day');
+    if (cols.has('messages')) {
+      db.exec('ALTER TABLE usage_by_day DROP COLUMN messages');
+    }
+  }
+
   if (cur >= SCHEMA_VERSION) return;
 
   db.prepare(

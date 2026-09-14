@@ -137,8 +137,8 @@ export function upsertSession(
     const insDay = db.prepare(
       `INSERT INTO usage_by_day (
         source, session_id, day, input_tokens, output_tokens,
-        cache_read, cache_write, tokens, messages, usage_by_model
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        cache_read, cache_write, tokens, usage_by_model
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const day of session.usage_by_day || []) {
       const dayModels = (day.byModel || []).map((m) => {
@@ -163,7 +163,6 @@ export function upsertSession(
         day.cacheRead || 0,
         day.cacheWrite || 0,
         day.tokens || 0,
-        null,
         JSON.stringify(dayModels),
       );
     }
