@@ -170,7 +170,8 @@ bun src/store/cli.ts prompts --source=kimi --id=<id1>,<id2>       # 同 source �
 bun src/store/cli.ts prompts --source=kimi --days=7 --roots --limit=20   # 窗口批量（默认 7 天; --jsonl 每行一个 session）
 bun src/store/cli.ts list --untitled --days=7 --roots
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="知乎爬虫评审"
-bun src/store/cli.ts stats --source=all --days=7   # 裁剪合计 + quality（issue #2）
+bun src/store/cli.ts stats --source=all --days=7   # bySource + by_model + tokensByDay/costByDay + root/sub 拆分
+bun src/store/cli.ts stats --days=14 --model=deepseek --by=model,day   # --model= 子串过滤; 模型 × 日 交叉表
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 bun src/store/cli.ts tool-calls --build --days=90  # 物化 tool calls（cache-first 导出 / grep）
 bun src/store/cli.ts skill-reads --build --days=90 # 物化 skill 读取（Skill tool + skills/ 文件读取）
@@ -190,9 +191,9 @@ bun src/store/cli.ts help
 | `detail` | **live** | 完整 messages；用体量 flag 适配 Agent 上下文 |
 | `prompts` | 缓存 | 仅 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl` 每行一个 session） |
 | `set-title` | 写缓存 | `custom_title` overlay（sync 不覆盖）；`--clear`；OpenCode `--write-source` |
-| `stats` | 缓存 | **P0** 裁剪 + split + quality（[#2](https://github.com/watert/ai-coding-sessions/issues/2)）；**P1** `by_model` · 可选成本 · `costByDay` · `tool_fail`（[#3](https://github.com/watert/ai-coding-sessions/issues/3)） |
+| `stats` | 缓存 | 多维度聚合：窗口裁剪 + root/subagent 拆分 + quality（[#2](https://github.com/watert/ai-coding-sessions/issues/2)）；`by_model` · `tokensByDay` · `costByDay` · `tool_fail`（[#3](https://github.com/watert/ai-coding-sessions/issues/3)）；**`--model=`** 子串过滤 · **`--by=model,day`** 模型 × 日交叉 |
 | `sync` | 写缓存 | `--full` / `--reconcile`；对本次 upsert 的 session 自动顺手物化 `skill_reads`（`skillReads: false` 关闭） |
-| `tool-calls` | 缓存（build）/ live | 跨 session tool call jsonl 导出；`--build` 增量物化，`--tool=`/`--status=` 过滤 |
+| `tool-calls` | 缓存（build）/ live | 跨 session tool call jsonl 导出；每行带 `model`（主导模型）/ `day` / `msg_idx`（同 idx = 一个 assistant message 内的并行调用）；`--build` 增量物化，`--tool=`/`--status=` 过滤 |
 | `skill-reads` | 缓存（build）/ live | skill 使用轨迹：Skill tool 调用 + `skills/<name>/` 下文件读取；`--skill=NAME`（支持 `%` 模糊），sqlite 中 session 级 JSON 行 |
 | `perf` | live | 性能检查：各 source list(×2)/detail/extract 采样 + 阈值警告——见[性能检查](#性能检查performance-check) |
 | `refs` | live refs | 不 convert / 不写库 |

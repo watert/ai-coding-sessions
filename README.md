@@ -170,7 +170,8 @@ bun src/store/cli.ts prompts --source=kimi --id=<id1>,<id2>       # batch same s
 bun src/store/cli.ts prompts --source=kimi --days=7 --roots --limit=20   # batch by window (default 7d; --jsonl one session per line)
 bun src/store/cli.ts list --untitled --days=7 --roots
 bun src/store/cli.ts set-title --source=kimi --id=<id> --title="Review zhihu crawler"
-bun src/store/cli.ts stats --source=all --days=7   # clipped totals + quality (issue #2)
+bun src/store/cli.ts stats --source=all --days=7   # bySource + by_model + tokensByDay/costByDay + root/sub split
+bun src/store/cli.ts stats --days=14 --model=deepseek --by=model,day   # --model= substring filter; model × day cross table
 bun src/store/cli.ts sync --days=7 --source=all --reconcile
 bun src/store/cli.ts tool-calls --build --days=90  # materialize tool calls (cache-first export / grep)
 bun src/store/cli.ts skill-reads --build --days=90 # materialize skill reads (Skill tool + skills/ file reads)
@@ -190,9 +191,9 @@ bun src/store/cli.ts help
 | `detail` | **live** | full messages; use size flags to fit Agent context |
 | `prompts` | cache | user prompts only (single `--id`; batch `--id=a,b` / window filter; `--jsonl` one session per line) |
 | `set-title` | cache write | `custom_title` overlay (sync-safe); `--clear`; OpenCode `--write-source` |
-| `stats` | cache | **P0** clip + split + quality ([#2](https://github.com/watert/ai-coding-sessions/issues/2)); **P1** `by_model` · optional cost · `costByDay` · `tool_fail` ([#3](https://github.com/watert/ai-coding-sessions/issues/3)) |
+| `stats` | cache | multi-dim aggregate: window clip + root/subagent split + quality ([#2](https://github.com/watert/ai-coding-sessions/issues/2)); `by_model` · `tokensByDay` · `costByDay` · `tool_fail` ([#3](https://github.com/watert/ai-coding-sessions/issues/3)); **`--model=`** modelKey substring filter · **`--by=model,day`** model × day cross table |
 | `sync` | write cache | `--full` / `--reconcile`; auto-backfills `skill_reads` for upserted sessions (`skillReads: false` to opt out) |
-| `tool-calls` | cache (build) / live | cross-session tool-call jsonl export; `--build` materializes (incremental), `--tool=`/`--status=` filters |
+| `tool-calls` | cache (build) / live | cross-session tool-call jsonl export; each row carries `model` (dominant) / `day` / `msg_idx` (same idx = parallel calls in one assistant message); `--build` materializes (incremental), `--tool=`/`--status=` filters |
 | `skill-reads` | cache (build) / live | skill usage trail: Skill tool calls + reads under `skills/<name>/`; `--skill=NAME` (`%` fuzzy), session-level JSON rows in sqlite |
 | `perf` | live | perf check: per-source list(×2)/detail/extract sampling with threshold warnings — see [Performance check](#performance-check) |
 | `refs` | live refs | no convert/write |

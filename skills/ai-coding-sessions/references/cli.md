@@ -24,10 +24,10 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `prompts` | 缓存 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl`；默认每条截断 300 字符（前后各 150 `...` join），`--truncate-chars=0` 全量） |
 | `set-title` | 缓存 `custom_title` overlay（`--title=` / `--clear`；OpenCode `--write-source`） |
 | `title-review` | **标题审查候选**：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
-| `stats` | 聚合 token（P0 裁剪/split/quality · P1 `by_model`/cost/`tool_fail`） |
+| `stats` | **多维度聚合**：`bySource` / `by_model` / `tokensByDay` / `costByDay` / root-vs-subagent split / `tool_fail`；**`--model=` 子串过滤** · **`--by=model,day` 模型×日交叉** |
 | `sync` | 增量同步缓存（`--reconcile` / `--full`） |
 | `scan` | **跨 session prompt 检索**（`--grep=` · `--regex`；缓存 prompts 表, cache-first） |
-| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含 session 归因; `--build` live 物化(增量) / `--live` 直读 / `--tool=` / `--status=` / `--out=`；分析交给 grep/jq/python） |
+| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含归因：`source`/`session_id`/`model`(主导)/`day`/`msg_idx`；`--build` 物化(增量) / `--live` 直读 / `--tool=` / `--status=` / `--out=`；分析交给 grep/jq/python） |
 | `refs` | listRefs（无 convert/write） |
 | `help` | 帮助 |
 
@@ -116,6 +116,58 @@ bun src/store/cli.ts digest --text-preview=800                # 覆盖 goal/stop
 - preview cap 比 handoff 紧凑（user 300 / assistant 1200）
 - 空 session / detail 缺失 / 读取异常 → 自动 skip，输出 `skipped` 清单（md 中为 HTML 注释）
 - entry 字段：`goal` / `stop_point` / `next_action` / `files_touched`(≤5) / `turn_count` / `total_tokens` / `session_status` / `warnings` 计数
+
+### 按模型 / 趋势分析（stats）
+
+`stats` 一次给出多维度聚合 —— **先问它，别急着裸查 sqlite**。
+
+```bash
+# 全量窗口: bySource + by_model + tokensByDay/costByDay + split(root/subagent) + tool_fail
+bun src/store/cli.ts stats --source=all --days=7
+
+# 只看某模型（modelKey 大小写不敏感子串; 收窄 session 与模型维度统计）
+bun src/store/cli.ts stats --source=all --days=7 --model=deepseek-flash
+
+# 模型 × 日 交叉（by_model_day, 只有传了才输出）
+bun src/store/cli.ts stats --days=14 --model=deepseek --by=model,day
+```
+
+**口径**（输出里的 `model_filter.scope_note` 同款）：
+
+- **session 级字段**（`sessions` / `split` / `tool_calls` / `user_messages`）= 「含命中模型的 session」全集，**不按模型拆分**
+- **模型级字段**（`by_model` / `by_model_day`，以及传 `--model=` 后的 `tokensByDay` / `costByDay`）= 只累计命中模型自身 token
+- 不传 `--model=` 时 `tokensByDay` / `costByDay` 是全模型口径
+- `by_model_day` 依赖 `usage_by_day[].byModel` 明细（本机覆盖 ~99%）；缺明细的 session 不计入该表，但仍进 `by_model` 汇总
+
+### 直查 sqlite（CLI 聚合不够用时）
+
+缓存库 `~/data/ai-coding-sessions.sqlite`（`AI_CODING_SESSIONS_DB` 可覆盖）。直查比逐 session `detail`（live）快几个数量级，分位数 / 自定义窗口分析首选。
+
+| 表 | 语义 |
+|----|------|
+| `sessions` | 一行一 session；`payload` 是 `UnifiedSessionInfo` JSON（`parent_id` / `spawn_group_id` / `total_*` 都在里面）；`models` 逗号拼接 |
+| `usage_by_day` | 一行一 `(session, day)`；`day` 为 `YYYY-MM-DD`；`usage_by_model` 是 **JSON 数组**，需 `json_each` 展开 |
+| `tool_calls` | 一行一 tool call（需先 `--build` 物化）；**`msg_idx` = 统一 messages 下标**，同 `msg_idx` 多条 = 一个 assistant message 里的并行 tool call（判断批量写 / 并行度的关键） |
+| `prompts` | 缓存 user prompts；`origin` = `insert` / `queued` / `interrupt`（普通轮次为 NULL） |
+
+```bash
+# 按天 × 模型统计（usage_by_model 为 JSON 数组, json_each 展开）
+sqlite3 ~/data/ai-coding-sessions.sqlite "
+select u.day, j.value->>'modelKey' mk, count(distinct u.session_id) sess,
+       sum(json_extract(j.value,'\$.output')) out_tok, sum(json_extract(j.value,'\$.tokens')) tok
+from usage_by_day u, json_each(u.usage_by_model) j
+where u.day >= '2026-09-01' and (j.value->>'modelKey') like '%flash%'
+group by 1,2 order by 1,2;"
+
+# 单 msg 并行度 / 批量写（created_at 为 ms epoch, 按本地日归天）
+sqlite3 ~/data/ai-coding-sessions.sqlite "
+select date(created_at/1000,'unixepoch','localtime') d, count(*) msgs,
+       round(1.0*count(*)/count(distinct session_id||'#'||msg_idx),2) tools_per_msg
+from tool_calls where created_at is not null group by 1 order by 1;"
+```
+
+- 物化覆盖区间：`select min(created_at), max(created_at) from tool_calls`（`--build` 是增量的，先补齐再分析）
+- `usage_by_day.day` 按**消息时间**归天；`list --days=N` 按 `last_active_at` 过滤 —— 两者口径不同，交叉 join 时会错位
 
 ### 同步
 

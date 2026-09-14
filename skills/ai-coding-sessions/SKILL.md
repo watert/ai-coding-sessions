@@ -1,8 +1,8 @@
 ---
 name: ai-coding-sessions
-description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题、skill 使用频次盘点 / 审计。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
+description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS（按模型/按天聚合、模型×日交叉）、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题、skill 使用频次盘点 / 审计。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.11.1
+  version: 1.12.0
 ---
 
 # AI Coding Sessions
@@ -18,6 +18,7 @@ metadata:
 ## 触发场景
 
 - 列表 / 详情 / **轨迹 trace** / **handoff 续作摘要** / prompts / stats
+- **按模型 / 按天趋势聚合**（`stats --model=` · `--by=model,day`）与裸查 sqlite 口径
 - Agent 对话中自识别当前会话（`list --cwd` + `in-progress` + prompts 比对）
 - 成本、token、TPS、latency、cache、subagent
 - 缓存 sync / reconcile / 脏检
@@ -131,12 +132,20 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `prompts` | 缓存 user prompts（单条 `--id`；批量 `--id=a,b` / 窗口过滤；`--jsonl`；**默认每条截断 300 字符**——前后各 150 用 `...` join, `--truncate-chars=0` 全量原文） |
 | `set-title` | 缓存 `custom_title`（`--clear` · OpenCode `--write-source`） |
 | `title-review` | 标题审查候选：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
-| `stats` | token / bySource 聚合 |
+| `stats` | **多维度聚合**：`by_model` / `tokensByDay` / `costByDay` / `split`(root vs subagent) / `tool_fail` / `quality`；**`--model=` 子串过滤** · **`--by=model,day` 模型×日交叉** |
 | `scan` | **跨 session prompt 检索**（缓存 prompts 表, cache-first; `--grep=` · `--regex` · `--days=`） |
-| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含 session 归因; `--build` 物化 / `--live` 直读 / `--tool=` / `--out=`; 落盘后 grep/jq/python 接管分析） |
+| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含归因: `model` 主导模型 / `day` / `msg_idx` 统一 messages 下标——同 idx 多条 = 一个 msg 内的并行调用; `--build` 物化 / `--live` 直读 / `--tool=` / `--out=`; 落盘后 grep/jq/python 接管分析） |
 | `skill-reads` | **skill 使用频次盘点**（`--build` 物化 / 默认 cache 导出 / `--live` 直读 / `--full` 强制重建 / `--skill=` / `--out=`; 三阶段见「审计 / 盘点」段） |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |
+
+**按模型 / 趋势聚合**（先看 `stats`，别急着裸查 sqlite；口径与直查姿势见 [CLI](./references/cli.md)）：
+
+```bash
+bun src/store/cli.ts stats --source=all --days=7                       # bySource + by_model + tokensByDay/costByDay + split(root/sub) + tool_fail
+bun src/store/cli.ts stats --days=14 --model=deepseek-flash            # 只看某模型（大小写不敏感子串; 收窄 session 与模型维度）
+bun src/store/cli.ts stats --days=14 --model=deepseek --by=model,day   # 模型 × 日 交叉（by_model_day）
+```
 
 **识别当前会话**（Agent 在对话中定位"我"是哪条 session；**标题不可信**——各 agent 标题生成机制不同，主要靠 prompts 识别）：
 
