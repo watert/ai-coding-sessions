@@ -3,9 +3,11 @@
  * 数据出口与检索解耦 — CLI 只吐结构化 jsonl, grep/jq/python 由 agent 接管。
  * 数据源: tool_calls 物化表 (tool-calls --build 按需构建, cache-first) / live detail (--live)。
  */
+import dayjs from 'dayjs';
 import type { UnifiedSessionInfo } from '../sources/types';
 import type { SourceId } from './schema';
 import { getStoreDb } from './db';
+import { modelKeyOf } from './session-stats';
 
 export interface ToolCallRecord {
   source: string;
@@ -220,6 +222,40 @@ function tryParseJson(s: unknown): unknown {
   return s;
 }
 
+/** session 主导模型（tokens 最大）: 日 byModel 优先, 回退 usage_by_model; 无则 null */
+export function dominantModelKey(s: UnifiedSessionInfo): string | null {
+  const acc = new Map<string, number>();
+  let usedDayModels = false;
+  for (const day of s.usage_by_day || []) {
+    for (const m of day.byModel || []) {
+      usedDayModels = true;
+      const key = modelKeyOf(m);
+      acc.set(key, (acc.get(key) || 0) + (m.tokens || 0));
+    }
+  }
+  if (!usedDayModels) {
+    for (const m of s.usage_by_model || []) {
+      const key = modelKeyOf(m);
+      acc.set(key, (acc.get(key) || 0) + (m.tokens ?? (m.input || 0) + (m.output || 0)));
+    }
+  }
+  let best: string | null = null;
+  let bestTok = -1;
+  for (const [k, v] of acc) {
+    if (v > bestTok) {
+      bestTok = v;
+      best = k;
+    }
+  }
+  return best;
+}
+
+/** tool call 所属日（本地时区 YYYY-MM-DD）; 与 usage_by_day.day 近似, 便于按天聚合 */
+export function toolCallDay(createdAt?: number | null): string | null {
+  if (createdAt == null || !Number.isFinite(createdAt)) return null;
+  return dayjs(createdAt).format('YYYY-MM-DD');
+}
+
 /** session meta 头（导出行冗余, 便于脱离上下文后 grep 仍可归因） */
 export function toolCallHeader(s: UnifiedSessionInfo): Record<string, unknown> {
   return {
@@ -228,5 +264,7 @@ export function toolCallHeader(s: UnifiedSessionInfo): Record<string, unknown> {
     session_title: s.title ?? null,
     directory: s.directory || null,
     models_used: s.models_used ?? null,
+    /** 该 session 主导模型（多模型 session 取 token 最大者） */
+    model: dominantModelKey(s),
   };
 }

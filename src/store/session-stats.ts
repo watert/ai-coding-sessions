@@ -51,6 +51,28 @@ export interface ModelStatRow {
   cny: number;
 }
 
+/** 分模型 × 日 交叉行（--by=model,day; day desc + tokens desc） */
+export interface ModelDayStatRow {
+  day: string;
+  modelKey: string;
+  tokens: number;
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  sessions: number;
+  usd: number;
+  cny: number;
+}
+
+/** --model= 命中说明（口径自解释, 避免与 session 级字段混淆） */
+export interface ModelFilterInfo {
+  pattern: string;
+  matched_models: string[];
+  matched_sessions: number;
+  scope_note: string;
+}
+
 export interface ToolFailTopSession {
   id: string;
   source: string;
@@ -100,6 +122,10 @@ export interface CliStatsResult {
   /** P1: 按 modelKey 聚合（原始 key，不做 host 级归一化） */
   by_model: ModelStatRow[];
   tokensByDay: Record<string, number>;
+  /** --by=model,day: model × day 交叉（只累计命中模型自身 token, 非 session 级） */
+  by_model_day?: ModelDayStatRow[];
+  /** --model= 生效时的命中与口径说明 */
+  model_filter?: ModelFilterInfo;
   /** P1: 有日成本时填充；全 0 时仍给与 tokensByDay 对齐的 key（值为 0） */
   costByDay: Record<string, { usd: number; cny: number }>;
   /** P1: 跨 session tool fail 快照（cache 字段，非 live tool-errors） */
@@ -111,6 +137,10 @@ export interface ComputeCliStatsOptions {
   endDate?: string;
   /** tool_fail.top_sessions 条数，默认 10；0 = 不列 top */
   topFail?: number;
+  /** --model=: 大小写不敏感子串匹配 modelKey; 收窄 session 与模型维度统计 */
+  modelFilter?: string;
+  /** --by=model,day: 额外输出 by_model_day 交叉表 */
+  includeModelDay?: boolean;
 }
 
 function emptyBucket(): StatsTokenBucket {
@@ -200,11 +230,36 @@ function ensureModel(map: Map<string, ModelAcc>, modelKey: string): ModelAcc {
   return m;
 }
 
-function modelKeyOf(m: { modelKey?: string; provider?: string; model?: string }): string {
+/** 统一取 modelKey（无则 provider/model 拼接） */
+export function modelKeyOf(m: { modelKey?: string; provider?: string; model?: string }): string {
   if (m.modelKey) return m.modelKey;
   if (m.provider && m.model) return `${m.provider}/${m.model}`;
   if (m.model) return m.model;
   return 'unknown';
+}
+
+/**
+ * session 各模型 token 汇总（modelKey → tokens）。
+ * 日 byModel 优先（已按窗口裁剪）; 无日模型明细时回退 usage_by_model。
+ * 供 --model= 过滤与 tool-calls 主导模型判定复用。
+ */
+export function sessionModelTokens(s: UnifiedSessionInfo): Map<string, number> {
+  const acc = new Map<string, number>();
+  let usedDayModels = false;
+  for (const day of s.usage_by_day || []) {
+    for (const m of day.byModel || []) {
+      usedDayModels = true;
+      const key = modelKeyOf(m);
+      acc.set(key, (acc.get(key) || 0) + (m.tokens || 0));
+    }
+  }
+  if (usedDayModels) return acc;
+  for (const m of s.usage_by_model || []) {
+    const key = modelKeyOf(m);
+    const tokens = m.tokens ?? (m.input || 0) + (m.output || 0);
+    acc.set(key, (acc.get(key) || 0) + tokens);
+  }
+  return acc;
 }
 
 /** 从已裁剪 session 累加 by_model（日 byModel 优先，否则 usage_by_model） */
@@ -266,6 +321,53 @@ function accumulateModels(map: Map<string, ModelAcc>, s: UnifiedSessionInfo): vo
       const acc = map.get(c.key)!;
       acc.usd += cost.usd * share;
       acc.cny += cost.cny * share;
+    }
+  }
+}
+
+type ModelDayAcc = Omit<ModelAcc, 'modelKey' | 'sessionIds'> & { sessionIds: Set<string> };
+
+/**
+ * model × day 交叉累加（--by=model,day）。
+ * 只取 usage_by_day[].byModel 明细（本机覆盖 ~99%）; 缺日模型明细的 session 不贡献此表。
+ */
+function accumulateModelDay(
+  map: Map<string, ModelDayAcc>,
+  s: UnifiedSessionInfo,
+  pat: string | null,
+): void {
+  for (const day of s.usage_by_day || []) {
+    if (!day?.date) continue;
+    for (const m of day.byModel || []) {
+      const modelKey = modelKeyOf(m);
+      if (pat && !modelKey.toLowerCase().includes(pat)) continue;
+      const k = `${day.date}\u0000${modelKey}`;
+      let acc = map.get(k);
+      if (!acc) {
+        acc = {
+          tokens: 0,
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write: 0,
+          usd: 0,
+          cny: 0,
+          sessionIds: new Set(),
+        };
+        map.set(k, acc);
+      }
+      const input = m.input || 0;
+      const output = m.output || 0;
+      const cache_read = m.cacheRead || 0;
+      const cache_write = m.cacheWrite || 0;
+      acc.tokens += m.tokens || input + output + cache_read + cache_write;
+      acc.input += input;
+      acc.output += output;
+      acc.cache_read += cache_read;
+      acc.cache_write += cache_write;
+      acc.usd += m.usd || 0;
+      acc.cny += m.cny || 0;
+      acc.sessionIds.add(s.id);
     }
   }
 }
@@ -386,13 +488,24 @@ export function computeCliStats(
   sessions: UnifiedSessionInfo[],
   options: ComputeCliStatsOptions = {},
 ): CliStatsResult {
-  const { startDate, endDate, topFail = 10 } = options;
+  const { startDate, endDate, topFail = 10, modelFilter, includeModelDay = false } = options;
   const {
-    sessions: scoped,
+    sessions: clippedSessions,
     sessions_clipped,
     sessions_unclipped,
     anyClip,
   } = clipSessionsToDateRange(sessions, startDate, endDate);
+
+  // --model=: 子串匹配 modelKey → 收窄到命中 session（session 级字段仍按 session 全量计）
+  const pat = modelFilter?.trim().toLowerCase() || null;
+  const scoped = pat
+    ? clippedSessions.filter((s) => {
+        for (const k of sessionModelTokens(s).keys()) {
+          if (k.toLowerCase().includes(pat)) return true;
+        }
+        return false;
+      })
+    : clippedSessions;
 
   const root = emptyBucket();
   const subagent = emptyBucket();
@@ -412,6 +525,7 @@ export function computeCliStats(
   const tokensByDay: Record<string, number> = {};
   const costByDay: Record<string, { usd: number; cny: number }> = {};
   const modelMap = new Map<string, ModelAcc>();
+  const modelDayMap = new Map<string, ModelDayAcc>();
   const failCandidates: ToolFailTopSession[] = [];
   let sessions_with_fails = 0;
   let anyCost = false;
@@ -452,6 +566,17 @@ export function computeCliStats(
 
     for (const day of s.usage_by_day || []) {
       if (!day?.date) continue;
+      if (pat) {
+        // --model= 收窄: tokensByDay/costByDay 由「全模型」改为「命中模型自身」
+        for (const m of day.byModel || []) {
+          if (!modelKeyOf(m).toLowerCase().includes(pat)) continue;
+          tokensByDay[day.date] = (tokensByDay[day.date] || 0) + (m.tokens || 0);
+          if (!costByDay[day.date]) costByDay[day.date] = { usd: 0, cny: 0 };
+          costByDay[day.date].usd += m.usd || 0;
+          costByDay[day.date].cny += m.cny || 0;
+        }
+        continue;
+      }
       tokensByDay[day.date] = (tokensByDay[day.date] || 0) + (day.tokens || 0);
       if (!costByDay[day.date]) costByDay[day.date] = { usd: 0, cny: 0 };
       costByDay[day.date].usd += day.usd || 0;
@@ -459,6 +584,7 @@ export function computeCliStats(
     }
 
     accumulateModels(modelMap, s);
+    if (includeModelDay) accumulateModelDay(modelDayMap, s, pat);
 
     const failed = s.total_tool_calls_failed || 0;
     const calls = s.total_tool_calls || 0;
@@ -477,6 +603,7 @@ export function computeCliStats(
   }
 
   const by_model: ModelStatRow[] = Array.from(modelMap.values())
+    .filter((m) => !pat || m.modelKey.toLowerCase().includes(pat))
     .map((m) => ({
       modelKey: m.modelKey,
       tokens: m.tokens,
@@ -489,6 +616,36 @@ export function computeCliStats(
       cny: Number(m.cny.toFixed(6)),
     }))
     .sort((a, b) => b.tokens - a.tokens);
+
+  const by_model_day: ModelDayStatRow[] | undefined = includeModelDay
+    ? Array.from(modelDayMap.entries())
+        .map(([k, a]) => {
+          const [day, modelKey] = k.split('\u0000');
+          return {
+            day,
+            modelKey,
+            tokens: a.tokens,
+            input: a.input,
+            output: a.output,
+            cache_read: a.cache_read,
+            cache_write: a.cache_write,
+            sessions: a.sessionIds.size,
+            usd: Number(a.usd.toFixed(6)),
+            cny: Number(a.cny.toFixed(6)),
+          };
+        })
+        .sort((a, b) => (a.day === b.day ? b.tokens - a.tokens : a.day < b.day ? 1 : -1))
+    : undefined;
+
+  const model_filter: ModelFilterInfo | undefined = pat
+    ? {
+        pattern: (modelFilter || '').trim(),
+        matched_models: by_model.map((m) => m.modelKey),
+        matched_sessions: scoped.length,
+        scope_note:
+          'sessions/split/tool_calls/user_messages 为「含命中模型的 session」全集; tokensByDay/by_model/by_model_day 只累计命中模型自身 token (依赖 usage_by_day[].byModel, 缺失则该 session 不计入)',
+      }
+    : undefined;
 
   const tool_calls = root.tool_calls + subagent.tool_calls;
   const tool_calls_failed = root.tool_calls_failed + subagent.tool_calls_failed;
@@ -553,6 +710,8 @@ export function computeCliStats(
     bySourceDetail,
     by_model,
     tokensByDay,
+    by_model_day,
+    model_filter,
     costByDay,
     tool_fail,
   };

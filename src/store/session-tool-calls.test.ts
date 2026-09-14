@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { initStoreDb, closeStoreDb } from './db';
-import { extractToolCalls, queryToolCallsBySession, replaceToolCalls, getToolCallsBuiltAt } from './session-tool-calls';
-import type { UnifiedSessionDetail } from '../sources/types';
+import { extractToolCalls, queryToolCallsBySession, replaceToolCalls, getToolCallsBuiltAt, dominantModelKey, toolCallDay, toolCallHeader } from './session-tool-calls';
+import type { UnifiedSessionDetail, UnifiedSessionInfo } from '../sources/types';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acs-toolcalls-'));
 
@@ -94,5 +94,49 @@ describe('session-tool-calls', () => {
     replaceToolCalls('grok', 's-roundtrip', rows.slice(0, 1), 1_700_000_300_000);
     expect(queryToolCallsBySession('grok', 's-roundtrip')).toHaveLength(1);
     expect(getToolCallsBuiltAt('grok', 's-roundtrip')).toBe(1_700_000_300_000);
+  });
+});
+
+describe('tool call 行归因 (model / day)', () => {
+  const withDay = {
+    usage_by_day: [
+      {
+        date: '2026-09-14',
+        tokens: 300,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        usd: 0,
+        cny: 0,
+        byModel: [
+          { modelKey: 'opencode-go/deepseek-flash', tokens: 200, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, cny: 0 },
+          { modelKey: 'kimi-code/k3', tokens: 100, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, cny: 0 },
+        ],
+      },
+    ],
+  } as unknown as UnifiedSessionInfo;
+
+  test('toolCallDay: 本地日期; 空值/非法值 → null', () => {
+    expect(toolCallDay(new Date(2026, 8, 14, 12).getTime())).toBe('2026-09-14');
+    expect(toolCallDay(null)).toBeNull();
+    expect(toolCallDay(undefined)).toBeNull();
+    expect(toolCallDay(Number.NaN)).toBeNull();
+  });
+
+  test('dominantModelKey: 日 byModel 取最大, 缺日明细回退 usage_by_model', () => {
+    expect(dominantModelKey(withDay)).toBe('opencode-go/deepseek-flash');
+    const fallback = {
+      usage_by_model: [
+        { provider: 'xai', model: 'grok', input: 10, output: 10, tokens: 20 },
+        { provider: 'xai', model: 'grok-mini', input: 1, output: 1, tokens: 2 },
+      ],
+    } as unknown as UnifiedSessionInfo;
+    expect(dominantModelKey(fallback)).toBe('xai/grok');
+    expect(dominantModelKey({} as UnifiedSessionInfo)).toBeNull();
+  });
+
+  test('toolCallHeader 带主导模型（导出行脱离上下文仍可归因）', () => {
+    expect(toolCallHeader(withDay).model).toBe('opencode-go/deepseek-flash');
   });
 });

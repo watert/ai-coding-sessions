@@ -85,6 +85,7 @@ import {
   getToolCallsBuiltAt,
   queryToolCallsBySession,
   replaceToolCalls,
+  toolCallDay,
   toolCallHeader,
 } from './session-tool-calls';
 import {
@@ -209,6 +210,10 @@ interface CliArgs {
   skill?: string;
   /** perf: detail 扫描窗口全部 session (找最慢任务, 默认只采样) */
   all: boolean;
+  /** stats: --model= 子串匹配 modelKey (大小写不敏感) */
+  model?: string;
+  /** stats: --by=model,day 输出 model×day 交叉表 */
+  by?: string;
   /** sqlite 生命周期 banner 打到 stderr (默认静默) */
   verbose: boolean;
 }
@@ -301,6 +306,8 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a.startsWith('--start=')) out.startDate = a.slice('--start='.length);
     else if (a.startsWith('--end=')) out.endDate = a.slice('--end='.length);
     else if (a.startsWith('--source=')) out.source = parseSource(a.slice('--source='.length));
+    else if (a.startsWith('--model=')) out.model = a.slice('--model='.length);
+    else if (a.startsWith('--by=')) out.by = a.slice('--by='.length);
     else if (a.startsWith('--db=')) out.dbPath = a.slice('--db='.length);
     else if (a.startsWith('--meta=')) out.metaPath = a.slice('--meta='.length);
     else if (a.startsWith('--prompts=')) {
@@ -372,7 +379,8 @@ Commands:
   prompts      Cached user prompts (单条 --id / 批量 --id=a,b / 窗口批量 + --jsonl)
   set-title    Cache overlay title (Agent/user; sync-safe)
   title-review Review title candidates: title + prompt count + truncated prompts
-  stats        Aggregate counts / tokens (cache; P0 window clip + quality)
+  stats        Aggregate counts / tokens; bySource + by_model + tokensByDay/costByDay
+               --model= 子串过滤模型; --by=model,day 出模型×日交叉; split=root vs subagent
   scan         跨 session prompt 检索 (缓存 prompts 表, cache-first)
   tool-calls   跨 session tool call 导出 jsonl (--build 物化 / --live 直读)
   skill-reads  skill 读取抽取 (Skill tool + SKILL.md 等 skills/ 文件; --build 物化 / --live 直读)
@@ -465,6 +473,8 @@ Options:
                       '...', whitespace collapsed); 0 = full raw text
   --include-empty     title-review: also list sessions with no prompts
   --limit=N --offset=N
+  --model=PATTERN     stats: 子串匹配 modelKey (大小写不敏感; 收窄 session 与模型维度统计)
+  --by=model,day      stats: 额外输出 by_model_day (模型×日) 交叉表
   --live              list: live convert; skill-reads: 跳过物化表 live 直读
   --full-fields       list/detail info: full objects
   --no-messages       detail: skip messages
@@ -1050,7 +1060,7 @@ async function cmdToolCalls(args: CliArgs) {
   const maxOutputChars = args.includeIo ? (args.maxOutputChars ?? 300) : undefined;
   const filters = { tool: args.tool, status: args.status };
   const emitRow = (s: UnifiedSessionInfo, row: Record<string, unknown>) =>
-    JSON.stringify({ ...toolCallHeader(s), ...row });
+    JSON.stringify({ ...toolCallHeader(s), day: toolCallDay(row.created_at as number | null), ...row });
 
   const collect = async (): Promise<string> => {
     const lines: string[] = [];
@@ -1875,10 +1885,21 @@ async function cmdStats(args: CliArgs) {
       rootsOnly: args.rootsOnly,
     });
 
+    const byDims = new Set(
+      (args.by || '')
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const badDim = [...byDims].find((d) => d !== 'model' && d !== 'day');
+    if (badDim) throw new Error(`--by expects model,day; got "${badDim}"`);
+
     const stats = computeCliStats(result.sessions, {
       startDate,
       endDate,
       topFail: args.limit ?? 10,
+      modelFilter: args.model,
+      includeModelDay: byDims.has('model') && byDims.has('day'),
     });
     const meta = loadMeta(paths.metaPath);
     const dbStats = countStats();
@@ -1897,6 +1918,8 @@ async function cmdStats(args: CliArgs) {
         bySource: stats.bySource,
         bySourceDetail: stats.bySourceDetail,
         by_model: stats.by_model,
+        by_model_day: stats.by_model_day,
+        model_filter: stats.model_filter,
         totals: stats.totals,
         tokensByDay: stats.tokensByDay,
         costByDay: stats.costByDay,
@@ -1907,7 +1930,7 @@ async function cmdStats(args: CliArgs) {
           db_stats: dbStats,
         },
         note:
-          'P0 clip+split+quality (#2); P1 by_model/cost/costByDay/tool_fail (#3). No host model-normalize.',
+          'split=root vs subagent; bySource/by_model/by_model_day=模型维度; tokensByDay/costByDay 默认全模型, 传 --model= 时收窄为命中模型; 窗口裁剪见 clipped/quality',
       },
       args.pretty,
     );

@@ -316,3 +316,89 @@ describe('computeCliStats P1', () => {
     expect(stats.totals.cost_note).toContain('no day/pricing');
   });
 });
+
+describe('computeCliStats 模型维度 (--model / --by=model,day)', () => {
+  const day = (
+    byModel: Array<{ modelKey: string; tokens: number; usd?: number }>,
+  ) => ({
+    date: '2026-08-01',
+    tokens: byModel.reduce((a, m) => a + m.tokens, 0),
+    input: 10,
+    output: 20,
+    cacheRead: 0,
+    cacheWrite: 0,
+    usd: byModel.reduce((a, m) => a + (m.usd || 0), 0),
+    cny: 0,
+    byModel: byModel.map((m) => ({
+      modelKey: m.modelKey,
+      tokens: m.tokens,
+      input: 6,
+      output: 14,
+      cacheRead: 0,
+      cacheWrite: 0,
+      usd: m.usd || 0,
+      cny: 0,
+    })),
+  });
+
+  const multiModel = base({
+    id: 'mm',
+    total_tokens: 300,
+    usage_by_day: [
+      day([
+        { modelKey: 'opencode-go/deepseek-flash', tokens: 200, usd: 0.2 },
+        { modelKey: 'kimi-code/k3', tokens: 100, usd: 0.1 },
+      ]),
+    ],
+  });
+  const other = base({
+    id: 'og',
+    total_tokens: 50,
+    usage_by_day: [day([{ modelKey: 'xai/grok', tokens: 50, usd: 0.05 }])],
+  });
+
+  test('by_model_day: 模型×日交叉, 默认不出该字段', () => {
+    const stats = computeCliStats([multiModel, other], { includeModelDay: true });
+    expect(stats.by_model_day).toHaveLength(3);
+    const ds = stats.by_model_day!.find((r) => r.modelKey === 'opencode-go/deepseek-flash')!;
+    expect(ds.day).toBe('2026-08-01');
+    expect(ds.tokens).toBe(200);
+    expect(ds.sessions).toBe(1);
+    expect(Math.round(ds.usd * 100) / 100).toBe(0.2);
+    // 同日内按 tokens desc
+    expect(stats.by_model_day![0].modelKey).toBe('opencode-go/deepseek-flash');
+    expect(computeCliStats([multiModel]).by_model_day).toBeUndefined();
+    expect(computeCliStats([multiModel]).model_filter).toBeUndefined();
+  });
+
+  test('--model= 子串过滤: session 级全集 + 模型级自身 token', () => {
+    const stats = computeCliStats([multiModel, other], {
+      modelFilter: 'deepseek',
+      includeModelDay: true,
+    });
+    expect(stats.model_filter!.pattern).toBe('deepseek');
+    expect(stats.model_filter!.matched_models).toEqual(['opencode-go/deepseek-flash']);
+    expect(stats.model_filter!.matched_sessions).toBe(1);
+    expect(stats.by_model).toHaveLength(1);
+    expect(stats.by_model[0].tokens).toBe(200);
+    // session 级字段 = 命中 session 全集（含其非命中模型用量）
+    expect(stats.sessions).toBe(1);
+    expect(stats.totals.tokens).toBe(300);
+    // 天/交叉维度只算命中模型
+    expect(stats.tokensByDay['2026-08-01']).toBe(200);
+    expect(stats.by_model_day).toHaveLength(1);
+    expect(stats.by_model_day![0].tokens).toBe(200);
+  });
+
+  test('大小写不敏感 + 无 byModel 明细时不贡献 by_model_day', () => {
+    const legacy = base({
+      id: 'lg',
+      total_tokens: 70,
+      usage_by_model: [{ provider: 'xai', model: 'grok', input: 30, output: 40, tokens: 70 }],
+    });
+    const stats = computeCliStats([legacy], { includeModelDay: true, modelFilter: 'XAI' });
+    expect(stats.by_model[0].modelKey).toBe('xai/grok');
+    expect(stats.by_model_day).toEqual([]);
+    expect(stats.sessions).toBe(1);
+  });
+});
