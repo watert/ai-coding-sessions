@@ -40,7 +40,7 @@ import { writeFileSync } from 'node:fs';
 import { ALL_SOURCES, isSourceId, type SourceId } from './schema';
 import { syncSessions, reconcileSessions } from './sync';
 import { listRefs } from './list-refs';
-import { initStoreDb, closeStoreDb } from './db';
+import { initStoreDb, closeStoreDb, getStoreDb } from './db';
 import {
   initAiCodingStats,
   closeAiCodingStats,
@@ -131,6 +131,7 @@ const COMMANDS = [
   'perf',
   'sync',
   'refs',
+  'schema',
   'help',
 ] as const;
 type Command = (typeof COMMANDS)[number];
@@ -215,6 +216,8 @@ interface CliArgs {
   model?: string;
   /** stats: --by=model,day 输出 model×day 交叉表 */
   by?: string;
+  /** schema: 只看单表 */
+  table?: string;
   /** sqlite 生命周期 banner 打到 stderr (默认静默) */
   verbose: boolean;
 }
@@ -309,6 +312,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a.startsWith('--source=')) out.source = parseSource(a.slice('--source='.length));
     else if (a.startsWith('--model=')) out.model = a.slice('--model='.length);
     else if (a.startsWith('--by=')) out.by = a.slice('--by='.length);
+    else if (a.startsWith('--table=')) out.table = a.slice('--table='.length);
     else if (a.startsWith('--db=')) out.dbPath = a.slice('--db='.length);
     else if (a.startsWith('--meta=')) out.metaPath = a.slice('--meta='.length);
     else if (a.startsWith('--prompts=')) {
@@ -388,6 +392,7 @@ Commands:
   perf         性能检查: 各 source list(×2)/detail/extract 分阶段采样 + 阈值警告
   sync         Incremental sync → SQLite
   refs         listRefs only
+  schema       缓存表结构 + 口径速查 (--table= 单表; Agent 裸查 sqlite 前先看这个)
   help
 
 Agent trajectory (issue #1):
@@ -1956,6 +1961,68 @@ async function cmdStats(args: CliArgs) {
   }
 }
 
+/** 缓存表口径（Agent 裸查 sqlite 的第一站; 与 references/cli.md「直查 sqlite」同源） */
+const TABLE_SEMANTICS: Record<string, string> = {
+  sessions:
+    '一行一 session; payload 是 UnifiedSessionInfo JSON(parent_id/spawn_group_id/total_* 在里头); models 为逗号拼接的 modelKey; custom_title 是本地 overlay(sync 不覆盖)',
+  usage_by_day:
+    '一行一 (session, day); day 为 YYYY-MM-DD(按消息时间归天, 与 list --days 的 last_active_at 口径不同); usage_by_model 是 JSON 数组, 查库需 json_each 展开',
+  tool_calls:
+    '一行一 tool call(tool-calls --build 物化); msg_idx = 统一 messages 数组下标, 同一 msg_idx 多条 = 一个 assistant message 内的并行调用; created_at 为 ms epoch',
+  prompts: '缓存 user prompts; origin = insert/queued/interrupt(普通轮次为 NULL)',
+  skill_reads: '一行一 skill 命中(Skill tool 调用 + read 类工具命中 skills/<name>/); reads 为 JSON 列',
+};
+
+/** 缓存表结构 + 口径速查; 只读 sqlite_master / PRAGMA, 不碰业务数据 */
+async function cmdSchema(args: CliArgs) {
+  const known = Object.keys(TABLE_SEMANTICS);
+  if (args.table && !known.includes(args.table)) {
+    throw new Error(`--table expects ${known.join('|')}; got "${args.table}"`);
+  }
+  const paths = resolveStorePaths({ dbPath: args.dbPath, metaPath: args.metaPath });
+  await initStoreDb({ dbPath: args.dbPath, metaPath: args.metaPath });
+  try {
+    const db = getStoreDb();
+    const tables = (args.table ? [args.table] : known).map((name) => {
+      const ddl = db
+        .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
+        .get(name) as { sql: string | null } | undefined;
+      const columns = (
+        db.prepare(`PRAGMA table_info(${name})`).all() as Array<{
+          name: string;
+          type: string;
+          notnull: number;
+          pk: number;
+        }>
+      ).map((c) => ({ name: c.name, type: c.type, not_null: !!c.notnull, pk: !!c.pk }));
+      const rows = ddl ? (db.prepare(`SELECT COUNT(*) AS c FROM ${name}`).get() as { c: number }).c : 0;
+      return {
+        table: name,
+        exists: !!ddl,
+        rows,
+        columns,
+        semantics: TABLE_SEMANTICS[name] ?? null,
+        ddl: ddl?.sql ?? null,
+      };
+    });
+    const ver = db.prepare(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).get() as
+      | { value: string }
+      | undefined;
+    printJson(
+      {
+        ok: true,
+        db: paths.dbPath,
+        schema_version: ver ? Number(ver.value) : null,
+        tables,
+        note: '只读表结构; 常用查询片段见 skill references/cli.md「直查 sqlite」',
+      },
+      args.pretty,
+    );
+  } finally {
+    closeStoreDb();
+  }
+}
+
 async function cmdRefs(args: CliArgs) {
   await initAiCodingStats();
   try {
@@ -2103,6 +2170,9 @@ async function main() {
       break;
     case 'refs':
       await cmdRefs(args);
+      break;
+    case 'schema':
+      await cmdSchema(args);
       break;
     case 'sync':
       await cmdSync(args);
