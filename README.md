@@ -181,7 +181,7 @@ bun src/store/cli.ts help
 
 | Command | Data | Notes |
 |---------|------|--------|
-| `list` | cache (default) or `--live` | `--parent=` / `--roots` / **`--cwd=`** / `--untitled`; compact by default |
+| `list` | cache (default) or `--live` | `--parent=` / `--roots` / **`--cwd=`** / `--untitled` / **`--model=`**; compact by default |
 | `children` | cache | `list --parent=<id>` |
 | `resolve` | cache | `latest` \| id \| path \| title; ambiguous → exit 2 ([#4](https://github.com/watert/ai-coding-sessions/issues/4)) |
 | `handoff` | **live** | cross-agent resume brief (inert; user 500 / assistant 3000); alias `resume-summary` (#4) |

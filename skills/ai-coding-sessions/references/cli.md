@@ -13,7 +13,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 
 | 命令 | 用途 |
 |------|------|
-| `list` | 列表（cache 默认；`--live`；`--parent=` / `--roots` / **`--cwd=`**；日期与 limit） |
+| `list` | 列表（cache 默认；`--live`；`--parent=` / `--roots` / **`--cwd=`** / **`--model=`**；日期与 limit） |
 | `children` | 子 session（`list --parent=<id>`） |
 | `trace` / `timeline` | **轨迹骨架**（turn + soft-fail + lag/prefill；默认无 tool I/O；`--io` / `--format=md` / `--out=`） |
 | `tool-errors` | 单 session soft/hard 工具失败（`--status=hard` / `--tool=` / `--out=`） |
@@ -27,7 +27,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <command> [options]
 | `stats` | **多维度聚合**：`bySource` / `by_model` / `tokensByDay` / `costByDay` / root-vs-subagent split / `tool_fail`；**`--model=` 子串过滤** · **`--by=model,day` 模型×日交叉** |
 | `sync` | 增量同步缓存（`--reconcile` / `--full`） |
 | `scan` | **跨 session prompt 检索**（`--grep=` · `--regex`；缓存 prompts 表, cache-first） |
-| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含归因：`source`/`session_id`/`model`(主导)/`day`/`msg_idx`；`--build` 物化(增量) / `--live` 直读 / `--tool=` / `--status=` / `--out=`；分析交给 grep/jq/python） |
+| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含归因：`source`/`session_id`/`model`(主导)/`day`/`msg_idx`；`--build` 物化(增量, 回报 `coverage` 覆盖区间) / `--live` 直读 / `--tool=` / `--status=` / `--out=`；分析交给 grep/jq/python） |
 | `refs` | listRefs（无 convert/write） |
 | `help` | 帮助 |
 
@@ -125,6 +125,9 @@ bun src/store/cli.ts digest --text-preview=800                # 覆盖 goal/stop
 # 全量窗口: bySource + by_model + tokensByDay/costByDay + split(root/subagent) + tool_fail
 bun src/store/cli.ts stats --source=all --days=7
 
+# 哪些 session 用了某模型（list 与 stats 同一套子串语义, 都不必写 provider 前缀）
+bun src/store/cli.ts list --model=deepseek-flash --days=7 --roots
+
 # 只看某模型（modelKey 大小写不敏感子串; 收窄 session 与模型维度统计）
 bun src/store/cli.ts stats --source=all --days=7 --model=deepseek-flash
 
@@ -166,7 +169,7 @@ select date(created_at/1000,'unixepoch','localtime') d, count(*) msgs,
 from tool_calls where created_at is not null group by 1 order by 1;"
 ```
 
-- 物化覆盖区间：`select min(created_at), max(created_at) from tool_calls`（`--build` 是增量的，先补齐再分析）
+- `--build` 会回报 `coverage`（全表 `min/max_created_at` + rows + sessions），一眼看出窗口是否补齐、表是否为空；手工查等价于 `select min(created_at), max(created_at) from tool_calls`
 - `usage_by_day.day` 按**消息时间**归天；`list --days=N` 按 `last_active_at` 过滤 —— 两者口径不同，交叉 join 时会错位
 
 ### 同步

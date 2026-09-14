@@ -120,7 +120,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 
 | 命令 | 用途 |
 |------|------|
-| `list` | 缓存列表（`--live` · `--parent=` · `--roots` · **`--cwd=`** · `--untitled`） |
+| `list` | 缓存列表（`--live` · `--parent=` · `--roots` · **`--cwd=`** · `--untitled` · **`--model=`**） |
 | `children` | 子 session |
 | `trace` / `timeline` | **轨迹骨架**（默认无 tool I/O；`--format=md --out=`） |
 | `tool-errors` | 单 session soft/hard 工具失败 |
@@ -134,7 +134,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts <cmd> …
 | `title-review` | 标题审查候选：`title` + prompt count + truncated prompts（`--prompt-count=` / `--prompt-chars=` / `--include-empty`） |
 | `stats` | **多维度聚合**：`by_model` / `tokensByDay` / `costByDay` / `split`(root vs subagent) / `tool_fail` / `quality`；**`--model=` 子串过滤** · **`--by=model,day` 模型×日交叉** |
 | `scan` | **跨 session prompt 检索**（缓存 prompts 表, cache-first; `--grep=` · `--regex` · `--days=`） |
-| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含归因: `model` 主导模型 / `day` / `msg_idx` 统一 messages 下标——同 idx 多条 = 一个 msg 内的并行调用; `--build` 物化 / `--live` 直读 / `--tool=` / `--out=`; 落盘后 grep/jq/python 接管分析） |
+| `tool-calls` | **跨 session tool call 导出 jsonl**（每行自含归因: `model` 主导模型 / `day` / `msg_idx` 统一 messages 下标——同 idx 多条 = 一个 msg 内的并行调用; `--build` 物化并回报 `coverage` / `--live` 直读 / `--tool=` / `--out=`; 落盘后 grep/jq/python 接管分析） |
 | `skill-reads` | **skill 使用频次盘点**（`--build` 物化 / 默认 cache 导出 / `--live` 直读 / `--full` 强制重建 / `--skill=` / `--out=`; 三阶段见「审计 / 盘点」段） |
 | `sync` | 增量同步（`--reconcile` · `--full`） |
 | `refs` | listRefs |

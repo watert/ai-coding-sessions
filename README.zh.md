@@ -181,7 +181,7 @@ bun src/store/cli.ts help
 
 | 命令 | 数据 | 说明 |
 |---------|------|--------|
-| `list` | 默认缓存，或 `--live` | `--parent=` / `--roots` / **`--cwd=`** / `--untitled`；默认紧凑字段 |
+| `list` | 默认缓存，或 `--live` | `--parent=` / `--roots` / **`--cwd=`** / `--untitled` / **`--model=`**；默认紧凑字段 |
 | `children` | 缓存 | 等价 `list --parent=<id>` |
 | `resolve` | 缓存 | `latest` \| id \| path \| 标题；歧义 exit 2（[#4](https://github.com/watert/ai-coding-sessions/issues/4)） |
 | `handoff` | **live** | 跨 agent 续作摘要（inert；user 500 / assistant 3000）；别名 `resume-summary`（#4） |
