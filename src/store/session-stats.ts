@@ -238,6 +238,15 @@ export function modelKeyOf(m: { modelKey?: string; provider?: string; model?: st
   return 'unknown';
 }
 
+/** models_used（逗号分隔串）是否命中子串 pattern（大小写不敏感; 空 pattern 视为命中） */
+export function modelsUsedMatches(modelsUsed: string | null | undefined, pattern: string): boolean {
+  const p = pattern.trim().toLowerCase();
+  if (!p) return true;
+  return (modelsUsed || '')
+    .split(',')
+    .some((m) => m.trim().toLowerCase().includes(p));
+}
+
 /**
  * session 各模型 token 汇总（modelKey → tokens）。
  * 日 byModel 优先（已按窗口裁剪）; 无日模型明细时回退 usage_by_model。

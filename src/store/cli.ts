@@ -77,7 +77,7 @@ import {
   resolveSessionRef,
   type ResolveResult,
 } from './session-resolve';
-import { computeCliStats } from './session-stats';
+import { computeCliStats, modelsUsedMatches } from './session-stats';
 import { collectSessionFailures } from './failure-stats';
 import { scanSessions } from './session-scan';
 import {
@@ -87,6 +87,7 @@ import {
   replaceToolCalls,
   toolCallDay,
   toolCallHeader,
+  toolCallsCoverage,
 } from './session-tool-calls';
 import {
   extractSkillReads,
@@ -367,7 +368,7 @@ Usage:
   bun src/store/cli.ts [sync options]     # bare flags = sync (legacy)
 
 Commands:
-  list         List sessions (cache default; --live; --parent=; --roots; --cwd=)
+  list         List sessions (cache default; --live; --parent=; --roots; --cwd=; --model=)
   children     List child sessions of --id (cache; alias of list --parent=)
   detail       Session detail live (size flags for Agent context)
   trace        Trajectory skeleton (default no tool I/O)  [alias: timeline]
@@ -473,7 +474,8 @@ Options:
                       '...', whitespace collapsed); 0 = full raw text
   --include-empty     title-review: also list sessions with no prompts
   --limit=N --offset=N
-  --model=PATTERN     stats: 子串匹配 modelKey (大小写不敏感; 收窄 session 与模型维度统计)
+  --model=PATTERN     list/stats: modelKey 子串匹配 (大小写不敏感)
+                      list → 只留用了该模型的 session; stats → 收窄 session 与模型维度统计
   --by=model,day      stats: 额外输出 by_model_day (模型×日) 交叉表
   --live              list: live convert; skill-reads: 跳过物化表 live 直读
   --full-fields       list/detail info: full objects
@@ -682,6 +684,7 @@ async function cmdList(args: CliArgs) {
         sessions = sessions.filter((s) => s.parent_id == null || s.parent_id === '');
       }
       if (cwd) sessions = filterSessionsByCwd(sessions, cwd);
+      if (args.model) sessions = sessions.filter((s) => modelsUsedMatches(s.models_used, args.model!));
       if (args.untitledOnly) {
         sessions = sessions.filter((s) => !s.title_is_custom && isWeakTitle(s.source_title ?? s.title));
       }
@@ -719,6 +722,7 @@ async function cmdList(args: CliArgs) {
       rootsOnly: args.rootsOnly,
       cwd,
       untitledOnly: args.untitledOnly,
+      models: args.model ? [args.model] : undefined,
       limit,
       offset,
     });
@@ -1048,7 +1052,20 @@ async function cmdToolCalls(args: CliArgs) {
         totalRows += replaceToolCalls(source, s.id, rows);
         built += 1;
       }
-      printJson({ ok: true, build: { sessions: sessions.length, built, skipped, total_rows: totalRows } }, args.pretty);
+      printJson(
+        {
+          ok: true,
+          build: {
+            sessions: sessions.length,
+            built,
+            skipped,
+            total_rows: totalRows,
+            /** 全表覆盖（含历史 build）: 一眼看出是否补齐窗口 / 是否空表 */
+            coverage: toolCallsCoverage(args.source),
+          },
+        },
+        args.pretty,
+      );
     } finally {
       closeAiCodingStats();
       closeStoreDb();

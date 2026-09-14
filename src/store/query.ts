@@ -14,6 +14,7 @@ import {
 } from '../lib/date-utils';
 import { matchesCwd } from './session-resolve';
 import { isWeakTitle, overlaySessionFields } from './session-title';
+import { modelsUsedMatches } from './session-stats';
 import dayjs from 'dayjs';
 
 export interface QueryCachedOptions {
@@ -24,6 +25,7 @@ export interface QueryCachedOptions {
   /** 默认排除 orphan */
   includeOrphan?: boolean;
   projectId?: string;
+  /** modelKey 子串匹配（大小写不敏感; 依据 payload.models_used 逗号分隔串） */
   models?: string[];
   /** 仅子 session：payload.parent_id 匹配（无 SQL 列，JS 过滤） */
   parentId?: string;
@@ -108,7 +110,7 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
     custom_title: string | null;
   }>;
 
-  const targetModels = models && models.length ? new Set(models) : null;
+  const modelPatterns = models?.map((m) => m.trim()).filter(Boolean) ?? [];
   const sessions: UnifiedSessionInfo[] = [];
   const bySource: ListSessionsResult['bySource'] = {
     claude: 0,
@@ -139,10 +141,8 @@ export function queryCached(options?: QueryCachedOptions): ListSessionsResult {
       if (s.title_is_custom || !isWeakTitle(s.source_title)) continue;
     }
 
-    if (targetModels) {
-      const used = (s.models_used || '').split(',').map((m) => m.trim()).filter(Boolean);
-      if (!used.some((id) => targetModels.has(id))) continue;
-    }
+    // modelKey 子串匹配（大小写不敏感）: 传 deepseek-flash 即可命中 opencode-go/deepseek-flash
+    if (modelPatterns.length && !modelPatterns.some((p) => modelsUsedMatches(s.models_used, p))) continue;
 
     if (startDate || endDate) {
       const { firstMs, lastMs } = getSessionActivityBounds(s);

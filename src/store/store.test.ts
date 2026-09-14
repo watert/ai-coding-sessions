@@ -188,6 +188,30 @@ describe('upsert + query', () => {
     expect((found as any).total_credits).toBe(1.5);
   });
 
+  test('queryCached models: 子串匹配 modelKey (大小写不敏感)', () => {
+    upsertSession(makeSession({ id: 'md-1', models_used: 'opencode-go/deepseek-flash' }));
+    upsertSession(
+      makeSession({
+        id: 'md-2',
+        models_used: 'minimax-cn-coding-plan/MiniMax-M3,opencode-go/deepseek-v4.1-flash',
+      }),
+    );
+    upsertSession(makeSession({ id: 'md-3', models_used: 'xai/grok-4.6' }));
+
+    const ids = (models: string[]) =>
+      queryCached({ source: 'claude', models }).sessions.map((s) => s.id);
+
+    // 子串: 不必写 provider 前缀
+    expect(ids(['deepseek']).sort()).toEqual(['md-1', 'md-2']);
+    // 大小写不敏感
+    expect(ids(['DEEPSEEK-V4.1'])).toEqual(['md-2']);
+    // 多 pattern 为 OR
+    expect(ids(['grok', 'deepseek-flash']).sort()).toEqual(['md-1', 'md-3']);
+    expect(ids(['nonexistent'])).toEqual([]);
+    // 空数组 = 不过滤
+    expect(ids([]).length).toBeGreaterThanOrEqual(3);
+  });
+
   test('prompts full text queryable', () => {
     const rows = getSessionPrompts('claude', 'sess-1');
     expect(rows.length).toBe(1);

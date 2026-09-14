@@ -161,6 +161,32 @@ export function getToolCallsBuiltAt(source: SourceId, sessionId: string): number
   return row?.built_at ?? null;
 }
 
+export interface ToolCallsCoverage {
+  min_created_at: number | null;
+  max_created_at: number | null;
+  rows: number;
+  sessions: number;
+}
+
+/** 物化表覆盖快照（--build 后回报, 判断是否补齐窗口 / 是否空表） */
+export function toolCallsCoverage(source?: SourceId | 'all'): ToolCallsCoverage {
+  const db = getStoreDb();
+  const scoped = !!source && source !== 'all';
+  const row = db
+    .prepare(
+      `SELECT MIN(created_at) AS min_at, MAX(created_at) AS max_at,
+              COUNT(*) AS rows, COUNT(DISTINCT session_id) AS sessions
+       FROM tool_calls${scoped ? ' WHERE source = ?' : ''}`,
+    )
+    .get(...(scoped ? [source as string] : [])) as any;
+  return {
+    min_created_at: row?.min_at ?? null,
+    max_created_at: row?.max_at ?? null,
+    rows: row?.rows ?? 0,
+    sessions: row?.sessions ?? 0,
+  };
+}
+
 export interface QueryToolCallsFilters {
   source?: SourceId | 'all';
   tool?: string;
