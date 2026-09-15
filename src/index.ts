@@ -26,6 +26,7 @@ export * from './sources/zcode-code';
 export * from './sources/workbuddy-code';
 export * from './sources/cursor-code';
 export * from './sources/pi-code';
+export * from './sources/dsh-code';
 export * from './sources/opencode';
 
 export * from './sources/claude-source';
@@ -36,6 +37,7 @@ export * from './sources/zcode-source';
 export * from './sources/workbuddy-source';
 export * from './sources/cursor-source';
 export * from './sources/pi-source';
+export * from './sources/dsh-source';
 
 export {
   initAiCodingStats,

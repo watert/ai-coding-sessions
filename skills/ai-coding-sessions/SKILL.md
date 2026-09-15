@@ -1,8 +1,8 @@
 ---
 name: ai-coding-sessions
-description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS（按模型/按天聚合、模型×日交叉）、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题、skill 使用频次盘点 / 审计。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
+description: 查询、分析、导出本地 AI Coding Sessions（opencode / claude / kimi / grok / codex / zcode / workbuddy / cursor / pi / dsh）：会话列表/详情、轨迹 trace、handoff 跨 agent 续作摘要、prompts 导出、token/成本/TPS（按模型/按天聚合、模型×日交叉）、subagent 聚合、tool 失败排查、缓存 sync、弱标题/set-title 生成覆盖标题、skill 使用频次盘点 / 审计。跨 session Token 看板用 token-stats；单价/models.dev 用 ai-model-pricing。
 metadata:
-  version: 1.12.0
+  version: 1.13.0
 ---
 
 # AI Coding Sessions
@@ -41,7 +41,7 @@ metadata:
 
 ```
 src/core/       同构协议、静态单价、列表预览
-src/sources/    9 source + listSessions / getSessionDetail
+src/sources/    10 source + listSessions / getSessionDetail
 src/store/      schema · sync · queryCached · session-trace · CLI
 src/pricing.ts  configurePricing 钩子
 skills/ai-coding-sessions/   本 skill
@@ -49,7 +49,7 @@ skills/ai-coding-sessions/   本 skill
 
 ## Source
 
-`opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor | pi`  
+`opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor | pi | dsh`  
 本地路径与适配见 [references/sources.md](./references/sources.md)。  
 WorkBuddy 时序 / 吞吐 / 日志排查 → [workbuddy-internals.md](./references/workbuddy-internals.md)。  
 未实现 agent 目录与落盘形态 → [other-agents.md](./references/other-agents.md)。  
@@ -102,7 +102,7 @@ bun packages/ai-coding-sessions/src/store/cli.ts list --source=kimi --days=1 --l
 ## 数据模型要点
 
 - 列表：`id`, `title`, `source`, `parent_id`, `spawn_group_id`, `total_*`, `avg_tps`, `avg_latency_ms`, `session_status`, `usage_by_model`, `usage_by_day`, `editDiffs`, `usage_source`, `usage_is_incomplete`, `cost_is_partial`, `insert_count`, `queued_count`, `interrupt_count` …
-- 运行中插入（`userParts.origin` / `prompts.origin`）：`insert` 不打断当前轮插话 · `queued` 等本轮结束再送 · `interrupt` 先打断再重说。pi 无显式 flag（tool 循环推断 insert）；kimi 用 `prompt.steered` / `injection.interruption`；grok 用 while-working 前缀 / `prior_turn_interrupt=mid_turn_abort`
+- 运行中插入（`userParts.origin` / `prompts.origin`）：`insert` 不打断当前轮插话 · `queued` 等本轮结束再送 · `interrupt` 先打断再重说。pi 无显式 flag（tool 循环推断 insert）；kimi 用 `prompt.steered` / `injection.interruption`；grok 用 while-working 前缀 / `prior_turn_interrupt=mid_turn_abort`；dsh 用 inbox `next-step` / `next-turn`（turn 开着时）
 - `parent_id`：fork/subagent 父会话；`spawn_group_id`：同轮并发 subagent 组
 - 状态：`in-progress` | `done` | `error` | `aborted` | `unknown`
 - 详情 live：`info` + `messages` + `editDiffs` + 可选 `pricing`

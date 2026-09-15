@@ -11,6 +11,7 @@ import {
   createWorkbuddyFixture,
   createCursorFixture,
   createPiFixture,
+  createDshFixture,
 } from './__fixtures__/sources';
 import { listClaudeCodeSessions } from './claude-code';
 import { convertClaudeSession } from './claude-source';
@@ -28,6 +29,8 @@ import { listCursorSessions, closeCursorDb, initCursorDb } from './cursor-code';
 import { convertCursorSession } from './cursor-source';
 import { listPiCodeSessions, getPiSession } from './pi-code';
 import { convertPiSession, getPiSessionDetail } from './pi-source';
+import { listDshSessions } from './dsh-code';
+import { convertDshSession, getDshSessionDetail } from './dsh-source';
 
 function withEnv(patch: Record<string, string | undefined>, fn: () => Promise<void> | void) {
   const prev: Record<string, string | undefined> = {};
@@ -172,6 +175,33 @@ describe('source fixtures list+convert', () => {
       // asst1=0.00042 + asst2=0.000014936 = 0.000434936
       expect(info.pricing?.usd).toBeGreaterThan(0);
       expect(info.pricing?.usd ?? 0).toBeLessThan(0.01);
+    });
+  });
+
+  test('dsh', async () => {
+    const fx = createDshFixture();
+    await withEnv({ DSH_HOME: fx.root }, async () => {
+      const list = await listDshSessions();
+      expect(list.some((s) => s.sessionId === fx.sessionId)).toBe(true);
+      const sess = list.find((s) => s.sessionId === fx.sessionId)!;
+      expect(sess.cwd).toBe(fx.cwd);
+      const info = await convertDshSession(sess);
+      expect(info.id).toBe(fx.sessionId);
+      expect(info.source).toBe('dsh');
+      expect(info.title).toBe('DSH fixture title');
+      expect(info.total_user_messages).toBe(1);
+      expect(info.total_tool_calls).toBe(1);
+      expect(info.models_used).toContain('MiniMax-M3');
+      expect(info.usage_source).toBe('real');
+      expect(info.total_input).toBe(140);
+      expect(info.total_output).toBe(28);
+      expect(info.total_cache_read).toBe(140);
+      expect(info.session_status).toBe('done');
+      const detail = await getDshSessionDetail(fx.sessionId);
+      expect(detail?.messages.length).toBeGreaterThanOrEqual(3);
+      const tools = detail!.messages.flatMap((m) => m.parts || []).filter((p: any) => p.type === 'tool');
+      expect(tools).toHaveLength(1);
+      expect((tools[0] as any).state.output).toContain('README.md');
     });
   });
 });

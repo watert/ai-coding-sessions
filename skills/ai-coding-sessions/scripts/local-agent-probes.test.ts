@@ -28,6 +28,7 @@ describe('local-agent-probes', () => {
       'zcode',
       'workbuddy',
       'cursor',
+      'dsh',
     ]);
     const ctx = makeProbeCtx({ HOME: '/tmp/acs-probe-home', XDG_CONFIG_HOME: '/tmp/acs-xdg' } as any);
     expect(ctx.home).toBe('/tmp/acs-probe-home');

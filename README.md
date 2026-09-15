@@ -256,10 +256,11 @@ Typical baseline on a real machine (Sep 2026, ~850 cached sessions): total run <
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + project JSONL | Virtual subagents (`Agent` tool → `projects/.../<sid>/subagents/agent-*.jsonl`) |
 | `pi` | `~/.pi/agent/sessions/*.jsonl` | Real usage/cost; pi-subagents sidecar children (`parent_id` / `spawn_group_id`) |
 | `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | See **Cursor limits** below |
+| `dsh` | `~/.dsh/sessions/` JSONL / `.jsonl.zstd` | Real usage; stream TTFT; subagent `parentSession`; Bun decompresses concatenated zstd frames |
 
 Missing source dirs are skipped with a warning (other sources still work).
 
-Env overrides (subset): `CLAUDE_CONFIG_DIR`, `KIMI_DATA_DIR`, `CODEX_HOME`, `GROK_HOME` / `GROK_SESSIONS_DIR`, `ZCODE_HOME` / `ZCODE_DB_PATH`, `WORKBUDDY_HOME`, `CURSOR_HOME`, `CURSOR_APP_DATA`, `CURSOR_STATE_DB`. Full table in skill `references/sources.md`.
+Env overrides (subset): `CLAUDE_CONFIG_DIR`, `KIMI_DATA_DIR`, `CODEX_HOME`, `GROK_HOME` / `GROK_SESSIONS_DIR`, `ZCODE_HOME` / `ZCODE_DB_PATH`, `WORKBUDDY_HOME`, `CURSOR_HOME`, `CURSOR_APP_DATA`, `CURSOR_STATE_DB`, `DSH_HOME` / `DSH_SESSIONS_DIR`. Full table in skill `references/sources.md`.
 
 ### Cursor limits
 

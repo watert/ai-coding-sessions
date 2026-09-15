@@ -7,7 +7,7 @@ date: 2026-09-01T12:00:00+08:00
 
 # 其它 coding agent 本地目录 (补充参考)
 
-ACS 已实现 9 source 的路径与字段口径以 [sources.md](./sources.md) 为准。本页只补 **尚未做成 source** 的 agent: 常见落盘根、文件形态、以及和已实现 source 重叠处的差异。**对照目录与思路, 不要把用量扫描器的 parser 直接搬进来。**
+ACS 已实现 10 source 的路径与字段口径以 [sources.md](./sources.md) 为准。本页只补 **尚未做成 source** 的 agent: 常见落盘根、文件形态、以及和已实现 source 重叠处的差异。**对照目录与思路, 不要把用量扫描器的 parser 直接搬进来。**
 
 本地是否有数据: `bun skills/ai-coding-sessions/scripts/check-local-agents.ts` (默认 JSON, 只报 present)。`--format=md` / `--kind=other` / `--all`。路径 catalog 在 `scripts/local-agent-probes.ts`。
 
@@ -42,7 +42,7 @@ client 注册 (id / 路径根类型 / glob / 本地 parse)
 
 **VS Code extension task**: Roo / Kilo Code / Cline 的 `ui_messages.json`. 默认文档常写 Linux `~/.config/Code/...`; macOS 真根在 `~/Library/Application Support/Code/...`. 探测脚本两条都扫; 上游对 Cline 补了 mac 路径, Roo/Kilo 默认没有.
 
-**压缩 JSONL**: DSH `session.jsonl.zstd` (也接受未压缩)、Codex `.jsonl.zst`. 按 magic 判断, 不按后缀.
+**压缩 JSONL**: Codex `.jsonl.zst`. DSH 已进 ACS (`session.vN.jsonl.zstd`, 也接受未压缩). 按 magic 判断, 不按后缀.
 
 **用量快照 / 日志** (无完整对话): fx `usage-v2.json`、Mux `session-usage.json`、Reasonix `stats/*.jsonl`、LM Studio `server-logs/**/*.log` (只读 usage 对象).
 
@@ -66,7 +66,7 @@ client 注册 (id / 路径根类型 / glob / 本地 parse)
 
 先跑 check 脚本看本机规模, 再决定要不要做 ACS source.
 
-- 本机开发者 CLI 常见: Gemini、Copilot OTEL、Qwen、Hermes、DSH、Pi/OMP、Amp、Cline
+- 本机开发者 CLI 常见: Gemini、Copilot OTEL、Qwen、Hermes、Pi/OMP、Amp、Cline
 - IDE / 扩展: Zed、Goose、Roo、Kilo、Kiro、Cherry Studio、Devin
 - 几乎肯定不该进 ACS: 用量 API 二次缓存 (Cursor CSV / Trae / Warp / Antigravity sync / mcode headless)、LM Studio logs、Synthetic 再归因
 

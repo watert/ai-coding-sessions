@@ -13,6 +13,7 @@
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + `projects/<hash>/<sid>.jsonl` + `.../<sid>/subagents/agent-*.jsonl` | `workbuddy-code.ts` + `workbuddy-source.ts`（`Agent` tool → 虚拟 subagent，`parent_id` / `spawn_group_id`）；时序/日志排查见 [workbuddy-internals.md](./workbuddy-internals.md) |
 | `cursor` | Desktop `state.vscdb`（composerHeaders + bubbleId）+ `~/.cursor/projects/*/agent-transcripts` | `cursor-code.ts` + `cursor-source.ts` |
 | `pi` | `~/.pi/agent/sessions/*.jsonl` + **pi-timing extension** 落盘的 custom entry（TTFT/流式时长，T0/1/2）；**pi-subagents** 子会话在父 jsonl sidecar：`<stem>/<runId>/run-N/session.jsonl`（`parent_id` / `spawn_group_id`）。`<stem>/forks/*.jsonl` 是拷贝父 transcript 的 worker 副本：仍作 child 列出，但 convert **剥 inherited 事件**（否则父 usage 被每个 fork 再计一遍） | `pi-code.ts` + `pi-source.ts`（extension: `extensions/pi-timing.ts`，装到 `~/.pi/agent/extensions/pi-timing.ts`）。运行中插入无显式 flag：tool 循环中 → `insert`，提交时刻落在上一轮窗口 → `queued` |
+| `dsh` | `~/.dsh/sessions/<cwd-slug>/session-<id>/session.vN.jsonl(.zstd)`（取最高 generation；也接受未压缩 `.jsonl`） | `dsh-code.ts` + `dsh-source.ts`。真实 usage（`assistant/message.data.usage`，input 已剔除 cache）；stream `time`/`time0+dt` → TTFT/decode。`user/message.source.kind=user` 才算人话。inbox `next-step`（turn 开着）→ `insert`，`next-turn` → `queued`。`header.parentSession` → `parent_id`；`session/end-seed inherited` 剥 fork 前缀 |
 
 路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
 
@@ -30,6 +31,7 @@
 | `CURSOR_APP_DATA` | cursor | Desktop 应用数据根；macOS 默认 `~/Library/Application Support/Cursor` |
 | `CURSOR_STATE_DB` | cursor | 直接指定 `state.vscdb` 路径 |
 | `OPENCODE_DB_PATH` | opencode | 直接指定 `opencode.db`（优先于 `opencode db path`；hermetic 测试用） |
+| `DSH_HOME` / `DSH_SESSIONS_DIR` | dsh | 可指 `~/.dsh` 或 `…/sessions` |
 
 测试：`ACS_LIVE_TESTS=1` 才跑依赖本机真实 CLI 数据的冒烟（默认 skip）。各 source list/convert 主路径见 `src/sources/__fixtures__/` + `source-fixtures.test.ts` / `opencode.test.ts`。
 

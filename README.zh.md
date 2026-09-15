@@ -258,10 +258,11 @@ bun src/store/cli.ts perf --days=30 --limit=8 --source=grok   # 定向检查
 | `workbuddy` | `~/.workbuddy/workbuddy.db` + 项目 JSONL | 虚拟 subagent（主 jsonl `Agent` tool → `projects/.../<sid>/subagents/agent-*.jsonl`） |
 | `pi` | `~/.pi/agent/sessions/*.jsonl` | 真实 usage/cost；pi-subagents sidecar 子会话（`parent_id` / `spawn_group_id`） |
 | `cursor` | Cursor Desktop `state.vscdb` + `~/.cursor/projects/*/agent-transcripts` | 见下方 **Cursor 限制** |
+| `dsh` | `~/.dsh/sessions/` JSONL / `.jsonl.zstd` | 真实 usage；stream TTFT；子会话 `parentSession`；Bun 解拼接 zstd 帧 |
 
 某 source 目录不存在会告警并跳过（其它源仍可用）。
 
-环境变量覆盖（节选）：`CLAUDE_CONFIG_DIR`、`KIMI_DATA_DIR`、`CODEX_HOME`、`GROK_HOME` / `GROK_SESSIONS_DIR`、`ZCODE_HOME` / `ZCODE_DB_PATH`、`WORKBUDDY_HOME`、`CURSOR_HOME`、`CURSOR_APP_DATA`、`CURSOR_STATE_DB`。完整表见 skill `references/sources.md`。
+环境变量覆盖（节选）：`CLAUDE_CONFIG_DIR`、`KIMI_DATA_DIR`、`CODEX_HOME`、`GROK_HOME` / `GROK_SESSIONS_DIR`、`ZCODE_HOME` / `ZCODE_DB_PATH`、`WORKBUDDY_HOME`、`CURSOR_HOME`、`CURSOR_APP_DATA`、`CURSOR_STATE_DB`、`DSH_HOME` / `DSH_SESSIONS_DIR`。完整表见 skill `references/sources.md`。
 
 ### Cursor 限制
 

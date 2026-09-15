@@ -151,7 +151,7 @@ function activityMs(s: UnifiedSessionInfo): number {
 
 /** 从路径 basename 猜 session id */
 export function sessionIdFromPath(ref: string): string | null {
-  const base = path.basename(ref).replace(/\.jsonl(\.zst)?$/i, '');
+  const base = path.basename(ref).replace(/\.jsonl(\.zstd?)?$/i, '');
   // uuid
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(base)) {
     return base;
@@ -161,8 +161,8 @@ export function sessionIdFromPath(ref: string): string | null {
     /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
   );
   if (m) return m[1];
-  // ses_ / session_
-  if (/^(ses_|session_)/i.test(base) && base.length >= 8) return base;
+  // ses_ / session_ / DSH session-<uuid>
+  if (/^(ses_|session[_-])/i.test(base) && base.length >= 8) return base;
   // grok-like 019f...
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(base)) {
     return base;
@@ -177,6 +177,7 @@ function looksLikePath(ref: string): boolean {
     ref.includes('\\') ||
     ref.endsWith('.jsonl') ||
     ref.endsWith('.jsonl.zst') ||
+    ref.endsWith('.jsonl.zstd') ||
     /^[A-Za-z]:/.test(ref)
   );
 }

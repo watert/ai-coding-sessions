@@ -46,7 +46,10 @@ import {
   convertWorkbuddySubagentSession,
   getWorkbuddySessionDetail,
 } from './workbuddy-source';
-import { convertCursorSession, getCursorSessionDetail } from './cursor-source';import type { SourceId } from '../store/schema';
+import { convertCursorSession, getCursorSessionDetail } from './cursor-source';
+import { convertDshSession, getDshSessionDetail, listDshSessionsForListing } from './dsh-source';
+import { getDshSessionItemsByIds } from './dsh-code';
+import type { SourceId } from '../store/schema';
 import type {
   UnifiedSessionInfo,
   UnifiedSessionDetail,
@@ -137,6 +140,7 @@ export async function listSessions(
   let workbuddyCount = 0;
   let cursorCount = 0;
   let piCount = 0;
+  let dshCount = 0;
 
   const dateRange = { startDate, endDate };
   /** 预筛：last_active >= start（放宽，精确重叠在 convert 后） */
@@ -336,6 +340,20 @@ export async function listSessions(
     }));
   }
 
+  if (source === 'dsh' || source === 'all') {
+    tasks.push((async () => {
+      const dshSessions = await listDshSessionsForListing();
+      const filtered = dshSessions.filter(s => prefilterByLastActive(s.time_updated));
+      const converted = filtered
+        .filter(filterByModels)
+        .filter(filterBySessionOverlap);
+      sessions.push(...converted);
+      dshCount = converted.length;
+    })().catch(e => {
+      console.warn('[ai-coding-stats] DSH sessions 获取失败:', e);
+    }));
+  }
+
   await Promise.all(tasks);
 
   // 按时间排序 (最新的在前)
@@ -354,6 +372,7 @@ export async function listSessions(
       workbuddy: workbuddyCount,
       cursor: cursorCount,
       pi: piCount,
+      dsh: dshCount,
     },
     lastUpdatedAt: new Date(),
   };
@@ -452,6 +471,8 @@ export async function convertSessionsByIds(
       return withConcurrencyLimit(pick(await listCursorSessions()), convertCursorSession, 3);
     case 'pi':
       return withConcurrencyLimit(pick(await listPiSessionRefs()), convertPiSession, 3);
+    case 'dsh':
+      return withConcurrencyLimit(await getDshSessionItemsByIds(ids), convertDshSession, 3);
     case 'workbuddy': {
       const expanded = await withConcurrencyLimit(
         pick(await listWorkbuddySessions()),
@@ -523,6 +544,8 @@ export async function getSessionDetail(
     return getCursorSessionDetail(sessionId);
   } else if (source === 'pi') {
     return getPiSessionDetail(sessionId);
+  } else if (source === 'dsh') {
+    return getDshSessionDetail(sessionId);
   } else {
     // OpenCode 直接透传
     const detail = getOpencodeSessionDetail(sessionId);

@@ -562,4 +562,98 @@ export function createPiFixture(dir?: string) {
   return { root, sessionsRoot, cwdSlug, sessDir, jsonlPath, cwd, sessionId };
 }
 
+// ---------- DSH (uncompressed session.v3.jsonl under cwd-slug/session-<id>/) ----------
+export function createDshFixture(dir?: string) {
+  const root = dir || mkFixtureDir('acs-dsh-');
+  const sessionsRoot = path.join(root, 'sessions');
+  const cwd = '/tmp/acs-dsh-proj';
+  const sessionId = 'session-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const sessDir = path.join(sessionsRoot, '--tmp-acs-dsh-proj--', sessionId);
+  const jsonlPath = path.join(sessDir, 'session.v3.jsonl');
+  const t0 = T0;
+  const t1 = T0 + 80;
+  const t2 = T0 + 400;
+  const t3 = T0 + 520;
+  const t4 = T0 + 800;
+
+  writeJsonl(jsonlPath, [
+    {
+      type: 'session',
+      version: 3,
+      id: sessionId,
+      createdAt: t0,
+      cwd,
+      isSeeded: false,
+      delegationDepth: 0,
+      agentPreset: 'standard',
+    },
+    { type: 'model/selection', seq: 0, time: t0, data: { provider: 'minimax-cn', model: 'MiniMax-M3' } },
+    { type: 'agent/inbox/spliced', seq: 1, time: t0 + 10, data: {
+      target: 'next-turn', start: 0,
+      inserted: [{ content: [{ type: 'text', text: 'hello dsh fixture' }], source: { kind: 'user' }, role: 'user', id: 'u-1' }],
+    } },
+    { type: 'turn/start', seq: 2, time: t0 + 11, data: { turn: 1 } },
+    { type: 'step/start', seq: 3, time: t0 + 20, data: { turn: 1, step: 1 } },
+    { type: 'user/message', seq: 4, time: t0 + 21, data: {
+      content: [{ type: 'text', text: 'hello dsh fixture' }],
+      source: { kind: 'user' }, role: 'user', id: 'u-1',
+    } },
+    { type: 'user/message', seq: 5, time: t0 + 22, data: {
+      content: [{ type: 'text', text: '<system-reminder>skip me</system-reminder>' }],
+      source: { kind: 'plugin', plugin: 'dsh-system-prompt' }, role: 'user', id: 'u-sys',
+    } },
+    { type: 'session/title', seq: 6, time: t0 + 30, data: { title: 'DSH fixture title', messageSeqs: [4] } },
+    {
+      type: 'assistant/message', seq: 7, time: t2, data: {
+        turn: 1, step: 1,
+        message: {
+          role: 'assistant',
+          id: 'a-1',
+          content: [
+            { type: 'reasoning', text: 'greet then list dir' },
+            { type: 'text', text: 'hi from dsh' },
+            { type: 'tool-call', id: 'call_dsh_001', name: 'bash', arguments: '{"command":"ls /tmp/acs-dsh-proj"}' },
+          ],
+          source: { kind: 'model', provider: 'minimax-cn', model: 'MiniMax-M3', replayState: { response: { stopReason: 'toolUse' } } },
+        },
+        usage: { inputTokens: 100, outputTokens: 20, totalTokens: 140, cacheReadTokens: 20 },
+        stream: [
+          { type: 'chunk', time: t1, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+          { type: 'text-chunks', time0: t1, dt: [40, 40], texts: ['hi ', 'from dsh'] },
+        ],
+      },
+    },
+    { type: 'tool/call', seq: 8, time: t2 + 2, data: { turn: 1, step: 1, callId: 'call_dsh_001', name: 'bash', arguments: '{"command":"ls /tmp/acs-dsh-proj"}' } },
+    { type: 'tool/result', seq: 9, time: t3, data: {
+      turn: 1, step: 1,
+      message: {
+        source: { kind: 'tool', callId: 'call_dsh_001' },
+        content: [{ type: 'tool-result', toolCallId: 'call_dsh_001', content: [{ type: 'text', text: 'README.md' }], isError: false }],
+        role: 'tool', id: 'tr-1',
+      },
+    } },
+    { type: 'step/end', seq: 10, time: t3 + 1, data: { turn: 1, step: 1 } },
+    { type: 'step/start', seq: 11, time: t3 + 10, data: { turn: 1, step: 2 } },
+    {
+      type: 'assistant/message', seq: 12, time: t4, data: {
+        turn: 1, step: 2,
+        message: {
+          role: 'assistant', id: 'a-2',
+          content: [{ type: 'text', text: 'listed the dir' }],
+          source: { kind: 'model', provider: 'minimax-cn', model: 'MiniMax-M3', replayState: { response: { stopReason: 'stop' } } },
+        },
+        usage: { inputTokens: 40, outputTokens: 8, totalTokens: 168, cacheReadTokens: 120 },
+        stream: [
+          { type: 'chunk', time: t4 - 100, chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+          { type: 'text-chunks', time0: t4 - 100, dt: [50], texts: ['listed the dir'] },
+        ],
+      },
+    },
+    { type: 'step/end', seq: 13, time: t4 + 1, data: { turn: 1, step: 2 } },
+    { type: 'turn/end', seq: 14, time: t4 + 2, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]);
+
+  return { root, sessionsRoot, sessDir, jsonlPath, cwd, sessionId };
+}
+
 export { createOpencodeFixtureDb } from './opencode';

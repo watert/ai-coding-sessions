@@ -22,8 +22,10 @@ import {
   resolveWorkbuddySubagentsDir,
 } from '../sources/workbuddy-code';
 import fs from 'fs';
-import path from 'path';import { listCursorSessions, initCursorDb } from '../sources/cursor-code';
+import path from 'path';
+import { listCursorSessions, initCursorDb } from '../sources/cursor-code';
 import { listPiSessionRefs } from '../sources/pi-code';
+import { listDshSessionRefs } from '../sources/dsh-code';
 import { initOpencodeDb } from '../sources/opencode';
 import type { SourceId } from './schema';
 import { ALL_SOURCES } from './schema';
@@ -55,6 +57,7 @@ const SEMANTICS: Partial<Record<SourceId, string>> = {
   codex: 'thread updatedAt',
   cursor: 'composerHeaders lastUpdatedAt; activity prefers bubbles',
   pi: 'jsonl mtime:size (cwd-slug/*.jsonl + sidecar <stem>/<runId>/run-N/session.jsonl + forks/*.jsonl)',
+  dsh: 'session.vN.jsonl(.zstd) mtime:size (highest generation per session dir)',
 };
 
 export async function listRefs(options?: ListRefsOptions): Promise<SessionRef[]> {
@@ -177,6 +180,17 @@ async function listRefsForSource(source: SourceId): Promise<SessionRef[]> {
         dirty_mark: s.dirtyMark,
         time_updated: s.updatedAt || 0,
         title: s.firstUserText,
+        dirty_semantics: sem,
+      }));
+    }
+    case 'dsh': {
+      const list = await listDshSessionRefs();
+      return list.map((s) => ({
+        source,
+        session_id: s.sessionId,
+        dirty_mark: s.dirtyMark,
+        time_updated: s.updatedAt || 0,
+        title: s.title,
         dirty_semantics: sem,
       }));
     }

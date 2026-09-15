@@ -136,7 +136,7 @@ function piExtras(ctx: ProbeCtx): ExtraHit[] {
   }
 }
 
-/** ACS 9 source + 未实现 extras. 权威路径以本表为准 */
+/** ACS 10 source + 未实现 extras. 权威路径以本表为准 */
 export const AGENT_PROBES: AgentProbe[] = [
   p('opencode', 'OpenCode', 'acs', 'sqlite', '**/*.{db,json}', (c) => [
     path.join(c.xdgData, 'opencode'),
@@ -178,6 +178,11 @@ export const AGENT_PROBES: AgentProbe[] = [
       c.env.CURSOR_STATE_DB?.trim() || path.join(app, 'User/globalStorage/state.vscdb'),
     ];
   }, ['CURSOR_HOME', 'CURSOR_APP_DATA', 'CURSOR_STATE_DB']),
+  p('dsh', 'DeepSeek Harness', 'acs', 'jsonl', '**/session*.jsonl*', (c) => {
+    const home = envDir(c, 'DSH_HOME', '.dsh');
+    const sess = c.env.DSH_SESSIONS_DIR?.trim();
+    return [sess || path.join(home, 'sessions')];
+  }, ['DSH_HOME', 'DSH_SESSIONS_DIR']),
 
   p('cursor-api', 'Cursor usage CSV cache', 'other', 'csv', 'usage*.csv', (c) => [
     path.join(c.xdgConfig, 'tokscale/cursor-cache'),
@@ -309,9 +314,6 @@ export const AGENT_PROBES: AgentProbe[] = [
     path.join(c.appData, 'CherryStudio/.claude/projects'),
     path.join(c.appData, 'CherryStudio/Data/Agents/.claude/projects'),
   ]),
-  p('dsh', 'DeepSeek Harness', 'other', 'jsonl', '**/session.jsonl*', (c) => [
-    path.join(envDir(c, 'DSH_HOME', '.dsh'), 'sessions'),
-  ], ['DSH_HOME']),
   p('mcode', 'MiniMax Code (headless)', 'other', 'jsonl', '**/*.jsonl', (c) => [
     path.join(c.xdgConfig, 'tokscale/headless/mcode'),
   ]),
