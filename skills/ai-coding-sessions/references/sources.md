@@ -17,6 +17,8 @@
 
 路径均基于 `os.homedir()` + `path.join`；缺目录时跳过并 warn，其它 source 仍可用。
 
+> ⚠️ **dsh 上游处于「开发者预览」，官方明确未来会有破坏兼容性的变更**（事实快照: 2026-09-15; 上游版本 `0.1.5-rc.2`）。会话格式代会 bump（当前 `SESSION_FORMAT_VERSION = 3`）—— **解析开始报错或漏字段时，先查上游 `docs/session-format-status.zh.md` 确认格式代**，再决定要不要补 `session-format-vN-to-vM` 迁移分支，别靠改字段猜测。
+
 ### 环境变量覆盖（对齐 [ccusage](https://github.com/ccusage/ccusage) 习惯）
 
 | 变量 | source | 说明 |
@@ -31,7 +33,8 @@
 | `CURSOR_APP_DATA` | cursor | Desktop 应用数据根；macOS 默认 `~/Library/Application Support/Cursor` |
 | `CURSOR_STATE_DB` | cursor | 直接指定 `state.vscdb` 路径 |
 | `OPENCODE_DB_PATH` | opencode | 直接指定 `opencode.db`（优先于 `opencode db path`；hermetic 测试用） |
-| `DSH_HOME` / `DSH_SESSIONS_DIR` | dsh | 可指 `~/.dsh` 或 `…/sessions` |
+| `DSH_HOME` | dsh | 上游 DSH 官方开关; 默认 `~/.dsh`, 须在启动前 export |
+| `DSH_SESSIONS_DIR` | dsh | **ACS 侧覆盖位, 上游 DSH 不读**: 直接当 sessions 根(测试/迁库用); 上游的 sessions 根由 profile patch 配置决定 |
 
 测试：`ACS_LIVE_TESTS=1` 才跑依赖本机真实 CLI 数据的冒烟（默认 skip）。各 source list/convert 主路径见 `src/sources/__fixtures__/` + `source-fixtures.test.ts` / `opencode.test.ts`。
 

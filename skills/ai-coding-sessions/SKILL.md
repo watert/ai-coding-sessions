@@ -50,6 +50,7 @@ skills/ai-coding-sessions/   本 skill
 ## Source
 
 `opencode | claude | kimi | grok | codex | zcode | workbuddy | cursor | pi | dsh`  
+> ⚠️ `dsh`(DeepSeek Harness) 上游处于**开发者预览**, 官方明示会有破坏兼容性的变更(快照 2026-09-15): 路径 / 字段 / 格式代都可能变 —— 解析出问题先看 [references/sources.md](./references/sources.md) 顶部的时效声明。  
 本地路径与适配见 [references/sources.md](./references/sources.md)。  
 WorkBuddy 时序 / 吞吐 / 日志排查 → [workbuddy-internals.md](./references/workbuddy-internals.md)。  
 未实现 agent 目录与落盘形态 → [other-agents.md](./references/other-agents.md)。  

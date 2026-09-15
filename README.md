@@ -260,7 +260,9 @@ Typical baseline on a real machine (Sep 2026, ~850 cached sessions): total run <
 
 Missing source dirs are skipped with a warning (other sources still work).
 
-Env overrides (subset): `CLAUDE_CONFIG_DIR`, `KIMI_DATA_DIR`, `CODEX_HOME`, `GROK_HOME` / `GROK_SESSIONS_DIR`, `ZCODE_HOME` / `ZCODE_DB_PATH`, `WORKBUDDY_HOME`, `CURSOR_HOME`, `CURSOR_APP_DATA`, `CURSOR_STATE_DB`, `DSH_HOME` / `DSH_SESSIONS_DIR`. Full table in skill `references/sources.md`.
+> ⚠️ **Upstream dsh is in "developer preview"; DeepSeek states that breaking changes are coming** (facts snapshot: 2026-09-15; upstream `0.1.5-rc.2`). Its session format generation will bump — when `dsh` parsing starts failing or dropping fields, first check the generation in upstream `docs/session-format-status.zh.md` before patching field guesses.
+
+Env overrides (subset): `CLAUDE_CONFIG_DIR`, `KIMI_DATA_DIR`, `CODEX_HOME`, `GROK_HOME` / `GROK_SESSIONS_DIR`, `ZCODE_HOME` / `ZCODE_DB_PATH`, `WORKBUDDY_HOME`, `CURSOR_HOME`, `CURSOR_APP_DATA`, `CURSOR_STATE_DB`, `DSH_HOME` (upstream) / `DSH_SESSIONS_DIR` (ACS-side override, not read by upstream). Full table in skill `references/sources.md`.
 
 ### Cursor limits
 

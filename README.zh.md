@@ -262,7 +262,9 @@ bun src/store/cli.ts perf --days=30 --limit=8 --source=grok   # 定向检查
 
 某 source 目录不存在会告警并跳过（其它源仍可用）。
 
-环境变量覆盖（节选）：`CLAUDE_CONFIG_DIR`、`KIMI_DATA_DIR`、`CODEX_HOME`、`GROK_HOME` / `GROK_SESSIONS_DIR`、`ZCODE_HOME` / `ZCODE_DB_PATH`、`WORKBUDDY_HOME`、`CURSOR_HOME`、`CURSOR_APP_DATA`、`CURSOR_STATE_DB`、`DSH_HOME` / `DSH_SESSIONS_DIR`。完整表见 skill `references/sources.md`。
+> ⚠️ **dsh 上游处于「开发者预览」，官方明确未来会有破坏兼容性的变更**（事实快照: 2026-09-15；上游版本 `0.1.5-rc.2`）。它的会话格式代会 bump —— `dsh` 解析一旦报错或漏字段，先查上游 `docs/session-format-status.zh.md` 确认格式代，再决定是否补迁移分支。
+
+环境变量覆盖（节选）：`CLAUDE_CONFIG_DIR`、`KIMI_DATA_DIR`、`CODEX_HOME`、`GROK_HOME` / `GROK_SESSIONS_DIR`、`ZCODE_HOME` / `ZCODE_DB_PATH`、`WORKBUDDY_HOME`、`CURSOR_HOME`、`CURSOR_APP_DATA`、`CURSOR_STATE_DB`、`DSH_HOME`（上游）/ `DSH_SESSIONS_DIR`（ACS 侧覆盖，上游不读）。完整表见 skill `references/sources.md`。
 
 ### Cursor 限制
 
