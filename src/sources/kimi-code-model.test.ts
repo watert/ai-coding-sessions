@@ -5,6 +5,7 @@ import {
   buildKimiPreferredModelMap,
   unifyKimiModelId,
   collectKimiModelsUsed,
+  resolveKimiRequestModel,
 } from './kimi-code';
 
 describe('kimi model 记法归一', () => {
@@ -56,5 +57,22 @@ describe('kimi model 记法归一', () => {
 
   test('仅裸 id 时保持原样', () => {
     expect(collectKimiModelsUsed(['deepseek-v4-flash'])).toBe('deepseek-v4-flash');
+  });
+
+  test('llm.request 取 modelAlias 口径（与 usage.record 同源）', () => {
+    // commandcode 中转：model 是另一套 provider/id，取错会分裂出第二个 model id
+    expect(resolveKimiRequestModel({ model: 'deepseek/deepseek-v4.1-flash', modelAlias: 'commandcode/dsv41f' }))
+      .toBe('commandcode/dsv41f');
+    expect(resolveKimiRequestModel({ model: 'MiniMax-M3', modelAlias: 'minimax-cn-coding-plan/MiniMax-M3' }))
+      .toBe('minimax-cn-coding-plan/MiniMax-M3');
+  });
+
+  test('resolveKimiRequestModel 回退与缺省', () => {
+    // 占位别名 → 回退真实 model
+    expect(resolveKimiRequestModel({ model: 'kimi-for-coding', modelAlias: '__secondary__' }))
+      .toBe('kimi-for-coding');
+    expect(resolveKimiRequestModel({ model: 'kimi-for-coding' })).toBe('kimi-for-coding');
+    expect(resolveKimiRequestModel({ modelAlias: '__secondary__' })).toBeUndefined();
+    expect(resolveKimiRequestModel({})).toBeUndefined();
   });
 });

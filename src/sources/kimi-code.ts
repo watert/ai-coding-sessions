@@ -437,6 +437,18 @@ export function preferKimiModel(a?: string, b?: string): string | undefined {
   return aa;
 }
 
+/**
+ * llm.request 的模型口径：`modelAlias` 是会话配置的 provider/model (与 usage.record.model 同源)，
+ * `model` 是上游裸 id；走中转时 (commandcode 等) `model` 可能是另一套 provider/id，
+ * 直接采用会与 usage.record 分裂出第二个 model id。占位别名 (__secondary__) 时回退 model。
+ */
+export function resolveKimiRequestModel(e: { model?: unknown; modelAlias?: unknown }): string | undefined {
+  const alias = typeof e.modelAlias === 'string' ? e.modelAlias.trim() : '';
+  if (alias && !isModelAlias(alias)) return alias;
+  const model = typeof e.model === 'string' ? e.model.trim() : '';
+  return model && !isModelAlias(model) ? model : undefined;
+}
+
 /** 会话内：裸 id 仅在存在唯一 `provider/id` 时提升 */
 export function buildKimiPreferredModelMap(models: Iterable<string | undefined>): Map<string, string> {
   const byBare = new Map<string, Set<string>>();
@@ -1020,7 +1032,7 @@ export async function listKimiCodeMessages(params: {
   }
 
   // thinkingEffort: llm.request.turnStep → effort；config.update 作 fallback
-  // model: usage.record 的 model 可能是别名 (如 subagent 的 __secondary__)，真实 model 在 llm.request
+  // model: usage.record 的 model 可能是别名 (如 subagent 的 __secondary__)，真实 model 在 llm.request (见 resolveKimiRequestModel)
   const effortByTurnStep = new Map<string, string>();
   const llmRequestEfforts: Array<{ time: number; effort: string }> = [];
   const modelByTurnStep = new Map<string, string>();
@@ -1035,8 +1047,8 @@ export async function listKimiCodeMessages(params: {
         if (e.turnStep) effortByTurnStep.set(String(e.turnStep), effort);
         if (typeof e.time === 'number') llmRequestEfforts.push({ time: e.time, effort });
       }
-      if (e.model && !isModelAlias(String(e.model))) {
-        const m = String(e.model);
+      const m = resolveKimiRequestModel(e);
+      if (m) {
         if (e.turnStep) modelByTurnStep.set(String(e.turnStep), m);
         if (typeof e.time === 'number') llmRequestModels.push({ time: e.time, model: m });
       }
